@@ -1,9 +1,7 @@
 package domaindocs4stest
 
 import domaindocs4s.*
-import domaindocs4s.java.domainDoc
 
-@domaindocs4s.java.domainDoc("my doc java")
 @domaindocs4s.domainDoc("My class")
 class Foo {
 
@@ -13,9 +11,12 @@ class Foo {
   @domainDoc("My field")
   val bar: Unit = ()
 
+  @domainDoc(name = "field with just name")
+  val bar1: Unit = ()
+
 }
 
-object Foo extends DomainDocTrait{
+object Foo {
 
   @domainDoc("My opaque type def")
   opaque type MyType1 = 1 | 2
@@ -23,5 +24,4 @@ object Foo extends DomainDocTrait{
   @domainDoc("My simple type def")
   type MyType2 = 1 | 2
 
-  override def doc: String = "my trait doc"
 }
