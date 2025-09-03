@@ -23,10 +23,18 @@ lazy val tastyQueryCollector = (project in file("domainDocs4s-collector"))
   )
   .dependsOn(api)
   .dependsOn(testInput) //% "test->compile")
+  .dependsOn(examples)
 
 lazy val testInput = (project in file("domainDocs4s-test-input"))
   .settings(
     name              := "domainDocs4s-test-input",
+    semanticdbEnabled := true,
+  )
+  .dependsOn(api)
+
+lazy val examples = (project in file("domainDocs4s-examples"))
+  .settings(
+    name              := "domainDocs4s-examples",
     semanticdbEnabled := true,
   )
   .dependsOn(api)
