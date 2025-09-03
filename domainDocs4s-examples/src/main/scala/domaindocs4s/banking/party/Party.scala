@@ -21,7 +21,7 @@ final case class Party(
 
 object Party {
 
-  @domainDoc("Unique technical identifier of a party.")
+  @domainDoc("Unique technical identifier of a party.", "PartyId")
   final case class Id(value: UUID)
 
   @domainDoc("First name of the party.")
