@@ -18,6 +18,7 @@ lazy val tastyQueryCollector = (project in file("domainDocs4s-collector"))
     name := "domainDocs4s-collector",
     libraryDependencies ++= Seq(
       "ch.epfl.scala" %% "tasty-query" % "1.4.0",
+      "org.scalatest" %% "scalatest" % "3.2.19" % Test,
     ),
   )
   .dependsOn(api)
