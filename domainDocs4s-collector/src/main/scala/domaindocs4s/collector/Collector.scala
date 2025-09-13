@@ -1,8 +1,10 @@
 package domaindocs4s.collector
 
+import domaindocs4s.errors.DomainDocsArgError
 import tastyquery.{Contexts, Symbols}
 import tastyquery.Contexts.Context
-import tastyquery.Symbols.{DeclaringSymbol, Symbol}
+import tastyquery.Symbols.{DeclaringSymbol, Symbol, TermSymbol}
+import tastyquery.Trees.{Literal, Select}
 
 import scala.collection.mutable.ListBuffer
 
@@ -55,17 +57,29 @@ class TastyQueryCollector(using ctx: Context) extends Collector {
 
   private def asDocumented(symbol: Symbol, path: Vector[DeclaringSymbol]): Option[DocumentedSymbol] = {
     println(s"$symbol - ${symbol.displayFullName}")
-    symbol
-      .getAnnotation(domainDocAnnotation)
-      .map(annot =>
-        DocumentedSymbol(
-          // TODO if args are not constant, this should raise an exception
-          Option.when(annot.argCount >= 2)(annot.argIfConstant(1).map(_.stringValue)).flatten,
-          Option.when(annot.argCount >= 1)(annot.argIfConstant(0).map(_.stringValue)).flatten,
-          symbol,
-          path,
-        ),
-      )
-  }
 
+    symbol match {
+      case ts: TermSymbol if ts.isModuleVal =>
+        None
+      case _ =>
+        symbol
+          .getAnnotation(domainDocAnnotation)
+          .map(annot => {
+            def getConstArg(index: Int, label: String): Option[String] = {
+              annot.arguments(index) match {
+                case Literal(constant) => Some(constant.stringValue)
+                case Select(_, termName) if termName.toString == s"<init>$$default$$${index + 1}" => None
+                case _ => throw DomainDocsArgError(label, symbol.displayFullName)
+              }
+            }
+
+            DocumentedSymbol(
+              nameOverride = getConstArg(1, "nameOverride"),
+              description = getConstArg(0, "description"),
+              symbol = symbol,
+              path = path,
+            )
+          })
+    }
+  }
 }
