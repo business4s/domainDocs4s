@@ -12,6 +12,7 @@ final case class Party(
     personalNumber: Party.PersonalNumber,
     identityDocType: IdentityDoc,
     address: Address,
+    contactDetails: ContactDetails,
 ) {
 
   @domainDoc("Updates the party's address.")
