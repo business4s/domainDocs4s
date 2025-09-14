@@ -1,12 +1,12 @@
 package domaindocs4s.output
 
 import domaindocs4s.collector.{Documentation, DocumentedSymbol}
-import domaindocs4s.output.Glossary.Entry
+import domaindocs4s.output.Entry
 
 import java.nio.file.Path
 import java.nio.file.Files
 
-case class Glossary(entries: List[Glossary.Entry]) {
+case class Glossary(entries: List[Entry]) {
 
   def asMarkdown: String = {
     val headers   = Seq("Parent", "Name", "Description")
@@ -51,17 +51,14 @@ case class Glossary(entries: List[Glossary.Entry]) {
 }
 
 object Glossary {
-  case class Entry(parent: Option[Entry], name: String, description: Option[String]) {
-    def asSeq: Seq[String] = Seq(parent.map(_.name).getOrElse(""), name, description.getOrElse(""))
-  }
 
   def build(docs: Documentation): Glossary = {
 
-    val cache = scala.collection.mutable.Map.empty[(String, Option[String]), Glossary.Entry]
+    val cache = scala.collection.mutable.Map.empty[(String, Option[String]), Entry]
 
     val documentedSymbols = docs.symbols.map(s => s.symbol -> s).toMap
 
-    def upsert(name: String, desc: Option[String], parent: Option[Glossary.Entry]): Glossary.Entry =
+    def upsert(name: String, desc: Option[String], parent: Option[Entry]): Entry =
       cache
         .getOrElseUpdate(
           (name, parent.map(_.name)),
@@ -70,7 +67,7 @@ object Glossary {
 
     docs.symbols.map { s =>
       val parentOpt =
-        s.path.foldLeft(Option.empty[Glossary.Entry]) { (maybeParent, symbol) =>
+        s.path.foldLeft(Option.empty[Entry]) { (maybeParent, symbol) =>
           documentedSymbols.get(symbol) match {
             case Some(docParent) =>
               Some(
@@ -88,7 +85,7 @@ object Glossary {
       upsert(leafName, s.description, parentOpt)
     }
 
-    Glossary(cache.values.toList)
+    Glossary(cache.values.toList.sorted)
   }
 
   def write(docs: String, path: String): Unit = {
