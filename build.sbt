@@ -30,3 +30,15 @@ lazy val testInput = (project in file("domainDocs4s-test-input"))
     semanticdbEnabled := true,
   )
   .dependsOn(api)
+
+lazy val examples = (project in file("domainDocs4s-examples"))
+  .settings(
+    name              := "domainDocs4s-examples",
+    libraryDependencies ++= Seq(
+      "ch.epfl.scala" %% "tasty-query" % "1.4.0",
+      "org.scalatest" %% "scalatest" % "3.2.19" % Test,
+    ),
+    semanticdbEnabled := true,
+  )
+  .dependsOn(api)
+  .dependsOn(tastyQueryCollector)
