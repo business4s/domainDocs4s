@@ -41,4 +41,4 @@ lazy val examples = (project in file("domainDocs4s-examples"))
     semanticdbEnabled := true,
   )
   .dependsOn(api)
-  .dependsOn(tastyQueryCollector)
+  .dependsOn(tastyQueryCollector % "test->test")
