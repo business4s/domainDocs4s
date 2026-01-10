@@ -43,7 +43,7 @@ class DocumentationTest extends AnyFreeSpec {
         "Active",
         "Inactive",
       )
-      
+
       names(docs) should contain theSameElementsAs expected
 
     }
@@ -58,22 +58,22 @@ class DocumentationTest extends AnyFreeSpec {
 
     "elements contain correct paths" in {
 
-      pathOf("ExampleEntity")    shouldEqual List("documentation")
+      pathOf("ExampleEntity") shouldEqual List("documentation")
       pathOf("documentedMethod") shouldEqual List("documentation", "ExampleEntity")
-      pathOf("documentedField")  shouldEqual List("documentation", "ExampleEntity")
-      pathOf("DocumentedType")   shouldEqual List("documentation", "ExampleEntity")
-      pathOf("Nested$")          shouldEqual List("documentation", "ExampleEntity")
-      pathOf("nestedMethod")     shouldEqual List("documentation", "ExampleEntity", "Nested$")
+      pathOf("documentedField") shouldEqual List("documentation", "ExampleEntity")
+      pathOf("DocumentedType") shouldEqual List("documentation", "ExampleEntity")
+      pathOf("Nested$") shouldEqual List("documentation", "ExampleEntity")
+      pathOf("nestedMethod") shouldEqual List("documentation", "ExampleEntity", "Nested$")
 
-      pathOf("ExampleEntity$")   shouldEqual List("documentation")
-      pathOf("companionVal")     shouldEqual List("documentation", "ExampleEntity$")
+      pathOf("ExampleEntity$") shouldEqual List("documentation")
+      pathOf("companionVal") shouldEqual List("documentation", "ExampleEntity$")
 
-      pathOf("UtilityObject$")   shouldEqual List("documentation")
-      pathOf("utilFunction")     shouldEqual List("documentation", "UtilityObject$")
+      pathOf("UtilityObject$") shouldEqual List("documentation")
+      pathOf("utilFunction") shouldEqual List("documentation", "UtilityObject$")
 
-      pathOf("ExampleStatus")    shouldEqual List("documentation")
-      pathOf("Active")           shouldEqual List("documentation", "ExampleStatus$")
-      pathOf("Inactive")         shouldEqual List("documentation", "ExampleStatus$")
+      pathOf("ExampleStatus") shouldEqual List("documentation")
+      pathOf("Active") shouldEqual List("documentation", "ExampleStatus$")
+      pathOf("Inactive") shouldEqual List("documentation", "ExampleStatus$")
 
     }
 

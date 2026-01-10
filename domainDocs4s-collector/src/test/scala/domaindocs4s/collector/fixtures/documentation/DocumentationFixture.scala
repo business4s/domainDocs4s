@@ -45,9 +45,7 @@ object UtilityObject {
 
 @domainDoc("An example enumeration.")
 enum ExampleStatus {
-  @domainDoc("Indicates entity is active.")
-  case Active
+  @domainDoc("Indicates entity is active.") case Active
 
-  @domainDoc("Indicates entity is inactive.")
-  case Inactive
+  @domainDoc("Indicates entity is inactive.") case Inactive
 }

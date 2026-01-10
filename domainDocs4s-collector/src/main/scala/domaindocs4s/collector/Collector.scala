@@ -61,15 +61,15 @@ class TastyQueryCollector(using ctx: Context) extends Collector {
     symbol match {
       case ts: TermSymbol if ts.isModuleVal =>
         None
-      case _ =>
+      case _                                =>
         symbol
           .getAnnotation(domainDocAnnotation)
           .map(annot => {
             def getConstArg(index: Int, label: String): Option[String] = {
               annot.arguments(index) match {
-                case Literal(constant) => Some(constant.stringValue)
+                case Literal(constant)                                                            => Some(constant.stringValue)
                 case Select(_, termName) if termName.toString == s"<init>$$default$$${index + 1}" => None
-                case _ => throw DomainDocsArgError(label, symbol.displayFullName)
+                case _                                                                            => throw DomainDocsArgError(label, symbol.displayFullName)
               }
             }
 
