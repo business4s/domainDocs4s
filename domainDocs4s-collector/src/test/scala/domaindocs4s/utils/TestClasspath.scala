@@ -6,7 +6,8 @@ import java.nio.file.{Path, Paths}
 object TestClasspath extends App {
 
   lazy val current: List[Path] =
-    sys.props("java.class.path")
+    sys
+      .props("java.class.path")
       .split(File.pathSeparator)
       .toList
       .map(_.trim)

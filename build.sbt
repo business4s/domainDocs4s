@@ -2,11 +2,13 @@ ThisBuild / version := "0.1.0-SNAPSHOT"
 
 ThisBuild / scalaVersion := "3.5.1"
 
+ThisBuild / Test / fork := true
+
 lazy val root = (project in file("."))
   .settings(
     name := "domainDocs4s-root",
   )
-  .aggregate(api, tastyQueryCollector , testInput)
+  .aggregate(api, tastyQueryCollector , examples)
 
 lazy val api = (project in file("domainDocs4s-api"))
   .settings(
@@ -22,14 +24,6 @@ lazy val tastyQueryCollector = (project in file("domainDocs4s-collector"))
     ),
   )
   .dependsOn(api)
-  .dependsOn(testInput) //% "test->compile")
-
-lazy val testInput = (project in file("domainDocs4s-test-input"))
-  .settings(
-    name              := "domainDocs4s-test-input",
-    semanticdbEnabled := true,
-  )
-  .dependsOn(api)
 
 lazy val examples = (project in file("domainDocs4s-examples"))
   .settings(
@@ -41,4 +35,4 @@ lazy val examples = (project in file("domainDocs4s-examples"))
     semanticdbEnabled := true,
   )
   .dependsOn(api)
-  .dependsOn(tastyQueryCollector)
+  .dependsOn(tastyQueryCollector % "test->test")
