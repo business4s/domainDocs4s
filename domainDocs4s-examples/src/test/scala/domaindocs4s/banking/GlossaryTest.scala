@@ -1,17 +1,14 @@
 package domaindocs4s.banking
 
-import domaindocs4s.collector.TastyQueryCollector
+import domaindocs4s.collector.{DomainDocsContext, TastyContext, TastyQueryCollector}
 import org.scalatest.freespec.AnyFreeSpec
 import domaindocs4s.output.Glossary
-import domaindocs4s.utils.{SnapshotTest, TestClasspath}
-import tastyquery.Contexts.Context
-import tastyquery.jdk.ClasspathLoaders
+import domaindocs4s.utils.SnapshotTest
 
 class GlossaryTest extends AnyFreeSpec {
 
-  given Context = Context.initialize(ClasspathLoaders.read(TestClasspath.current))
-
-  private val collector = new TastyQueryCollector
+  given DomainDocsContext = TastyContext.fromCurrentProcess()
+  private val collector   = new TastyQueryCollector
 
   private val docs = collector
     .collectSymbols("domaindocs4s.banking")

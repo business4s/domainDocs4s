@@ -1,14 +1,11 @@
 package domaindocs4s.collector
 
-import domaindocs4s.utils.TestClasspath
 import org.scalatest.freespec.AnyFreeSpec
 import org.scalatest.matchers.should.Matchers.*
-import tastyquery.Contexts.Context
-import tastyquery.jdk.ClasspathLoaders
 
 class DocumentationTest extends AnyFreeSpec {
 
-  given ctx: Context = Context.initialize(ClasspathLoaders.read(TestClasspath.current))
+  given DomainDocsContext = TastyContext.fromCurrentProcess()
 
   private val pkg       = "domaindocs4s.collector.fixtures.documentation"
   private val collector = new TastyQueryCollector

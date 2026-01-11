@@ -1,17 +1,13 @@
 package domaindocs4s.collector
 
 import domaindocs4s.errors.DomainDocsArgError
-import domaindocs4s.utils.TestClasspath
 import org.scalatest.freespec.AnyFreeSpec
-import tastyquery.Contexts.Context
-import tastyquery.jdk.ClasspathLoaders
 import org.scalatest.matchers.should.Matchers.*
 
 class AnnotationArgsTest extends AnyFreeSpec {
 
-  given ctx: Context = Context.initialize(ClasspathLoaders.read(TestClasspath.current))
-
-  private val collector = new TastyQueryCollector
+  given DomainDocsContext = TastyContext.fromCurrentProcess()
+  private val collector   = new TastyQueryCollector
 
   "collector" - {
 
