@@ -36,3 +36,9 @@ lazy val examples = (project in file("domainDocs4s-examples"))
   )
   .dependsOn(api)
   .dependsOn(tastyQueryCollector)
+
+lazy val stableVersion = taskKey[String]("stableVersion")
+stableVersion := {
+  if (isVersionStable.value && !isSnapshot.value) version.value
+  else previousStableVersion.value.getOrElse("unreleased")
+}
