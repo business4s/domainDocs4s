@@ -1,10 +1,9 @@
 package domaindocs4s.output
 
-import domaindocs4s.collector.{Documentation, DocumentedSymbol}
+import domaindocs4s.collector.Documentation
 import domaindocs4s.output.Entry
 
-import java.nio.file.Path
-import java.nio.file.Files
+import java.nio.file.{Files, Path}
 
 case class Glossary(entries: List[Entry]) {
 
@@ -65,7 +64,7 @@ object Glossary {
           Entry(parent, name, desc),
         )
 
-    docs.symbols.map { s =>
+    val _ = docs.symbols.map { s =>
       val parentOpt =
         s.path.foldLeft(Option.empty[Entry]) { (maybeParent, symbol) =>
           documentedSymbols.get(symbol) match {
@@ -89,6 +88,6 @@ object Glossary {
   }
 
   def write(docs: String, path: String): Unit = {
-    Files.write(Path.of(path), docs.getBytes)
+    val _ = Files.write(Path.of(path), docs.getBytes)
   }
 }

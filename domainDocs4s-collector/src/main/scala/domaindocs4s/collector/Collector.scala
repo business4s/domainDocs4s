@@ -1,8 +1,8 @@
 package domaindocs4s.collector
 
 import domaindocs4s.errors.DomainDocsArgError
-import tastyquery.{Contexts, Symbols}
 import tastyquery.Contexts.Context
+import tastyquery.Symbols
 import tastyquery.Symbols.{DeclaringSymbol, Symbol, TermSymbol}
 import tastyquery.Trees.{Literal, Select}
 
