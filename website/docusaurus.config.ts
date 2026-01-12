@@ -34,6 +34,12 @@ const config: Config = {
         docs: {
           sidebarPath: './sidebars.ts',
           editUrl: 'https://github.com/business4s/domaindocs4s/website',
+          remarkPlugins: [
+            [
+              require('remark-code-snippets'),
+              {baseDir: "../domainDocs4s-examples/src/"}
+            ]
+          ],
         },
         theme: {
           customCss: require.resolve('./src/css/custom.css'),

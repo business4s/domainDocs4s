@@ -26,33 +26,17 @@ import SbtDependency from '@site/src/components/SbtDependency';
 
 Create a tiny domain model - for example, an `Order` aggregate with a status and identifier:
 
-```scala
-final case class Id(value: Int)
-
-enum OrderStatus:
-  case Draft, Paid, Cancelled
-
-final case class Order(id: Id, status: OrderStatus)
+```scala file=./main/scala/domaindocs4s/order/Domain.scala start=start_domain end=end_domain
 ```
 
 ## Annotate the Domain
 
 Import `@domainDoc` annotation:
-```scala
-import domaindocs4s.domainDoc
+```scala file=./main/scala/domaindocs4s/order/DocumentedDomain.scala start=start_imports end=end_imports
 ```
 
 Document the domain using annotations with proper descriptions and optional name overrides:
-```scala
-@domainDoc("Unique technical identifier of an Order", "OrderId")
-final case class Id(value: Int)
-
-@domainDoc("Business lifecycle state of an Order")
-enum OrderStatus:
-  case Draft, Paid, Cancelled
-
-@domainDoc("Aggregate root representing a customer Order")
-final case class Order(id: Id, status: OrderStatus)
+```scala file=./main/scala/domaindocs4s/order/DocumentedDomain.scala start=start_annotations end=end_annotations
 ```
 
 ## Generate Documentation
@@ -63,38 +47,11 @@ DomainDocs4s is built around a simple pipeline:
 - render it to an output format
 
 Here is the minimal end-to-end example:
-```scala
-import domaindocs4s.collector.{DomainDocsContext, TastyContext, TastyQueryCollector}
-import domaindocs4s.output.Glossary
-
-@main def generateDomainDocs(): Unit = {
-
-  // 1) Setup collector
-  given DomainDocsContext = TastyContext.fromCurrentProcess()
-  val collector = new TastyQueryCollector
-
-  // 2) Collect documentation model
-  val docs: Documentation =
-    collector
-      .collectSymbols("example.domain") // the package with your domain
-
-  // 3) Generate glossary markdown (or other supported output and format)
-  val glossary =
-    Glossary
-      .build(docs) // build glossary
-      .asMarkdown  // render markdown
-
-  // 4) Write the result to file
-  Glossary.write(glossary, "glossary.md")
-}
+```scala file=./main/scala/domaindocs4s/order/Main.scala start=start_generate end=end_generate
 ```
 
 After running it, you should have a file `glossary.md` which contains a glossary of your domain:
 
-```
-| Parent | Name        | Description                                  |
-|--------|-------------|----------------------------------------------|
-|        | Order       | Aggregate root representing a customer Order |
-|        | OrderId     | Unique technical identifier of an Order      |
-|        | OrderStatus | Business lifecycle state of an Order         |
-```
+import MDOutput from '../../domainDocs4s-examples/src/test/resources/order/glossary.md'
+
+<MDOutput/>
