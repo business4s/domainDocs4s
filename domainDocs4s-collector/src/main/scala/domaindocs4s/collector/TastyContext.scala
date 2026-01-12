@@ -1,11 +1,10 @@
 package domaindocs4s.collector
 
-import tastyquery.jdk.ClasspathLoaders
-import tastyquery.Classpaths.Classpath
 import tastyquery.Contexts.Context
+import tastyquery.jdk.ClasspathLoaders
 
 import java.io.File
-import java.nio.file.{Path, Paths}
+import java.nio.file.Paths
 
 type DomainDocsContext = Context
 
