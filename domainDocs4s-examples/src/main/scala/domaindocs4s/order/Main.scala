@@ -8,7 +8,7 @@ import domaindocs4s.output.Glossary
 
   // 1) Setup collector
   given DomainDocsContext = TastyContext.fromCurrentProcess()
-  val collector = new TastyQueryCollector
+  val collector           = new TastyQueryCollector
 
   // 2) Collect documentation model
   val docs =

@@ -11,12 +11,12 @@ object DocumentedDomain {
   final case class Id(value: Int)
 
   @domainDoc("Business lifecycle state of an Order")
-  enum OrderStatus:
+  enum OrderStatus {
     case Draft, Paid, Cancelled
+  }
 
   @domainDoc("Aggregate root representing a customer Order")
   final case class Order(id: Id, status: OrderStatus)
   // end_annotations
 
 }
-
