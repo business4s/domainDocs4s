@@ -25,6 +25,7 @@ lazy val commonSettings = Seq(
 lazy val root = (project in file("."))
   .settings(
     name := "domainDocs4s",
+    publish / skip := true,
   )
   .aggregate(api, tastyQueryCollector , examples)
 
