@@ -35,4 +35,10 @@ lazy val examples = (project in file("domainDocs4s-examples"))
     semanticdbEnabled := true,
   )
   .dependsOn(api)
-  .dependsOn(tastyQueryCollector % "test->test")
+  .dependsOn(tastyQueryCollector)
+
+lazy val stableVersion = taskKey[String]("stableVersion")
+stableVersion := {
+  if (isVersionStable.value && !isSnapshot.value) version.value
+  else previousStableVersion.value.getOrElse("unreleased")
+}

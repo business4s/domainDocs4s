@@ -1,0 +1,57 @@
+---
+sidebar_position: 1
+#sidebar_label: Getting Started
+---
+
+# Getting Started
+
+`DomainDocs4s` generates human-readable domain documentation directly from your Scala code.
+Instead of maintaining docs manually, you annotate and describe your domain in code,
+and then use a collector to build a documentation model that can be rendered into various output formats.
+
+In this guide we’ll:
+1. Write a tiny domain example
+2. Describe the domain with annotations
+3. Collect symbols and generate documentation output
+
+### Dependency
+
+Add the following dependency to your project:
+
+import SbtDependency from '@site/src/components/SbtDependency';
+
+<SbtDependency moduleName={"domainDocs4s-collector"}/>
+
+## Create a Domain Example
+
+Create a tiny domain model - for example, an `Order` aggregate with a status and identifier:
+
+```scala file=./main/scala/domaindocs4s/order/Domain.scala start=start_domain end=end_domain
+```
+
+## Annotate the Domain
+
+Import `@domainDoc` annotation:
+```scala file=./main/scala/domaindocs4s/order/DocumentedDomain.scala start=start_imports end=end_imports
+```
+
+Document the domain using annotations with proper descriptions and optional name overrides:
+```scala file=./main/scala/domaindocs4s/order/DocumentedDomain.scala start=start_annotations end=end_annotations
+```
+
+## Generate Documentation
+
+DomainDocs4s is built around a simple pipeline:
+- collect symbols and metadata from Scala 3 compilation artifacts (`.tasty` files)
+- build a documentation model (a structured model of documented symbols)
+- render it to an output format
+
+Here is the minimal end-to-end example:
+```scala file=./main/scala/domaindocs4s/order/Main.scala start=start_generate end=end_generate
+```
+
+After running it, you should have a file `glossary.md` which contains a glossary of your domain:
+
+import MDOutput from '../../domainDocs4s-examples/src/test/resources/order/glossary.md'
+
+<MDOutput/>
