@@ -7,7 +7,7 @@ class LiteralsSpec extends AnyFreeSpec {
 
   "ensureLiteral" - {
 
-    "compiles for literal / reducible-to-literal expressions" - {
+    "compiles for literal / reducible-to-literal expressions" in {
 
       val literal =
         typeChecks("""import domaindocs4s.macros.Literals.*
@@ -32,7 +32,7 @@ class LiteralsSpec extends AnyFreeSpec {
       assert(inlineDef)
     }
 
-    "fails when expression can't be reduced to literal" - {
+    "fails when expression can't be reduced to literal" in {
 
       val valRef = typeCheckErrors(
         """import domaindocs4s.macros.Literals.*
