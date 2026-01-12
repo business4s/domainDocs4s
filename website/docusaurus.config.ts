@@ -11,7 +11,7 @@ const config: Config = {
 
   // GitHub pages deployment config.
   url: 'https://business4s.github.io/',
-  baseUrl: '/domaindocs4s/',
+  baseUrl: '/domainDocs4s/',
   organizationName: 'business4s',
   projectName: 'domaindocs4s',
   trailingSlash: true,
