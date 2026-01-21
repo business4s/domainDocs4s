@@ -38,7 +38,7 @@ trait Collector {
 
 class TastyQueryCollector(using ctx: Context) extends Collector {
 
-  val domainDocAnnotation = ctx.findTopLevelClass("domaindocs4s.domainDoc")
+  val domainDocAnnotation = ctx.findTopLevelClass("domaindocs4s.domain.domainDoc")
 
   override def collectSymbols(packageName: String): Documentation = {
     val pkg = ctx.findPackage(packageName)

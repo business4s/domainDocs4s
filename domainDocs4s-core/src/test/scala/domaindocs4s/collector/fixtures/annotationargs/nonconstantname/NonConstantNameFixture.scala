@@ -4,5 +4,5 @@ import domaindocs4s.domainDoc
 
 val nonConstName = "Non-constant name"
 
-@domaindocs4s.domainDoc(name = nonConstName)
+@domainDoc(name = nonConstName)
 class Doc_NameNonConst
