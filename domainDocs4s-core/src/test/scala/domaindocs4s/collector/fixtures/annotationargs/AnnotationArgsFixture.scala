@@ -1,4 +1,4 @@
-package domaindocs4s.collector.fixtures.annotationargs.constant
+package domaindocs4s.collector.fixtures.annotationargs
 
 import domaindocs4s.domainDoc
 

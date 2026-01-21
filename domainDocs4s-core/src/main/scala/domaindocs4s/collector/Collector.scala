@@ -56,14 +56,14 @@ class TastyQueryCollector(using ctx: Context) extends Collector {
   }
 
   private def asDocumented(symbol: Symbol, path: Vector[DeclaringSymbol]): Option[DocumentedSymbol] = {
-    println(s"$symbol - ${symbol.displayFullName}")
 
     def unwrap(tree: Tree): Tree = tree match {
-      case Inlined(t, _, _) => unwrap(t)
-      case Typed(t, _)      => unwrap(t)
-      case Block(Nil, t)    => unwrap(t)
-      case TypeApply(f, _)  => unwrap(f)
-      case _                => tree
+      case Inlined(t, _, _)               => unwrap(t)
+      case Typed(t, _)                    => unwrap(t)
+      case Block(_, t)                    => unwrap(t)
+      case TypeApply(t, _)                => unwrap(t)
+      case Apply(Select(_, _), List(arg)) => unwrap(arg) // heuristic for wrapper LiteralString(<arg>)
+      case _                              => tree
     }
 
     symbol match {
@@ -76,7 +76,7 @@ class TastyQueryCollector(using ctx: Context) extends Collector {
             def getConstArg(index: Int, label: String): Option[String] = {
               unwrap(annot.arguments(index)) match {
                 case Literal(constant)                                                            => Some(constant.stringValue)
-                case Select(_, termName) if termName.toString == s"<init>$$default$$${index + 1}" => None
+                case Select(_, termName) if termName.toString == s"<init>$$default$$${index + 1}" => None // default argument
                 case _                                                                            => throw DomainDocsArgError(label, symbol.displayFullName)
               }
             }
