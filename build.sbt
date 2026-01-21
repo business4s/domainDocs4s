@@ -16,6 +16,12 @@ lazy val commonSettings = Seq(
       "w.pitula@gmail.com",
       url("https://v.pitula.me"),
     ),
+    Developer(
+      "BartekBH",
+      "Bartłomiej Homętowski",
+      "bartek.hometowski@gmail.com",
+      url("https://github.com/BartekBH"),
+    ),
   ),
   versionScheme := Some("semver-spec"),
   Test / tpolecatExcludeOptions += ScalacOptions.warnNonUnitStatement,
@@ -27,23 +33,16 @@ lazy val root = (project in file("."))
     name := "domainDocs4s",
     publish / skip := true,
   )
-  .aggregate(api, tastyQueryCollector , examples)
+  .aggregate(core , examples)
 
-lazy val api = (project in file("domainDocs4s-api"))
+lazy val core = (project in file("domainDocs4s-core"))
   .settings(commonSettings)
   .settings(
-    name := "domainDocs4s-api",
-  )
-
-lazy val tastyQueryCollector = (project in file("domainDocs4s-collector"))
-  .settings(commonSettings)
-  .settings(
-    name := "domainDocs4s-collector",
+    name := "domainDocs4s-core",
     libraryDependencies ++= Seq(
       "ch.epfl.scala" %% "tasty-query" % "1.6.1",
     ),
   )
-  .dependsOn(api)
 
 lazy val examples = (project in file("domainDocs4s-examples"))
   .settings(commonSettings)
@@ -54,8 +53,7 @@ lazy val examples = (project in file("domainDocs4s-examples"))
     ),
     semanticdbEnabled := true,
   )
-  .dependsOn(api)
-  .dependsOn(tastyQueryCollector)
+  .dependsOn(core)
 
 lazy val stableVersion = taskKey[String]("stableVersion")
 stableVersion := {
