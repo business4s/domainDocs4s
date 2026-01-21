@@ -2,7 +2,7 @@ package domaindocs4s.banking.application
 
 import domaindocs4s.banking.common.*
 import domaindocs4s.banking.party.*
-import domaindocs4s.*
+import domaindocs4s.domainDoc
 
 import java.time.LocalDateTime
 import java.util.UUID

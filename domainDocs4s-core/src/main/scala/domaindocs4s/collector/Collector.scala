@@ -1,8 +1,8 @@
 package domaindocs4s.collector
 
 import domaindocs4s.errors.DomainDocsArgError
-import tastyquery.{Contexts, Symbols}
 import tastyquery.Contexts.Context
+import tastyquery.Symbols
 import tastyquery.Symbols.{DeclaringSymbol, Symbol, TermSymbol}
 import tastyquery.Trees._
 
@@ -38,7 +38,7 @@ trait Collector {
 
 class TastyQueryCollector(using ctx: Context) extends Collector {
 
-  val domainDocAnnotation = ctx.findTopLevelClass("domaindocs4s.domainDoc")
+  val domainDocAnnotation = ctx.findTopLevelClass("domaindocs4s.domain.domainDoc")
 
   override def collectSymbols(packageName: String): Documentation = {
     val pkg = ctx.findPackage(packageName)
