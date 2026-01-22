@@ -4,7 +4,7 @@ import domaindocs4s.errors.DomainDocsArgError
 import tastyquery.Contexts.Context
 import tastyquery.Symbols
 import tastyquery.Symbols.{DeclaringSymbol, Symbol, TermSymbol}
-import tastyquery.Trees.{Literal, Select}
+import tastyquery.Trees._
 
 import scala.collection.mutable.ListBuffer
 
@@ -56,7 +56,15 @@ class TastyQueryCollector(using ctx: Context) extends Collector {
   }
 
   private def asDocumented(symbol: Symbol, path: Vector[DeclaringSymbol]): Option[DocumentedSymbol] = {
-    println(s"$symbol - ${symbol.displayFullName}")
+
+    def unwrap(tree: Tree): Tree = tree match {
+      case Inlined(t, _, _)               => unwrap(t)
+      case Typed(t, _)                    => unwrap(t)
+      case Block(_, t)                    => unwrap(t)
+      case TypeApply(t, _)                => unwrap(t)
+      case Apply(Select(_, _), List(arg)) => unwrap(arg) // heuristic for wrapper LiteralString(<arg>)
+      case _                              => tree
+    }
 
     symbol match {
       case ts: TermSymbol if ts.isModuleVal =>
@@ -66,9 +74,9 @@ class TastyQueryCollector(using ctx: Context) extends Collector {
           .getAnnotation(domainDocAnnotation)
           .map(annot => {
             def getConstArg(index: Int, label: String): Option[String] = {
-              annot.arguments(index) match {
+              unwrap(annot.arguments(index)) match {
                 case Literal(constant)                                                            => Some(constant.stringValue)
-                case Select(_, termName) if termName.toString == s"<init>$$default$$${index + 1}" => None
+                case Select(_, termName) if termName.toString == s"<init>$$default$$${index + 1}" => None // default argument
                 case _                                                                            => throw DomainDocsArgError(label, symbol.displayFullName)
               }
             }
