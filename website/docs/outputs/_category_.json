@@ -1,0 +1,9 @@
+{
+  "label": "Outputs",
+  "position": 2,
+  "collapsible": false,
+  "link": {
+    "type": "generated-index",
+    "description": "What outputs DomainDocs4s can generate."
+  }
+}

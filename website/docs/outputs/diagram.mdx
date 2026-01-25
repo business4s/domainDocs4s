@@ -1,0 +1,35 @@
+---
+sidebar_position: 2
+sidebar_label: Diagram
+---
+
+# Diagram
+
+## Annotate the Domain
+
+Create utility helpers to simplify documentation (see [Inlines](./../dynamic/inlines.mdx) for details):
+
+```scala file=./main/scala/domaindocs4s/banking/party/package.scala start=start_utils end=end_utils
+```
+
+Annotate the domain model with proper relationships:
+
+```scala file=./main/scala/domaindocs4s/banking/party/Party.scala start=start_annotations end=end_annotations
+```
+
+```scala file=./main/scala/domaindocs4s/banking/party/Address.scala start=start_annotations end=end_annotations
+```
+
+```scala file=./main/scala/domaindocs4s/banking/party/ContactDetails.scala start=start_annotations end=end_annotations
+```
+
+## Generate Diagram
+
+```scala file=./main/scala/domaindocs4s/banking/Main.scala start=start_generate end=end_generate
+```
+
+### Result
+
+import MDOutput from '../../../domainDocs4s-examples/src/test/resources/banking/diagram.md'
+
+<MDOutput/>

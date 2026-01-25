@@ -2,6 +2,7 @@ package domaindocs4s.order
 
 // start_imports
 import domaindocs4s.domainDoc
+import domaindocs4s.domain._
 // end_imports
 
 object DocumentedDomain {

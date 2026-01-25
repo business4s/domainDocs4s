@@ -1,8 +1,12 @@
 package domaindocs4s.banking.party
 
+// start_annotations
 import domaindocs4s.domainDoc
 
-@domainDoc("Address details declared by the customer.")
+@domainDoc(
+  description = "Address details declared by the customer.",
+  relation = hasOneToMany,
+)
 final case class Address(
     country: Address.Country,
     city: Address.City,
@@ -14,21 +18,40 @@ final case class Address(
 
 object Address {
 
-  @domainDoc("Country of the customer's address.")
+  @domainDoc(
+    description = "Country of the customer's address.",
+    relation = hasOneToMany,
+  )
   final case class Country(value: String)
 
-  @domainDoc("City of the customer's address.")
+  @domainDoc(
+    description = "City of the customer's address.",
+    relation = hasOneToMany,
+  )
   final case class City(value: String)
 
-  @domainDoc("Postal code of the customer's address.")
+  @domainDoc(
+    description = "Postal code of the customer's address.",
+    relation = hasOneToMany,
+  )
   final case class PostalCode(value: String)
 
-  @domainDoc("Street name of the customer's address.")
+  @domainDoc(
+    description = "Street name of the customer's address.",
+    relation = hasOneToManyOptional,
+  )
   final case class Street(value: String)
 
-  @domainDoc("House number of the customer's address.")
+  @domainDoc(
+    description = "House number of the customer's address.",
+    relation = hasOneToMany,
+  )
   final case class HouseNumber(value: String)
 
-  @domainDoc("Suite, apartment, or flat number of the customer's address.")
+  @domainDoc(
+    description = "Suite, apartment, or flat number of the customer's address.",
+    relation = hasOneToManyOptional,
+  )
   final case class SuiteNumber(value: String)
 }
+// end_annotations

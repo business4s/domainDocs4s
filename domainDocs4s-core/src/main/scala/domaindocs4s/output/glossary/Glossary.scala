@@ -1,9 +1,7 @@
-package domaindocs4s.output
+package domaindocs4s.output.glossary
 
 import domaindocs4s.collector.Documentation
-import domaindocs4s.output.Entry
-
-import java.nio.file.{Files, Path}
+import domaindocs4s.output.glossary.Entry
 
 case class Glossary(entries: List[Entry]) {
 
@@ -87,7 +85,4 @@ object Glossary {
     Glossary(cache.values.toList.sorted)
   }
 
-  def write(docs: String, path: String): Unit = {
-    val _ = Files.write(Path.of(path), docs.getBytes)
-  }
 }

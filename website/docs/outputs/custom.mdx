@@ -1,0 +1,40 @@
+---
+sidebar_position: 3
+sidebar_label: Custom output
+---
+
+# Custom Output
+
+## Defining Custom Relations
+
+Custom outputs can be created by defining your own `RelationType`s and `LinkType`s, for example:
+
+```scala file=./main/scala/domaindocs4s/custom/CustomRelation.scala start=start_relations end=end_relations
+```
+
+## Implementing Custom Generator
+
+Next, you need to implement a custom generator.
+
+Example (reusing the Diagram builder for simplicity):
+
+```scala file=./main/scala/domaindocs4s/custom/CustomGenerator.scala start=start_generator end=end_generator
+```
+
+## Usage
+
+### Domain
+
+```scala file=./main/scala/domaindocs4s/custom/CustomDomain.scala start=start_usage end=end_usage
+```
+
+### Generate
+
+```scala file=./main/scala/domaindocs4s/custom/CustomMain.scala start=start_generate end=end_generate
+```
+
+### Result
+
+import MDOutput from '../../../domainDocs4s-examples/src/test/resources/custom/custom.md'
+
+<MDOutput/>

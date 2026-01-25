@@ -1,8 +1,8 @@
 package domaindocs4s.order
 
 import domaindocs4s.collector.{DomainDocsContext, TastyContext, TastyQueryCollector}
+import domaindocs4s.output.glossary.Glossary
 import org.scalatest.freespec.AnyFreeSpec
-import domaindocs4s.output.Glossary
 import domaindocs4s.utils.SnapshotTest
 
 class OrderTest extends AnyFreeSpec {

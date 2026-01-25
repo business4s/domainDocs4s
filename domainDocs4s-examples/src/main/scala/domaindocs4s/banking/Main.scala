@@ -1,27 +1,32 @@
 package domaindocs4s.banking
 
 import domaindocs4s.collector.{DomainDocsContext, TastyContext, TastyQueryCollector}
-import domaindocs4s.output.Glossary
+import domaindocs4s.output.Writer
+import domaindocs4s.output.diagram.{Diagram, Direction}
 
 object Main {
 
   def main(args: Array[String]): Unit = {
 
-    // 1) Setup collector
     given DomainDocsContext = TastyContext.fromCurrentProcess()
     val collector           = new TastyQueryCollector
 
-    // 2) Collect documentation model
     val docs = collector
-      .collectSymbols("domaindocs4s.banking")
+      .collectSymbols("domaindocs4s.banking.party")
 
-    // 3) Generate glossary markdown (or another supported output and format)
-    val glossary =
-      Glossary
-        .build(docs) // build glossary
-        .asMarkdown  // render markdown
+    // start_generate
+    val diagram =
+      Diagram
+        .build(                  // build diagram from collected documentation
+          docs = docs,           // documentation model
+          onlyDocumented = false, // includes first undocumented parent (often package name) when false (default)
+        )
+        .asMarkdown(                // render markdown
+          direction = Direction.LR, // diagram direction (since not all renderers support direction, the default is None)
+          withFields = true,        // includes class fields in diagram when true (default)
+        )
+    // end_generate
 
-    // 4) Write the result to file
-    Glossary.write(glossary, "glossary.md")
+    Writer(diagram, "diagram.md")
   }
 }

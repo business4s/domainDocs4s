@@ -28,3 +28,6 @@
   --ifm-color-primary-lightest: #6eb8e4; /* Lightest variant for dark mode */
   --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
 }
+.menu__link {
+  line-height: 1.3;
+}

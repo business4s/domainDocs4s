@@ -2,7 +2,9 @@ package domaindocs4s.order
 
 // start_generate
 import domaindocs4s.collector.{DomainDocsContext, TastyContext, TastyQueryCollector}
-import domaindocs4s.output.Glossary
+import domaindocs4s.output.Writer
+import domaindocs4s.output.diagram.Diagram
+import domaindocs4s.output.glossary.Glossary
 
 @main def generateDomainDocs(): Unit = {
 
@@ -22,6 +24,14 @@ import domaindocs4s.output.Glossary
       .asMarkdown  // render markdown
 
   // 4) Write the result to file
-  Glossary.write(glossary, "glossary.md")
+  Writer(glossary, "glossary.md")
+
+  val diagram =
+    Diagram
+      .build(docs)  // build glossary
+      .asMarkdown() // render markdown
+
+  // 4) Write the result to file
+  Writer(diagram, "diagram.md")
 }
 // end_generate

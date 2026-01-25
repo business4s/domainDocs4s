@@ -1,0 +1,9 @@
+{
+  "label": "Dynamic content",
+  "position": 3,
+  "collapsible": false,
+  "link": {
+    "type": "generated-index",
+    "description": "How to use dynamic content in your projects.",
+  }
+}
