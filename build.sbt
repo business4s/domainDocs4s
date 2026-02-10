@@ -25,15 +25,15 @@ lazy val commonSettings = Seq(
   ),
   versionScheme := Some("semver-spec"),
   Test / tpolecatExcludeOptions += ScalacOptions.warnNonUnitStatement,
-  Test / fork := true // required for tasty collector to work
+  Test / fork   := true, // required for tasty collector to work
 )
 
 lazy val root = (project in file("."))
   .settings(
-    name := "domainDocs4s",
+    name           := "domainDocs4s",
     publish / skip := true,
   )
-  .aggregate(core , examples)
+  .aggregate(core, examples)
 
 lazy val core = (project in file("domainDocs4s-core"))
   .settings(commonSettings)
