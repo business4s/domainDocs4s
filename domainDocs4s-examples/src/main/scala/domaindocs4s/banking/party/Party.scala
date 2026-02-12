@@ -1,17 +1,10 @@
 package domaindocs4s.banking.party
 
-// start_annotations
-import domaindocs4s.banking.party.Party.IdentityDoc
-import domaindocs4s.banking.party.Party.IdentityDoc.IdentityDocType
 import domaindocs4s.domainDoc
 
-import java.time.LocalDate
 import java.util.UUID
 
-@domainDoc(
-  description = "Represents a party involved in the loan process, such as a customer, employee, or supplier",
-  relation = hasOneToMany,
-)
+@domainDoc("Represents a party involved in the loan process, such as a customer, employee, or supplier")
 final case class Party(
     id: Party.Id,
     firstName: Party.FirstName,
@@ -29,55 +22,16 @@ final case class Party(
 
 object Party {
 
-  @domainDoc(
-    description = "Unique technical identifier of a party.",
-    name = "PartyId",
-    relation = identifiesByOne,
-  )
+  @domainDoc("Unique technical identifier of a party.", "PartyId")
   final case class Id(value: UUID)
 
-  @domainDoc(
-    description = "First name of the party.",
-    relation = identifiesByOne,
-  )
+  @domainDoc("First name of the party.")
   final case class FirstName(value: String)
 
-  @domainDoc(
-    description = "Last name of the party.",
-    relation = identifiesByOne,
-  )
+  @domainDoc("Last name of the party.")
   final case class LastName(value: String)
 
-  @domainDoc(
-    description = "National personal identification number of the party.",
-    relation = identifiesByOne,
-  )
+  @domainDoc("National personal identification number of the party.")
   final case class PersonalNumber(value: String)
 
-  @domainDoc(
-    description = "Details from the customer's identity document, including number, type, and expiration date.",
-    name = "IdentityDocument",
-    relation = identifiesByMany,
-  )
-  final case class IdentityDoc(
-      number: String,
-      identityDocType: IdentityDocType,
-      expirationDate: LocalDate,
-  )
-
-  @domainDoc(name = "IdentityDocument")
-  object IdentityDoc {
-    @domainDoc(
-      description = "Category of the customer's identity document.",
-      name = "IdentityDocumentType",
-      relation = isTypeOf,
-    )
-    enum IdentityDocType {
-      case ID
-      case Passport
-      case ResidenceCard
-    }
-  }
-
 }
-// end_annotations

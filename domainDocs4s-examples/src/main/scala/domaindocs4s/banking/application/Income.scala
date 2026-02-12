@@ -3,6 +3,7 @@ package domaindocs4s.banking.application
 import domaindocs4s.banking.common.*
 import domaindocs4s.domainDoc
 
+// start_application
 @domainDoc("Customer's declared income, including monthly amount and source.")
 final case class Income(
     monthlyAmount: Money,
@@ -18,3 +19,4 @@ enum IncomeSource {
   case Pension
   case Other
 }
+// end_application

@@ -1,6 +1,5 @@
 package domaindocs4s.banking.party
 
-// start_annotations
 import domaindocs4s.domainDoc
 
 case class ContactDetails(
@@ -8,16 +7,10 @@ case class ContactDetails(
     emailAddress: ContactDetails.EmailAddress,
 )
 
-@domainDoc(
-  description = "Contact information for a party, including phone numbers, email addresses, or other communication channels.",
-  relation = hasOneToMany,
-)
+@domainDoc("Contact information for a party, including phone numbers, email addresses, or other communication channels.")
 object ContactDetails {
 
-  @domainDoc(
-    description = "Represents a phone number in the international format.",
-    relation = hasOneToManyOptional,
-  )
+  @domainDoc("Represents a phone number in the international format.")
   final case class PhoneNumber(prefix: Int, number: Int) {
 
     @domainDoc("Return PhoneNumber in a readable format.", "showPhoneNumber")
@@ -25,10 +18,7 @@ object ContactDetails {
 
   }
 
-  @domainDoc(
-    description = "Represents an email address as a local-part and a domain.",
-    relation = hasOneToManyOptional,
-  )
+  @domainDoc("Represents an email address as a local-part and a domain.")
   final case class EmailAddress(localPart: String, domain: String) {
 
     @domainDoc("Create an email address from a raw text.", "emailAddressFromText")
@@ -43,4 +33,3 @@ object ContactDetails {
   }
 
 }
-// end_annotations

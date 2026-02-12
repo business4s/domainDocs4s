@@ -1,32 +1,52 @@
 package domaindocs4s.banking
 
-import domaindocs4s.collector.{DomainDocsContext, TastyContext, TastyQueryCollector}
-import domaindocs4s.output.Writer
-import domaindocs4s.output.diagram.{Diagram, Direction}
+object Main extends App {
 
-object Main {
+  // start_collector
+  import domaindocs4s.collector.{DomainDocsContext, TastyContext, TastyQueryCollector}
 
-  def main(args: Array[String]): Unit = {
+  // Setup collector
+  given DomainDocsContext = TastyContext.fromCurrentProcess()
+  val collector           = new TastyQueryCollector
 
-    given DomainDocsContext = TastyContext.fromCurrentProcess()
-    val collector           = new TastyQueryCollector
+  // Collect documentation from your domain package
+  val docs = collector
+    .collectSymbols("domaindocs4s.banking.application")
+  // end_collector
 
-    val docs = collector
-      .collectSymbols("domaindocs4s.banking.party")
+  // start_glossary
+  import domaindocs4s.output.glossary.Glossary
 
-    // start_generate
-    val diagram =
-      Diagram
-        .build(                  // build diagram from collected documentation
-          docs = docs,           // documentation model
-          onlyDocumented = false, // includes first undocumented parent (often package name) when false (default)
-        )
-        .asMarkdown(                // render markdown
-          direction = Direction.LR, // diagram direction (since not all renderers support direction, the default is None)
-          withFields = true,        // includes class fields in diagram when true (default)
-        )
-    // end_generate
+  // Build glossary
+  val glossary = Glossary.build(docs)
+  // end_glossary
 
-    Writer(diagram, "diagram.md")
-  }
+  // start_md_glossary
+  import domaindocs4s.output.Writer
+
+  val glossaryMd = glossary.asMarkdown
+  Writer(glossaryMd, "glossary.md")
+  // end_md_glossary
+
+  // start_html_glossary
+  import domaindocs4s.output.Writer
+
+  val glossaryHtml = glossary.asHtml
+  Writer(glossaryHtml, "glossary.html")
+  // end_html_glossary
+
+  // start_diagram
+  // Build diagram and render it as markdown
+  import domaindocs4s.output.diagram.Diagram
+  import domaindocs4s.output.diagram.Direction
+  import domaindocs4s.output.Writer
+
+  val diagram =
+    Diagram
+      .build(docs)
+      .asMarkdown(Direction.TB)
+
+  // Write diagram to file
+  Writer(diagram, "diagram.md")
+  // end_diagram
 }

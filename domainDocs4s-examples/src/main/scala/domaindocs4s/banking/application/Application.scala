@@ -7,6 +7,7 @@ import domaindocs4s.domainDoc
 import java.time.LocalDateTime
 import java.util.UUID
 
+// start_application
 @domainDoc("Loan application submitted by the customer for processing.")
 final case class Application(
     id: Application.Id,
@@ -49,3 +50,4 @@ enum ApplicationStatus {
   case Rejected(reason: String)
   case Disbursed
 }
+// end_application

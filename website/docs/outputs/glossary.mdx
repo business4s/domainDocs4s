@@ -1,8 +1,65 @@
 ---
-sidebar_position: 1
+sidebar_position: 3
 sidebar_label: Glossary
 ---
 
-# Glossary
+# Glossary Output
 
-TODO
+The **Glossary** output format generates a tabular view of all documented domain symbols with their descriptions and parent relationships.
+This is ideal for creating quick reference documentation or domain dictionaries.
+
+## Overview
+
+A glossary presents domain concepts as a structured table with three columns:
+- **Parent**: The containing symbol (if any)
+- **Name**: The symbol name (or override)
+- **Description**: The documentation text
+
+## Usage
+
+### Setting up the Collector
+
+```scala file=./main/scala/domaindocs4s/banking/Main.scala start=start_collector end=end_collector
+```
+
+### Building a Glossary
+
+```scala file=./main/scala/domaindocs4s/banking/Main.scala start=start_glossary end=end_glossary
+```
+
+### Output Formats
+
+The glossary supports two output formats:
+
+#### Markdown
+
+```scala file=./main/scala/domaindocs4s/banking/Main.scala start=start_md_glossary end=end_md_glossary
+```
+
+Generates a Markdown table with proper column alignment.
+
+#### HTML
+
+```scala file=./main/scala/domaindocs4s/banking/Main.scala start=start_html_glossary end=end_html_glossary
+```
+
+Generates a semantic HTML table with `<table>`, `<thead>`, and `<tbody>` elements, suitable for embedding in web pages or styling with CSS.
+
+## Example
+
+Given this annotated domain:
+
+```scala file=./main/scala/domaindocs4s/banking/application/Application.scala start=start_application end=end_application
+```
+
+```scala file=./main/scala/domaindocs4s/banking/application/Income.scala start=start_application end=end_application
+```
+
+```scala file=./main/scala/domaindocs4s/banking/application/Liability.scala start=start_application end=end_application
+```
+
+The glossary will generate:
+
+import MDOutput from '../../../domainDocs4s-examples/src/test/resources/banking/glossary.md'
+
+<MDOutput/>
