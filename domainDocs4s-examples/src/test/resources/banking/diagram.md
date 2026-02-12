@@ -3,23 +3,19 @@
 erDiagram
 LiabilityType
 Application {
- approve Unit
  applicant Party
  submittedAt LocalDateTime
- submit Unit
- reject Unit
  id Id
- income List[Income]
+ income Option[Income]
  status ApplicationStatus
- liability List[Liability]
+ liabilities List[Liability]
  terms LoanTerms
- disburse Unit
 }
 Application ||--|| ApplicationId : has
 Application ||--o{ Liability : has
 Application ||--|| ApplicationStatus : has
 Application ||--|| LoanTerms : has
-Application ||--o{ Income : has
+Application ||--o| Income : has
 IncomeSource
 Liability {
  liabilityType LiabilityType
