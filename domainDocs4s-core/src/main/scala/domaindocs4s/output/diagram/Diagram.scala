@@ -65,13 +65,18 @@ object Diagram {
     termTypeSymbol(field)(using ctx).contains(symbol) || isTypeArgument(field, symbol)(using ctx)
   }
 
-  private def isTypeArgument(field: TermSymbol, symbol: Symbol)(using ctx: Context): Boolean = typeOfTerm(field) match {
-    case at: AppliedType =>
-      at.args.exists {
-        case tr: TypeRef => tr.optSymbol.contains(symbol)
-        case _           => false
-      }
-    case _               => false
+  private def isTypeArgument(field: TermSymbol, symbol: Symbol)(using ctx: Context): Boolean = {
+    def checkType(tp: Type): Boolean = tp match {
+      case at: AppliedType =>
+        at.args.exists {
+          case argType: Type => checkType(argType)
+          case _             => false
+        }
+      case tr: TypeRef     => tr.optSymbol.contains(symbol)
+      case _               => false
+    }
+
+    checkType(typeOfTerm(field))
   }
 
   private def determineRelationshipType(field: TermSymbol)(using ctx: Context): Association = {
