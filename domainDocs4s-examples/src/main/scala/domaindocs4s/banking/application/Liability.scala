@@ -3,6 +3,7 @@ package domaindocs4s.banking.application
 import domaindocs4s.banking.common.*
 import domaindocs4s.domainDoc
 
+// start_application
 @domainDoc("Customer's declared liability, including amount, duration, and type.")
 final case class Liability(
     amount: Money,
@@ -17,3 +18,4 @@ enum LiabilityType {
   case CreditCard
   case Leasing
 }
+// end_application

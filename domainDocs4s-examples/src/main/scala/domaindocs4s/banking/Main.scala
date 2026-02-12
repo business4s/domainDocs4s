@@ -1,27 +1,52 @@
 package domaindocs4s.banking
 
-import domaindocs4s.collector.{DomainDocsContext, TastyContext, TastyQueryCollector}
-import domaindocs4s.output.Glossary
+object Main extends App {
 
-object Main {
+  // start_collector
+  import domaindocs4s.collector.{DomainDocsContext, TastyContext, TastyQueryCollector}
 
-  def main(args: Array[String]): Unit = {
+  // Setup collector
+  given DomainDocsContext = TastyContext.fromCurrentProcess()
+  val collector           = new TastyQueryCollector
 
-    // 1) Setup collector
-    given DomainDocsContext = TastyContext.fromCurrentProcess()
-    val collector           = new TastyQueryCollector
+  // Collect documentation from your domain package
+  val docs = collector
+    .collectSymbols("domaindocs4s.banking.application")
+  // end_collector
 
-    // 2) Collect documentation model
-    val docs = collector
-      .collectSymbols("domaindocs4s.banking")
+  // start_glossary
+  import domaindocs4s.output.glossary.Glossary
 
-    // 3) Generate glossary markdown (or another supported output and format)
-    val glossary =
-      Glossary
-        .build(docs) // build glossary
-        .asMarkdown  // render markdown
+  // Build glossary
+  val glossary = Glossary.build(docs)
+  // end_glossary
 
-    // 4) Write the result to file
-    Glossary.write(glossary, "glossary.md")
-  }
+  // start_md_glossary
+  import domaindocs4s.output.Writer
+
+  val glossaryMd = glossary.asMarkdown
+  Writer(glossaryMd, "glossary.md")
+  // end_md_glossary
+
+  // start_html_glossary
+  import domaindocs4s.output.Writer
+
+  val glossaryHtml = glossary.asHtml
+  Writer(glossaryHtml, "glossary.html")
+  // end_html_glossary
+
+  // start_diagram
+  // Build diagram and render it as markdown
+  import domaindocs4s.output.diagram.Diagram
+  import domaindocs4s.output.diagram.Direction
+  import domaindocs4s.output.Writer
+
+  val diagram =
+    Diagram
+      .build(docs)
+      .asMarkdown(Direction.TB)
+
+  // Write diagram to file
+  Writer(diagram, "diagram.md")
+  // end_diagram
 }

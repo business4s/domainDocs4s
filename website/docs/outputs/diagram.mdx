@@ -1,0 +1,77 @@
+---
+sidebar_position: 4
+sidebar_label: ER Diagram
+---
+
+# Entity Relationship Diagram Output
+
+The **Diagram** output format generates an [Entity Relationship Diagram (ERD)](https://mermaid.js.org/syntax/entityRelationshipDiagram.html) using Mermaid syntax.
+This visualizes your domain model's relationships, showing how classes connect through their fields and the cardinality of those relationships.
+
+## Overview
+
+An ERD diagram shows:
+- **Classes**: Domain classes with their fields and types
+- **Relationships**: Connections between classes based on field types
+- **Cardinality**: Whether relationships are one-to-one, one-to-many, etc.
+
+This format is particularly useful for:
+- Visualizing domain model structure
+- Understanding entity relationships at a glance
+- Documentation for technical and non-technical stakeholders
+- Domain-driven design discussions
+
+## Usage
+
+### Setting up the Collector
+
+```scala file=./main/scala/domaindocs4s/banking/Main.scala start=start_collector end=end_collector
+```
+
+### Building and Rendering a Diagram
+
+The diagram is rendered as Mermaid syntax embedded in a Markdown code block:
+
+```scala file=./main/scala/domaindocs4s/banking/Main.scala start=start_diagram end=end_diagram
+```
+
+### Direction Options
+
+Control the layout direction of your diagram:
+
+- `Direction.None` (default): No explicit direction
+- `Direction.TB`: Top to Bottom
+- `Direction.BT`: Bottom to Top
+- `Direction.LR`: Left to Right
+- `Direction.RL`: Right to Left
+
+## Relationship Types
+
+The diagram automatically determines relationship cardinality based on field types:
+
+| Field Type                | Relationship | Symbol       | Example                                      |
+|---------------------------|------------- |--------------|----------------------------------------------|
+| Direct reference          | Exactly One  | `\|\|--\|\|` | `case class Order(customer: Customer)`       |
+| `Option[T]`               | Zero or One  | `\|\|--o\|`  | `case class Order(invoice: Option[Invoice])` |
+| `List[T]`, `Seq[T]`, etc. | Zero or More | `\|\|--o{`   | `case class Order(items: List[OrderItem])`   |
+
+## Example
+
+Given this annotated domain:
+
+```scala file=./main/scala/domaindocs4s/banking/application/Application.scala start=start_application end=end_application
+```
+
+```scala file=./main/scala/domaindocs4s/banking/application/Income.scala start=start_application end=end_application
+```
+
+```scala file=./main/scala/domaindocs4s/banking/application/Liability.scala start=start_application end=end_application
+```
+
+The diagram will generate Mermaid ERD:
+
+import MDOutput from '../../../domainDocs4s-examples/src/test/resources/banking/diagram.md'
+
+<MDOutput/>
+
+The generated Mermaid diagram can be rendered in any tool that supports Mermaid syntax, including GitHub, GitLab, Docusaurus, and many documentation platforms.

@@ -1,4 +1,4 @@
-package domaindocs4s.output
+package domaindocs4s.output.glossary
 
 import scala.math.Ordering.Implicits.given
 

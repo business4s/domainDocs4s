@@ -2,10 +2,6 @@
 |-----------------|----------------------|-------------------------------------------------------------------------------------------------------------|
 |                 | Address              | Address details declared by the customer.                                                                   |
 |                 | Application          | Loan application submitted by the customer for processing.                                                  |
-| Application     | approve              | Approves the loan application after successful review.                                                      |
-| Application     | disburse             | Disburses the approved loan amount to the customer.                                                         |
-| Application     | reject               | Rejects the loan application, preventing further processing.                                                |
-| Application     | submit               | Marks the loan application as submitted by the customer.                                                    |
 |                 | ApplicationId        | Unique technical identifier of a loan application.                                                          |
 |                 | ApplicationStatus    | Current status of the loan application.                                                                     |
 |                 | City                 | City of the customer's address.                                                                             |

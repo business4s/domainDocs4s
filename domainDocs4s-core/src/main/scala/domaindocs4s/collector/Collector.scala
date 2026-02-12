@@ -3,12 +3,20 @@ package domaindocs4s.collector
 import domaindocs4s.errors.DomainDocsArgError
 import tastyquery.Contexts.Context
 import tastyquery.Symbols
-import tastyquery.Symbols.{DeclaringSymbol, Symbol, TermSymbol}
-import tastyquery.Trees._
+import tastyquery.Symbols.{ClassSymbol, DeclaringSymbol, Symbol, TermSymbol}
+import tastyquery.Trees.*
 
 import scala.collection.mutable.ListBuffer
 
-case class DocumentedSymbol(nameOverride: Option[String], description: Option[String], symbol: Symbol, path: Vector[DeclaringSymbol])
+case class DocumentedSymbol(
+    nameOverride: Option[String],
+    description: Option[String],
+    symbol: Symbol,
+    path: Vector[DeclaringSymbol],
+    declarations: Vector[TermSymbol],
+) {
+  def name: String = nameOverride.getOrElse(symbol.name.toString)
+}
 
 case class DocumentationTree(symbol: DocumentedSymbol, children: List[DocumentationTree])
 
@@ -66,6 +74,16 @@ class TastyQueryCollector(using ctx: Context) extends Collector {
       case _                              => tree
     }
 
+    def getDeclarations(symbol: Symbol): Vector[TermSymbol] = {
+      symbol match {
+        case sym: ClassSymbol =>
+          sym.declarations.collect {
+            case t: TermSymbol if !t.isSynthetic && t.name.toString != "<init>" => t
+          }.toVector
+        case _                => Vector()
+      }
+    }
+
     symbol match {
       case ts: TermSymbol if ts.isModuleVal =>
         None
@@ -86,6 +104,7 @@ class TastyQueryCollector(using ctx: Context) extends Collector {
               description = getConstArg(0, "description"),
               symbol = symbol,
               path = path,
+              declarations = getDeclarations(symbol),
             )
           })
     }

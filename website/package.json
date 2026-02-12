@@ -26,6 +26,7 @@
   },
   "devDependencies": {
     "@docusaurus/module-type-aliases": "^3.7.0",
+    "@docusaurus/theme-mermaid": "^3.9.2",
     "@docusaurus/tsconfig": "^3.7.0",
     "@docusaurus/types": "^3.7.0",
     "remark-code-snippets": "^1.1.0",

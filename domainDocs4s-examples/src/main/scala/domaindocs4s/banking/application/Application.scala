@@ -7,30 +7,17 @@ import domaindocs4s.domainDoc
 import java.time.LocalDateTime
 import java.util.UUID
 
+// start_application
 @domainDoc("Loan application submitted by the customer for processing.")
 final case class Application(
     id: Application.Id,
     applicant: Party,
-    income: List[Income],
-    liability: List[Liability],
+    income: Option[Income],
+    liabilities: List[Liability],
     terms: Application.LoanTerms,
     status: ApplicationStatus,
     submittedAt: LocalDateTime,
-) {
-
-  @domainDoc("Marks the loan application as submitted by the customer.")
-  def submit(): Unit = ()
-
-  @domainDoc("Approves the loan application after successful review.")
-  def approve(): Unit = ()
-
-  @domainDoc("Rejects the loan application, preventing further processing.")
-  def reject(): Unit = ()
-
-  @domainDoc("Disburses the approved loan amount to the customer.")
-  def disburse(): Unit = ()
-
-}
+)
 
 object Application {
 
@@ -49,3 +36,4 @@ enum ApplicationStatus {
   case Rejected(reason: String)
   case Disbursed
 }
+// end_application
