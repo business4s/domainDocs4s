@@ -3,7 +3,7 @@ import React from 'react';
 import CodeBlock from '@theme/CodeBlock';
 
 interface SbtDependencyProps {
-    moduleName: "domaindocs4s-collector" | "domaindocs4s-api";
+    moduleName: "domaindocs4s-core";
 }
 
 const SbtDependency: React.FC<SbtDependencyProps> = ({moduleName}) => {

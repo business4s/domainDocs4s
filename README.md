@@ -1,63 +1,10 @@
 # DomainDocs4s
 
-This repository contains experiments leading to the DomainDocs4s design. 
-See the [article](https://medium.com/@w.pitula/in-validating-library-design-domaindocs4s-ddd-reflection-classpath-scanning-9d86449859cf) for the context.  
+![Discord](https://img.shields.io/discord/1240565362601230367?style=flat-square&logo=discord&link=https%3A%2F%2Fbit.ly%2Fbusiness4s-discord)
+![Release](https://img.shields.io/badge/release-not--released-lightgrey?style=flat-square)
 
+**DomainDocs4s** is a library that helps in generating human-readable domain documentation directly from Scala code by collecting
+annotated concepts from TASTy and transforming them into structured, business-friendly output.
 
-## Collecting meta
-
-<table>
-  <tr>
-    <td rowspan="2"></td>
-    <td colspan="4">Can be attached to</td>
-    <td colspan="3">Can be extracted with</td>
-  </tr>
-  <tr>
-    <th>Packages</th>
-    <th>Classes, traits, objects</th>
-    <th>Methods, fields</th>
-    <th>Type declarations</th>
-    <th>Scala compile-time reflection</th>
-    <th>Java reflection</th>
-    <th>Scala runtime reflection</th>
-  </tr>
-  <tr>
-    <th>Scala Annotation</th>
-    <td>❌ <sup>[1]</sup></td>
-    <td>✅</td>
-    <td>✅</td>
-    <td>✅</td>
-    <td>✅</td>
-    <td>❌</td>
-    <td rowspan="4">❌ <sup>[2]</sup></td>
-  </tr>
-  <tr>
-    <th>Java Annotation</th>
-    <td>✅ <sup>[3]</sup></td>
-    <td>✅</td>
-    <td>✅</td>
-    <td>❌</td>
-    <td>✅</td>
-    <td>✅</td>
-  </tr>
-  <tr>
-    <th>Trait</th>
-    <td>✅</td>
-    <td>✅</td>
-    <td>❌</td>
-    <td>~ <sup>[4]</sup></td>
-    <td>✅</td>
-    <td>✅</td>
-  </tr>
-  <tr>
-    <th>ScalaDoc</th>
-    <td>✅</td>
-    <td>✅</td>
-    <td>✅</td>
-    <td>✅</td>
-    <td>✅</td>
-    <td>❌</td>
-  </tr>
-</table>
-
+See the [**Website**](https://business4s.github.io/domainDocs4s/) for details and join our [**Discord**](https://bit.ly/business4s-discord) for discussions.
 
