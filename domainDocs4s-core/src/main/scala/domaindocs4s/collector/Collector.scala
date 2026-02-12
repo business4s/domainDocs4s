@@ -21,8 +21,8 @@ case class Documentation(symbols: List[DocumentedSymbol]) {
       // TODO not optimal impl
       parent <- child.path.flatMap(pathElem => symbols.find(_.symbol == pathElem)).lastOption
     } builder(parent).append(child)
-    val roots                                             = builder.filter(x => !builder.exists(_._2.contains(x))).keys
-    def buildTree(s: DocumentedSymbol): DocumentationTree = {
+    val roots                                                        = builder.filter(x => !builder.exists(_._2.contains(x))).keys
+    def buildTree(s: DocumentedSymbol): DocumentationTree            = {
       DocumentationTree(s, builder(s).map(buildTree).toList)
     }
     roots.map(buildTree).toList
