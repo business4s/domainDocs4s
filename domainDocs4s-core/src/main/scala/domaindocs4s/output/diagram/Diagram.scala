@@ -6,8 +6,6 @@ import tastyquery.Symbols.{Symbol, TermSymbol}
 import tastyquery.Trees.{DefDef, ValDef}
 import tastyquery.Types.{AppliedType, Type, TypeRef}
 
-import java.nio.file.{Files, Path}
-
 case class Diagram(entities: List[Entity]) {
 
   def asMarkdown(direction: Direction = Direction.None): String = {
@@ -100,10 +98,4 @@ object Diagram {
 
   private def shortTypeName(tp: Type): String =
     tp.showBasic.replaceAll("\\b(?:[A-Za-z_][$\\w]*\\.)+([A-Za-z_][$\\w]*)\\b", "$1")
-
-  def write(docs: String, path: String): Unit = {
-    val finalPath = Path.of(path)
-    Files.write(finalPath, docs.getBytes)
-    println(s"File saved in $finalPath")
-  }
 }

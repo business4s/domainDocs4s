@@ -26,5 +26,7 @@ case class Entity(
   }
 
   private def escapeMermaidSpecialChars(text: String): String =
-    text.replace("\"", "\\\"").replace("$", "")
+    text
+      .replace("\"", "\\\"") // Escape double quotes
+      .replace("$", "")      // Remove dollar signs to prevent Mermaid parsing issues
 }
