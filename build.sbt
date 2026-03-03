@@ -50,6 +50,7 @@ lazy val examples = (project in file("domainDocs4s-examples"))
     name              := "domainDocs4s-examples",
     libraryDependencies ++= Seq(
       "ch.epfl.scala" %% "tasty-query" % "1.4.0",
+      "org.tpolecat"  %% "doobie-core" % "1.0.0-RC6",
     ),
     semanticdbEnabled := true,
   )
