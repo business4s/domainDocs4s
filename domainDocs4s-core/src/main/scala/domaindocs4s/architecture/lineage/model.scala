@@ -2,6 +2,7 @@ package domaindocs4s.architecture.lineage
 
 import tastyquery.Contexts.Context
 import tastyquery.Symbols.{ClassSymbol, PackageSymbol}
+import tastyquery.Types.*
 
 private[lineage] object TastyUtils {
   def userClasses(pkg: PackageSymbol)(using Context): List[ClassSymbol] =
@@ -9,9 +10,35 @@ private[lineage] object TastyUtils {
       case cls: ClassSymbol if isUserClass(cls) => cls
     }
 
+  /** Get module classes (Scala objects) from a package. */
+  def moduleClasses(pkg: PackageSymbol)(using Context): List[ClassSymbol] =
+    pkg.declarations.collect {
+      case cls: ClassSymbol if isModuleClass(cls) => cls
+    }
+
   private def isUserClass(cls: ClassSymbol): Boolean = {
     val name = cls.name.toString
     !name.endsWith("$") && !name.startsWith("<")
+  }
+
+  private def isModuleClass(cls: ClassSymbol): Boolean = {
+    val name = cls.name.toString
+    name.endsWith("$") && !name.startsWith("<")
+  }
+
+  /** Extract the underlying TypeRef from a Type, unwrapping AppliedType if needed. */
+  def extractTypeRef(tpe: TypeOrMethodic): Option[TypeRef] = tpe match {
+    case tr: TypeRef                                       => Some(tr)
+    case at: AppliedType if at.tycon.isInstanceOf[TypeRef] => Some(at.tycon.asInstanceOf[TypeRef])
+    case _                                                 => None
+  }
+
+  /** Extract type name from a Type, unwrapping AppliedType and AndType. */
+  def extractTypeName(tpe: TypeOrMethodic): Option[String] = tpe match {
+    case tr: TypeRef     => Some(tr.name.toString)
+    case at: AppliedType => extractTypeRef(at).map(_.name.toString)
+    case at: AndType     => extractTypeName(at.first).orElse(extractTypeName(at.second))
+    case _               => None
   }
 }
 

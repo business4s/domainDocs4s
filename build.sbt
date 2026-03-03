@@ -51,7 +51,9 @@ lazy val examples = (project in file("domainDocs4s-examples"))
   .settings(
     name              := "domainDocs4s-examples",
     libraryDependencies ++= Seq(
-      "org.tpolecat"  %% "doobie-core" % "1.0.0-RC6",
+      "org.tpolecat"    %% "doobie-core"              % "1.0.0-RC6",
+      "org.apache.pekko" %% "pekko-persistence-typed" % "1.4.0",
+      "org.apache.pekko" %% "pekko-persistence-query" % "1.4.0",
     ),
     semanticdbEnabled := true,
     // suppress warnings from protobuf/scalapb generated code

@@ -87,6 +87,7 @@ object MermaidRenderer {
     sb.append("  classDef dbNode fill:#d1ecf1,stroke:#17a2b8\n")
     sb.append("  classDef grpcNode fill:#e8daef,stroke:#8e44ad\n")
     sb.append("  classDef kafkaNode fill:#d5f5e3,stroke:#27ae60\n")
+    sb.append("  classDef journalNode fill:#fce4ec,stroke:#e91e63\n")
 
     for (m <- result.allMethods if m.effectiveAccess != DataAccessType.Pure) {
       val cls = m.effectiveAccess match {
@@ -99,12 +100,7 @@ object MermaidRenderer {
     }
 
     for ((_, entries) <- integrationsByGroup; (target, itype, _) <- entries) {
-      val style = itype match {
-        case "grpc"  => "grpcNode"
-        case "kafka" => "kafkaNode"
-        case _       => "dbNode"
-      }
-      sb.append(s"  class ${targetNodeId(target)} $style\n")
+      sb.append(s"  class ${targetNodeId(target)} ${integrationStyle(itype)}\n")
     }
 
     sb.toString()
@@ -257,6 +253,7 @@ object MermaidRenderer {
     sb.append("  classDef dbNode fill:#d1ecf1,stroke:#17a2b8\n")
     sb.append("  classDef grpcNode fill:#e8daef,stroke:#8e44ad\n")
     sb.append("  classDef kafkaNode fill:#d5f5e3,stroke:#27ae60\n")
+    sb.append("  classDef journalNode fill:#fce4ec,stroke:#e91e63\n")
 
     for (cls <- visibleClasses) {
       val style = cls.effectiveAccess match {
@@ -319,9 +316,10 @@ object MermaidRenderer {
   /** Render a single integration target node into the StringBuilder. */
   private def renderTargetNode(sb: StringBuilder, id: String, label: String, itype: String, indent: String): Unit =
     itype match {
-      case "grpc"  => sb.append(s"""$indent$id{{"${label}\n[$itype]"}}\n""")
-      case "kafka" => sb.append(s"""$indent$id(["${label}\n[$itype]"])\n""")
-      case _       => sb.append(s"""$indent$id[("${label}\n[$itype]")]\n""")
+      case "grpc"          => sb.append(s"""$indent$id{{"${label}\n[$itype]"}}\n""")
+      case "kafka"         => sb.append(s"""$indent$id(["${label}\n[$itype]"])\n""")
+      case "pekko-journal" => sb.append(s"""$indent$id[["${label}\n[$itype]"]]\n""")
+      case _               => sb.append(s"""$indent$id[("${label}\n[$itype]")]\n""")
     }
 
   private def renderEdge(sb: StringBuilder, from: String, to: String, accessType: DataAccessType, dataFlow: Boolean): Unit =
@@ -334,9 +332,10 @@ object MermaidRenderer {
     }
 
   private def integrationStyle(itype: String): String = itype match {
-    case "grpc"  => "grpcNode"
-    case "kafka" => "kafkaNode"
-    case _       => "dbNode"
+    case "grpc"          => "grpcNode"
+    case "kafka"         => "kafkaNode"
+    case "pekko-journal" => "journalNode"
+    case _               => "dbNode"
   }
 
   def toViewUrl(mermaidCode: String): String = {

@@ -188,6 +188,56 @@ class TastyLineageScannerTest extends AnyFreeSpec {
     }
   }
 
+  "TastyPekkoJournalScanner" - {
+
+    val pekkoPkg = "domaindocs4s.architecture.lineage.example.pekko"
+    val pekkoIntegrations = new TastyPekkoJournalScanner().scan(pekkoPkg)
+
+    "detects classic PersistentActor as Write to journal" in {
+      val classicWrites = pekkoIntegrations.filter { di =>
+        di.method.className == "OrderActor" && di.accessType == DataAccessType.Write
+      }
+      classicWrites should have size 1
+      classicWrites.head.target shouldBe "journal"
+      classicWrites.head.evidence shouldBe "extends PersistentActor"
+    }
+
+    "detects typed EventSourcedBehavior as Write to journal" in {
+      val typedWrites = pekkoIntegrations.filter { di =>
+        di.method.className == "AccountBehavior" && di.accessType == DataAccessType.Write
+      }
+      typedWrites should have size 1
+      typedWrites.head.target shouldBe "journal"
+      typedWrites.head.evidence shouldBe "calls EventSourcedBehavior"
+    }
+
+    "detects journal query usage as Read from journal" in {
+      val reads = pekkoIntegrations.filter(_.accessType == DataAccessType.Read)
+      reads should have size 1
+      reads.head.method.className shouldBe "EventProjection"
+      reads.head.method.methodName shouldBe "streamByTag"
+      reads.head.target shouldBe "journal"
+    }
+
+    "all pekko integrations have integrationType pekko-journal" in {
+      pekkoIntegrations.foreach(_.integrationType shouldBe "pekko-journal")
+    }
+
+    "all pekko integrations have group Journal" in {
+      pekkoIntegrations.foreach(_.group shouldBe Some("Journal"))
+    }
+
+    "composes with LineageBuilder" in {
+      val pekkoCallGraph = new TastyCallGraphExtractor().extract(pekkoPkg)
+      val pekkoResult = LineageBuilder.build(pekkoCallGraph, pekkoIntegrations)
+
+      pekkoResult.integrations should have size pekkoIntegrations.size
+      val output = pekkoResult.prettyPrint
+      println(output)
+      output should include("pekko-journal")
+    }
+  }
+
   "MermaidRenderer class-level" - {
 
     // Build a result that includes kafka (manual) integrations, matching RenderLineage

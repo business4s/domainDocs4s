@@ -20,6 +20,9 @@ object RenderLineage {
     val doobieIntegrations = new TastyDoobieScanner().scan(pkg)
     val grpcIntegrations   = new TastyFs2GrpcScanner().scan(pkg)
 
+    val pekkoPkg = "domaindocs4s.architecture.lineage.example.pekko"
+    val pekkoIntegrations  = new TastyPekkoJournalScanner().scan(pekkoPkg)
+
     val manualIntegrations = ManualScanner.builder
       .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
       .build
@@ -27,8 +30,10 @@ object RenderLineage {
     val enrichment = IntegrationGroupConfig.builder
       .group[UserRepo]("user-db")
       .build
-    val allIntegrations = enrichment.enrich(doobieIntegrations ++ grpcIntegrations ++ manualIntegrations)
-    val result          = LineageBuilder.build(callGraph, allIntegrations)
+    val allIntegrations = enrichment.enrich(
+      doobieIntegrations ++ grpcIntegrations ++ manualIntegrations ++ pekkoIntegrations,
+    )
+    val result = LineageBuilder.build(callGraph, allIntegrations)
 
     println("=== Access direction ===")
     println(MermaidRenderer.toViewUrl(MermaidRenderer.render(result)))

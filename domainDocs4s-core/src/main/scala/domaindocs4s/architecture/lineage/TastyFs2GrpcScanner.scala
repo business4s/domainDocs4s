@@ -66,12 +66,8 @@ class TastyFs2GrpcScanner(using ctx: Context) {
     }
   }
 
-  /** Extract the underlying TypeRef from a Type, unwrapping AppliedType if needed. */
-  private def extractTypeRef(tpe: TypeOrMethodic): Option[TypeRef] = tpe match {
-    case tr: TypeRef                                       => Some(tr)
-    case at: AppliedType if at.tycon.isInstanceOf[TypeRef] => Some(at.tycon.asInstanceOf[TypeRef])
-    case _                                                 => None
-  }
+  private def extractTypeRef(tpe: TypeOrMethodic): Option[TypeRef] =
+    TastyUtils.extractTypeRef(tpe)
 
   /** Client: val fields of type *Fs2Grpc → Read integrations for each call to those fields. */
   private def scanClient(cls: ClassSymbol): List[DiscoveredIntegration] = {
