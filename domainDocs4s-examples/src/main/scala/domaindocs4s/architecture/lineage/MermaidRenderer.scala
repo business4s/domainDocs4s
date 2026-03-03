@@ -17,10 +17,8 @@ object MermaidRenderer {
     val sb = new StringBuilder
     sb.append("flowchart LR\n")
 
-    // Collect integration targets (DB tables, etc.)
-    val targets = result.integrations.map(i => (i.target, i.integrationType)).distinct
-
     // Class subgraphs with methods
+    val classNames = result.classes.map(_.name).toSet
     for (cls <- result.classes) {
       val methods = cls.methods.filter(m => m.calls.nonEmpty || m.integrations.nonEmpty || isCalledByOthers(m.ref, result))
       if (methods.nonEmpty) {
@@ -35,13 +33,27 @@ object MermaidRenderer {
 
     sb.append("\n")
 
-    // Integration target nodes — shape varies by integration type
-    for ((target, itype) <- targets) {
-      val id = targetNodeId(target)
-      itype match {
-        case "grpc" => sb.append(s"""  $id{{"${target}\n[$itype]"}}\n""") // hexagon for gRPC
-        case _      => sb.append(s"""  $id[("${target}\n[$itype]")]\n""") // cylinder for DB
+    // Integration target nodes — grouped by subgraph when group is set
+    val integrationsByGroup = result.integrations
+      .map(i => (i.target, i.integrationType, i.group))
+      .distinct
+      .groupBy(_._3)
+
+    // Grouped targets in subgraphs
+    for (case (Some(groupName), entries) <- integrationsByGroup) {
+      // Disambiguate from class subgraphs that share the same name
+      val safeId = s"ext_group_${groupName.replaceAll("[^a-zA-Z0-9_]", "_")}"
+      val label = if (classNames.contains(groupName)) s"$groupName (ext)" else groupName
+      sb.append(s"""  subgraph $safeId ["$label"]\n""")
+      for ((target, itype, _) <- entries) {
+        renderTargetNode(sb, targetNodeId(target), target.split("/").last, itype, indent = "    ")
       }
+      sb.append("  end\n")
+    }
+
+    // Ungrouped targets as standalone nodes
+    for ((target, itype, _) <- integrationsByGroup.getOrElse(None, Nil)) {
+      renderTargetNode(sb, targetNodeId(target), target, itype, indent = "  ")
     }
 
     sb.append("\n")
@@ -85,13 +97,20 @@ object MermaidRenderer {
       if (cls.nonEmpty) sb.append(s"  class ${nodeId(m.ref)} $cls\n")
     }
 
-    for ((target, itype) <- targets) {
+    for ((_, entries) <- integrationsByGroup; (target, itype, _) <- entries) {
       val style = if (itype == "grpc") "grpcNode" else "dbNode"
       sb.append(s"  class ${targetNodeId(target)} $style\n")
     }
 
     sb.toString()
   }
+
+  /** Render a single integration target node into the StringBuilder. */
+  private def renderTargetNode(sb: StringBuilder, id: String, label: String, itype: String, indent: String): Unit =
+    itype match {
+      case "grpc" => sb.append(s"""$indent$id{{"${label}\n[$itype]"}}\n""")
+      case _      => sb.append(s"""$indent$id[("${label}\n[$itype]")]\n""")
+    }
 
   def toViewUrl(mermaidCode: String): String = {
     val json    = s"""{"code":${escapeJsonString(mermaidCode)}}"""

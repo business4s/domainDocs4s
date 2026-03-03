@@ -79,7 +79,30 @@ case class DiscoveredIntegration(
     integrationType: String, // scanner name: "doobie", "kafka", "grpc", ...
     target: String,          // what was accessed: table name, topic, endpoint, ...
     evidence: String,        // source evidence: SQL query, config key, ...
+    group: Option[String] = None, // logical group: service name, database, ...
 )
+
+case class IntegrationGroupConfig(
+    classToGroup: Map[String, String] = Map.empty,
+) {
+  def enrich(integrations: List[DiscoveredIntegration]): List[DiscoveredIntegration] =
+    integrations.map { di =>
+      if (di.group.isDefined) di
+      else classToGroup.get(di.method.className).fold(di)(g => di.copy(group = Some(g)))
+    }
+}
+
+object IntegrationGroupConfig {
+  class Builder {
+    private val entries = scala.collection.mutable.Map.empty[String, String]
+    def group[T: reflect.ClassTag](groupName: String): Builder = {
+      entries += (reflect.classTag[T].runtimeClass.getSimpleName.stripSuffix("$") -> groupName)
+      this
+    }
+    def build: IntegrationGroupConfig = IntegrationGroupConfig(entries.toMap)
+  }
+  def builder: Builder = new Builder
+}
 
 // ── Phase 2: Lineage builder output ──────────────────────────────────────────
 

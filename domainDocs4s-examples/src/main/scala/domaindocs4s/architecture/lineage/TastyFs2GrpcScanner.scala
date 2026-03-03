@@ -60,6 +60,7 @@ class TastyFs2GrpcScanner(using ctx: Context) {
             integrationType = "grpc",
             target = s"$serviceName/$methodName",
             evidence = s"implements $parentName",
+            group = Some(serviceName),
           )
       }
     }
@@ -93,6 +94,7 @@ class TastyFs2GrpcScanner(using ctx: Context) {
                   integrationType = "grpc",
                   target = s"${call.serviceName}/${call.rpcMethod}",
                   evidence = s"calls ${call.fieldName}.${call.rpcMethod}",
+                  group = Some(call.serviceName),
                 )
               }
             }

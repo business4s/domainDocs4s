@@ -1,6 +1,7 @@
 package domaindocs4s.lineage
 
 import domaindocs4s.architecture.lineage.*
+import domaindocs4s.architecture.lineage.example.UserRepo
 import domaindocs4s.collector.TastyContext
 import org.scalatest.freespec.AnyFreeSpec
 import org.scalatest.matchers.should.Matchers.*
@@ -18,7 +19,12 @@ class TastyLineageScannerTest extends AnyFreeSpec {
   // Phase 1: scan integrations
   private val doobieIntegrations = new TastyDoobieScanner().scan(pkg)
   private val grpcIntegrations = new TastyFs2GrpcScanner().scan(pkg)
-  private val integrations = doobieIntegrations ++ grpcIntegrations
+
+  // Enrichment: assign groups
+  private val enrichment = IntegrationGroupConfig.builder
+    .group[UserRepo]("user-db")
+    .build
+  private val integrations = enrichment.enrich(doobieIntegrations ++ grpcIntegrations)
 
   // Phase 2: build lineage
   private val result = LineageBuilder.build(callGraph, integrations)
@@ -49,6 +55,12 @@ class TastyLineageScannerTest extends AnyFreeSpec {
 
       reads.map(_.method.methodName).toSet should contain allOf ("getBalance", "getTransactions")
       writes.map(_.method.methodName).toSet should contain allOf ("insertTransaction", "updateBalance")
+    }
+
+    "enriched doobie integrations have group user-db" in {
+      val enrichedDoobie = integrations.filter(_.integrationType == "doobie")
+      enrichedDoobie should not be empty
+      enrichedDoobie.foreach(_.group shouldBe Some("user-db"))
     }
   }
 
@@ -90,6 +102,16 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       }
       depositClientCalls should have size 1
       depositClientCalls.head.target shouldBe "RateService/getRate"
+    }
+
+    "gRPC integrations have group set to service name" in {
+      val userServiceIntegrations = grpcIntegrations.filter(_.target.startsWith("UserService/"))
+      userServiceIntegrations should not be empty
+      userServiceIntegrations.foreach(_.group shouldBe Some("UserService"))
+
+      val rateServiceIntegrations = grpcIntegrations.filter(_.target.startsWith("RateService/"))
+      rateServiceIntegrations should not be empty
+      rateServiceIntegrations.foreach(_.group shouldBe Some("RateService"))
     }
   }
 
