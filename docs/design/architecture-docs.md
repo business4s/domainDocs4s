@@ -41,6 +41,7 @@ interactive views.
 | Cytoscape.js renderer                | Design only | Section 10.3 below                                            |
 | Other TASTy scanners (Slick etc.)    | Design only | Section 7 below                                               |
 | Backstage integration                | Research    | Section 13 below                                              |
+| Parity roadmap (real-world coverage) | Planned     | Section 15 below                                              |
 
 All lineage infrastructure is in `domainDocs4s-core/src/main/scala/domaindocs4s/architecture/lineage/`.
 Example classes and tests are in `domainDocs4s-examples/`.
@@ -635,7 +636,7 @@ trait CodeScanner {
 }
 ```
 
-Implemented and planned scanners:
+Implemented and planned scanners (see §15.5 for the full revised table including Pekko ecosystem scanners):
 
 | Scanner                | Detects                      | Status      |
 |------------------------|------------------------------|-------------|
@@ -660,7 +661,7 @@ trait ResourceScanner {
 }
 ```
 
-Planned: `FlywayMigrationScanner`, `HoconKafkaTopicScanner`.
+Planned: `FlywayMigrationScanner`, `HoconKafkaTopicScanner`. See §15.3.5 for detailed Flyway scanner design.
 
 ---
 
@@ -963,3 +964,309 @@ Run tests (37 tests):
 ```
 sbt "examples / Test / testOnly domaindocs4s.lineage.TastyLineageScannerTest"
 ```
+
+---
+
+## 15. Roadmap: Parity with Manual Architecture Diagrams
+
+### 15.1 Motivation
+
+A real-world event-sourced Scala service was used as a reference for assessing scanner coverage. The service
+has a manually written architecture diagram (~200 lines) declaring 38 nodes and 47 edges describing the full
+data pipeline: gRPC API → Pekko persistent actors → event journal → projections (FS2 + Slick) → DB tables /
+Kafka topics / S3 / downstream systems.
+
+The goal is to reach **result parity**: the automatic lineage scanner should produce a comparable (or better)
+diagram without requiring manual declaration. This section tracks what's missing and in what order to build it.
+
+### 15.2 Gap Analysis
+
+Based on concrete investigation of the reference service, here is what the scanner can and cannot currently detect:
+
+#### What works today
+
+| Diagram element                                                     | Count              | Detection mechanism     |
+|---------------------------------------------------------------------|--------------------|-------------------------|
+| gRPC server endpoints                                               | 1 node             | fs2-grpc server scanner |
+| gRPC client calls (injected fs2-grpc fields)                        | 1 node, 1 edge     | fs2-grpc client scanner |
+| Doobie DB reads/writes (FS2-based projections + their repositories) | ~6 nodes, ~6 edges | Doobie scanner          |
+| Class-to-class call graph (API → actors → core logic)               | ~5 edges           | Call graph extractor    |
+| Class discovery (all scanned classes appear as nodes)               | ~20 nodes          | Call graph extractor    |
+
+#### What's missing
+
+| Gap                             | Nodes                | Edges      | Root cause                                                                                                                         | Solution                                                     |
+|---------------------------------|----------------------|------------|------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------|
+| **Pekko persistent actors**     | 1 (journal)          | 1 (write)  | Core actor extends `PersistentActor` — uses `persist()` / `persistAsync()`, not doobie                                             | Pekko persistence scanner (§15.3.1)                          |
+| **Pekko projection sources**    | 0 (journal exists)   | 11 (reads) | Projections read journal via `EventSourcedProvider.eventsByTag()` / `PersistenceQuery.readJournalFor` — not field-based calls      | Pekko projection scanner or class-level attachment (§15.3.2) |
+| **Slick projections**           | ~6 tables            | ~8 edges   | External projection actors use `SlickProjection.groupedWithin()` with `SlickHandler` — not doobie                                  | Slick scanner (§15.3.3)                                      |
+| **Pekko Kafka producers**       | 2 topics             | 2 edges    | Kafka handler classes use Pekko Kafka `flexiFlow` + `ProducerRecord` — not fs2-kafka                                               | Pekko Kafka scanner (§15.3.4)                                |
+| **Flyway-managed views/tables** | 1 view + schema info | 2 edges    | DB views defined in SQL migrations, not in Scala code                                                                              | Flyway migration scanner (§15.3.5)                           |
+| **S3 uploads**                  | 1 node               | 2 edges    | Batch jobs use AWS SDK v2 `S3Client.putObject()` to upload CSV reports                                                             | S3/AWS scanner (§15.3.6)                                     |
+| **Manual/external nodes**       | 1 (data warehouse)   | 1 edge     | Downstream infra not in code — e.g. a data warehouse consuming from Kafka/S3                                                       | Manual node injection (§15.3.7)                              |
+| **Subgraph organization**       | 8 groups             | —          | Manual diagram has semantic groups (Service, Projections, Jobs, Internal DB, Operational DB, Kafka, External Services, Downstream) | Class grouping enhancements (§15.3.8)                        |
+
+#### Coverage estimate
+
+|  | Manual diagram | Currently auto-detected | After all improvements |
+|---|---|---|---|
+| Nodes | 38 | ~22 (58%) | ~36 (95%) |
+| Edges | 47 | ~12 (26%) | ~44 (94%) |
+| Subgraphs | 8 | 0 (package-based only) | ~7 (88%) |
+
+The remaining ~5% gap is downstream infrastructure (data warehouses) and DB view joins — addressable via
+manual node injection and the flyway scanner respectively.
+
+### 15.3 Planned Improvements
+
+#### 15.3.1 Pekko Persistence Scanner (HIGH — unlocks journal node)
+
+**What it detects:**
+
+- **Classic persistent actors**: classes extending `PersistentActor` (or `AbstractPersistentActor`)
+  - `persist()` / `persistAsync()` calls → Write to journal
+  - `saveSnapshot()` → Write to snapshot store
+  - `receiveRecover` / `recovery` → Read from journal
+- **Typed persistent actors**: `EventSourcedBehavior[Command, Event, State]`
+  - Command handler with `Effect.persist(event)` → Write to journal
+  - Event handler → Read from journal (recovery)
+
+**Example pattern:**
+
+```scala
+abstract class MyActor(...)
+  extends Actor with PersistentActor {
+  // persist() / persistAsync() calls → write to the journal
+  // receiveRecover → reads from the journal during recovery
+}
+```
+
+**Output:** `DiscoveredIntegration` with `integrationType = "pekko-journal"`, target = persistence ID pattern
+or journal name, `accessType = Write` for persist calls, `Read` for recovery.
+
+**Detection approach:** TASTy-based. Match classes whose `parents` include a type named `PersistentActor`,
+`AbstractPersistentActor`, or `EventSourcedBehavior`. Scan method bodies for `persist` / `persistAsync` /
+`Effect.persist` calls.
+
+**Impact:** Adds the journal node + the critical write edge from persistent actor → journal.
+
+#### 15.3.2 Pekko Projection Source Scanner (HIGH — unlocks 11 "feeds" edges)
+
+**What it detects:**
+
+Projections that read from the journal via Pekko Persistence Query:
+
+- `EventSourcedProvider.eventsByTag[Event](...)` — FS2-based projections
+- `PersistenceQuery(system).readJournalFor[EventsByPersistenceIdQuery](...)` — query-based projections
+- `SlickProjection.groupedWithin(sourceProvider, ...)` — Slick-based projections using a source provider
+
+**Example patterns:**
+
+```scala
+// FS2-based projections:
+EventSourcedProvider.eventsByTag[Event](system, readJournalPluginId, tag)
+
+// Query-based projections:
+PersistenceQuery(system).readJournalFor[EventsByPersistenceIdQuery](pluginId)
+  .eventsByPersistenceId(persistenceId, ...)
+```
+
+In the reference service, both patterns are used — FS2-based for internal DB projections, query-based
+for single-entity projections.
+
+**Detection approach:** This is tricky for TASTy because the connection between a projection class and
+"reads the journal" often goes through factory methods, config values, and runtime wiring. Two approaches:
+
+1. **Class-level attachment** (pragmatic, near-term): A mechanism similar to `ManualScanner` but operating
+   at the class level — declare that all instances of a class (or classes extending a trait) have an
+   implicit integration. E.g., "any class using a source provider base trait reads the pekko-journal".
+   This could be a `ClassIntegrationScanner` that attaches integrations to all methods of matching classes.
+2. **TASTy detection** (thorough, longer-term): Pattern-match on `EventSourcedProvider.eventsByTag`,
+   `PersistenceQuery(...).readJournalFor`, and `SourceProvider` factory calls in TASTy trees.
+
+**Impact:** Adds ~11 edges from journal to all projection classes. This is the single highest-value
+improvement — it connects the two halves of the diagram (write path and read path).
+
+#### 15.3.3 Slick Scanner (MEDIUM — unlocks external projection DB writes)
+
+**What it detects:**
+
+Services that use Pekko Projections often write to the operational database via Slick rather than doobie.
+In the reference service, 6 of 8 external projection actors use `SlickProjection.groupedWithin()` with
+`SlickHandler`, writing to various tables (movements, account balances, account assets, etc.).
+
+**Detection approach:** TASTy-based. Match methods returning `DBIO[_]` or `DBIOAction[_, _, _]`.
+Extract table names from `TableQuery` type parameters (which reference Slick `Table[_]` subclasses
+with `tableName` fields) or from `sqlu"..."` / `sql"..."` Slick interpolators.
+
+**Note:** Already listed as planned (`SlickTableScanner`) in section 7.3. The reference service confirms
+this is a common, real-world need for any Pekko-based service.
+
+**Impact:** Adds ~6 table nodes and ~8 write edges.
+
+#### 15.3.4 Pekko Kafka Scanner (MEDIUM — unlocks Kafka edges)
+
+**What it detects:**
+
+Kafka producers using Pekko Kafka (Alpakka Kafka), not fs2-kafka. In the reference service, Kafka handler
+classes produce `ProducerRecord` instances via Pekko Kafka's `flexiFlow`. These handlers are often embedded
+within Pekko Projection pipelines (e.g., as `SlickHandler` or `Handler` subclasses that export events to
+Kafka as a side effect of projection processing).
+
+**Example pattern:**
+
+```scala
+class MyKafkaHandler(...) extends Handler[Seq[EventEnvelope[Event]]] {
+  // Uses flexiFlow(producerSettings.withProducer(...))
+  // Creates ProducerRecord[String, MyEnvelope]
+}
+```
+
+**Detection approach:** TASTy-based. Match on:
+
+- Classes importing / using `ProducerRecord` or `ProducerMessage`
+- Method calls to `flexiFlow`, `plainSink`, `Producer.flexiFlow`
+- Could also detect `KafkaProducer.resource` / `KafkaConsumer.resource` for fs2-kafka in the same scanner
+
+Topic names are typically in config (HOCON), not in code. The `HoconKafkaTopicScanner` (already planned
+in §7.4) would complement this by extracting topic names from `application.conf`.
+
+**Impact:** Adds 2 Kafka topic nodes and 2 write edges. Combined with HOCON scanner, provides topic names.
+
+#### 15.3.5 Flyway Migration Scanner (MEDIUM — unlocks views and schema-level info)
+
+**What it detects:**
+
+SQL migration files following Flyway naming convention (`V{version}__{description}.sql`):
+
+- `CREATE TABLE` → dataset nodes
+- `CREATE VIEW` → dataset nodes with join relationships
+- `ALTER TABLE` → schema evolution tracking
+- `CREATE INDEX` → performance metadata
+
+The reference service has 25+ migration files across two migration directories (one for the core
+service schema, one for projections). This is typical for Pekko-based services with separate
+internal and operational databases.
+
+**Detection approach:** Resource scanner (§7.4). Parse SQL DDL statements to extract:
+
+- Table/view names from `CREATE TABLE/VIEW`
+- View dependencies from `SELECT ... FROM table1 JOIN table2` in view definitions
+- This is the `FlywayMigrationScanner` already planned in §7.4
+
+**Impact:** Adds DB view nodes with join edges. Also provides ground-truth table names to cross-reference
+with Slick/doobie scanner output, improving accuracy.
+
+#### 15.3.6 S3 / AWS SDK Scanner (LOW — 3 edges)
+
+**What it detects:**
+
+AWS SDK v2 S3 client usage:
+
+- `S3Client.putObject(PutObjectRequest.builder()...)` → Write to S3
+- `S3Client.getObject(...)` → Read from S3
+
+**Example pattern:**
+
+```scala
+trait S3JobSupport {
+  val s3Client: S3Client = S3Client.builder().region(region).build()
+}
+// Job classes mix in S3JobSupport and call s3Client.putObject(...)
+```
+
+**Detection approach:** TASTy-based. Match calls to `S3Client.putObject` / `S3Client.getObject`. Bucket
+names are in config, not extractable from TASTy — the scanner would produce `integrationType = "s3"` with
+target = "S3" (generic) unless combined with a config scanner.
+
+**Impact:** Adds 1 S3 node and 2 upload edges.
+
+#### 15.3.7 Manual Node Injection into Lineage Results (LOW — 2 nodes)
+
+**What it enables:**
+
+Adding nodes to the scanner output that don't correspond to any code — pure infrastructure or downstream
+systems that exist outside the scanned codebase.
+
+**Example:** A downstream data warehouse that consumes from Kafka/S3. No code in the service repo
+references it directly — it's purely infrastructure.
+
+**Approach:** Extend `ScanResult` or `MermaidRenderer` to accept additional manually declared nodes and
+edges that get merged into the auto-scanned result before rendering. Similar in spirit to `ManualScanner`
+but operates at the graph level rather than the integration level.
+
+```scala
+// Possible API sketch:
+val extraNodes = List(
+  ExtraNode(id = "data-warehouse", label = "Data Warehouse (via S3)", group = "Downstream"),
+)
+val extraEdges = List(
+  ExtraEdge(from = "kafka:movement-events", to = "data-warehouse", label = "flows to"),
+)
+val enrichedResult = result.withExtra(extraNodes, extraEdges)
+```
+
+**Impact:** Adds the last ~2 nodes that can't be scanned from code.
+
+#### 15.3.8 Subgraph Grouping Enhancements (LOW — visual parity)
+
+**Current state:** `ClassGrouping.ByPackage` groups classes by their package prefix. `ClassGrouping.Custom`
+allows arbitrary grouping functions.
+
+**Gap:** The manual diagram groups nodes into semantic categories (Service, Projections, Jobs, Internal DB,
+Operational DB, Kafka, External Services, Downstream) that cut across packages and mix classes with
+integration targets.
+
+**Needed:**
+
+- Integration targets (DB tables, Kafka topics, S3) should be groupable into subgraphs alongside classes
+- The `ClassLevelConfig` should support grouping integration nodes, not just class nodes
+- A convention-based grouping mode that assigns groups based on integration type
+  (e.g., all `doobie` targets → "Database", all `kafka` targets → "Kafka")
+
+This is a rendering enhancement, not a scanner improvement.
+
+### 15.4 Implementation Priority
+
+```
+Phase 1 — Critical path (unlocks structural parity):
+  ┌─────────────────────────────────────┐
+  │ 15.3.1  Pekko Persistence Scanner   │──→ journal node + write edge
+  │ 15.3.2  Pekko Projection Sources    │──→ 11 journal→projection edges
+  └─────────────────────────────────────┘
+  These two together connect the write path to the read path through the journal.
+  Without them the diagram is two disconnected halves.
+
+Phase 2 — Coverage (fills in remaining integration types):
+  ┌─────────────────────────────────────┐
+  │ 15.3.3  Slick Scanner               │──→ 6 tables, 8 edges
+  │ 15.3.4  Pekko Kafka Scanner         │──→ 2 topics, 2 edges
+  │ 15.3.5  Flyway Migration Scanner    │──→ views, schema cross-ref
+  └─────────────────────────────────────┘
+
+Phase 3 — Polish (visual and completeness):
+  ┌─────────────────────────────────────┐
+  │ 15.3.6  S3/AWS Scanner              │──→ 1 node, 2 edges
+  │ 15.3.7  Manual Node Injection       │──→ data warehouses etc.
+  │ 15.3.8  Subgraph Grouping           │──→ semantic grouping of targets
+  └─────────────────────────────────────┘
+```
+
+### 15.5 Revised Scanner Table
+
+Updated version of the table from §7.3 with newly identified scanners:
+
+| Scanner                     | Detects                                  | Status      |
+|-----------------------------|------------------------------------------|-------------|
+| `DoobieScanner`             | Doobie SQL table references               | Implemented |
+| `Fs2GrpcClientScanner`      | gRPC client usages                        | Implemented |
+| `Fs2GrpcServerScanner`      | gRPC service implementations              | Implemented |
+| `ManualScanner`             | Kafka, custom integrations                | Implemented |
+| `PekkoJournalScanner`       | Persistent actor writes (classic + typed) | Planned     |
+| `PekkoProjectionScanner`    | Projection journal reads (source providers) | Planned   |
+| `SlickTableScanner`         | Slick DBIO table writes                   | Planned     |
+| `PekkoKafkaScanner`         | Pekko Kafka producer/consumer patterns    | Planned     |
+| `S3Scanner`                 | AWS SDK S3 put/get operations             | Planned     |
+| `SttpClientScanner`         | HTTP client calls                         | Planned     |
+| `FlywayMigrationScanner`    | SQL DDL: tables, views, joins (resource)  | Planned     |
+| `HoconKafkaTopicScanner`    | Kafka topic names from config (resource)  | Planned     |
