@@ -2,22 +2,237 @@
 
 ## 1. Overview
 
-This document describes the design for architecture documentation capabilities in domainDocs4s. The system enables:
+This document describes the design for architecture documentation capabilities in domainDocs4s. The system aims to:
 
-1. **Service-level documentation** — each service defines its internal architecture, referencing real code symbols to
+1. **Automatic data lineage** — scan compiled code to discover database access patterns and trace them from API
+   entry points through service layers to the actual queries. Working prototype.
+2. **Service-level documentation** — each service defines its internal architecture, referencing real code symbols to
    keep docs in sync.
-2. **External specification** — each service exports a JSON spec describing what it produces and consumes.
-3. **System-level documentation** — a central tool aggregates external specs from all services and renders cross-service
+3. **External specification** — each service exports a JSON spec describing what it produces and consumes.
+4. **System-level documentation** — a central tool aggregates external specs from all services and renders cross-service
    dependency diagrams.
 
-The system produces interactive, embeddable documentation (similar to scaladoc/javadoc) using Mermaid for simple output
-and Cytoscape.js for rich, interactive views.
+The system produces interactive, embeddable documentation using Mermaid for simple output and Cytoscape.js for rich,
+interactive views.
 
 ---
 
-## 2. Concepts
+## 2. Status
 
-### 2.1 Service Flow
+| Component                    | Status         | Location                                          |
+|------------------------------|----------------|---------------------------------------------------|
+| Data lineage model           | Implemented    | `lineage/model.scala`                             |
+| Doobie scanner (TASTy-based) | Implemented    | `lineage/TastyDoobieScanner.scala`                |
+| Call graph extractor         | Implemented    | `lineage/TastyCallGraphExtractor.scala`            |
+| Lineage builder              | Implemented    | `lineage/LineageBuilder.scala`                    |
+| Mermaid visualization        | Implemented    | `lineage/MermaidRenderer.scala`                   |
+| Example classes (real doobie)| Implemented    | `lineage/example/ExampleClasses.scala`            |
+| Tests (9 tests passing)      | Implemented    | `lineage/TastyLineageScannerTest.scala`           |
+| Service flow DSL             | Design only    | Section 6 below                                   |
+| External spec / system view  | Design only    | Sections 8-9 below                                |
+| Cytoscape.js renderer        | Design only    | Section 10.3 below                                |
+| Other scanners (gRPC, Kafka) | Design only    | Section 7 below                                   |
+
+All implemented files are under `domainDocs4s-examples/src/main/scala/domaindocs4s/architecture/`.
+
+---
+
+## 3. Data Lineage — Prototype
+
+### 3.1 Architecture
+
+The lineage system has three independent phases, each with its own output type. This lets us add new integration
+scanners (kafka, gRPC, etc.) without changing the lineage builder.
+
+```
+Phase 0: Call Graph Extraction          Phase 1: Integration Scanning
+┌──────────────────────────┐            ┌───────────────────────────┐
+│  TastyCallGraphExtractor │            │    TastyDoobieScanner     │
+│                          │            │                           │
+│  TASTy ──→ List[         │            │  TASTy ──→ List[          │
+│    ExtractedMethod       │            │    DiscoveredIntegration   │
+│  ]                       │            │  ]                        │
+│                          │            │                           │
+│  Generic: any package    │            │  "classA.methodB          │
+│  field.method() calls    │            │   reads/writes tableC"    │
+└────────────┬─────────────┘            └─────────────┬─────────────┘
+             │                                        │
+             └──────────────┬─────────────────────────┘
+                            ▼
+                  Phase 2: Lineage Building
+                  ┌─────────────────────────┐
+                  │     LineageBuilder       │
+                  │                          │
+                  │  Combines call graph +   │
+                  │  integrations ──→        │
+                  │    ScanResult            │
+                  │                          │
+                  │  - Propagates R/W types  │
+                  │  - Builds lineage chains │
+                  │  - Entry point → DB      │
+                  └────────────┬────────────┘
+                               ▼
+                     Phase 3: Rendering
+                     ┌─────────────────┐
+                     │ MermaidRenderer  │
+                     │                  │
+                     │ ScanResult ──→   │
+                     │   mermaid.live   │
+                     │   URL            │
+                     └─────────────────┘
+```
+
+### 3.2 Model
+
+Core types in `model.scala`:
+
+```scala
+enum DataAccessType { case Read, Write, ReadWrite, Pure }
+
+case class MethodRef(className: String, methodName: String)
+
+// Phase 0 output — generic call graph
+case class ExtractedMethod(className: String, packageName: String, methodName: String, calls: List[MethodRef])
+
+// Phase 1 output — scanner-specific integration discovery
+case class DiscoveredIntegration(
+    method: MethodRef,              // classA.methodB
+    accessType: DataAccessType,     // reads or writes
+    integrationType: String,        // "doobie", "kafka", "grpc", ...
+    target: String,                 // table name, topic, endpoint, ...
+    evidence: String,               // the actual SQL, config key, ...
+)
+
+// Phase 2 output — full lineage result
+case class ScanResult(
+    classes: List[ScannedClass],
+    callGraph: List[CallEdge],
+    integrations: List[DiscoveredIntegration],
+    lineageChains: List[LineageChain],
+)
+
+case class LineageChain(
+    entryPoint: MethodRef,          // API method where the chain starts
+    path: List[MethodRef],          // full call path
+    integration: DiscoveredIntegration, // the DB operation at the end
+)
+```
+
+Key design decisions:
+- `DiscoveredIntegration` is the contract any scanner must produce. Adding a Kafka scanner means
+  producing `DiscoveredIntegration(integrationType = "kafka", target = "topic-name", ...)`.
+- `LineageBuilder` is fully generic — it doesn't know about doobie, only about call graphs and integrations.
+- Access types propagate recursively: if `Service.deposit` calls `Repo.updateBalance` (Write) and
+  `Repo.insertTransaction` (Write), then `Service.deposit` is Write. If it called both reads and writes,
+  it would be ReadWrite.
+
+### 3.3 Doobie Scanner
+
+`TastyDoobieScanner` scans compiled Scala code via tasty-query. It finds methods returning `ConnectionIO[_]`
+then pattern-matches the TASTy AST for doobie query chains.
+
+Detected patterns (real doobie with `sql"..."` interpolation):
+
+| Code pattern                          | TASTy AST shape                                                       | Classification |
+|---------------------------------------|-----------------------------------------------------------------------|----------------|
+| `sql"...".query[T].unique`            | `Select(Apply(TypeApply(Select(frag, query), _), _), unique)`         | Read           |
+| `sql"...".query[T].option`            | `Select(Apply(TypeApply(Select(frag, query), _), _), option)`         | Read           |
+| `sql"...".query[T].to[List]`          | `Apply(TypeApply(Select(Apply(TypeApply(Select(frag, query), _), _), to), _), _)` | Read |
+| `sql"...".update.run`                 | `Select(Select(frag, update), run)`                                   | Write          |
+
+SQL extraction: the `sql"..."` interpolator produces a `StringContext.apply("part1", "part2", ...)` in the TASTy tree.
+The scanner collects all string literal parts and joins them to recover the SQL template. Table names are extracted
+via regex (`FROM \w+`, `INTO \w+`, `UPDATE \w+`, `DELETE FROM \w+`).
+
+The `.query[T]` patterns have an extra `Apply` wrapping compared to naive implementations because real doobie's
+`.query[T]` takes an implicit `Read[T]` parameter, which produces an additional `Apply` node in the TASTy tree.
+
+### 3.4 Call Graph Extractor
+
+`TastyCallGraphExtractor` is generic (not doobie-specific). It:
+
+1. Finds all user-defined classes in a package (filters out synthetic `$` companions and `<init>`)
+2. Resolves field types: `class UserService(val repo: UserRepo)` → `repo: UserRepo`
+3. Walks method bodies looking for `field.method(...)` patterns in the TASTy tree
+4. Maps `repo.getBalance(...)` → `MethodRef("UserRepo", "getBalance")` using the resolved field types
+
+This uses `TreeTraverser` from tasty-query which recursively visits all sub-trees, including lambda
+bodies from for-comprehension desugaring (`flatMap`, `map`).
+
+### 3.5 Lineage Builder
+
+`LineageBuilder.build(callGraph, integrations)` combines both phases:
+
+1. Assigns direct access types from scanner output (Repo methods get Read/Write from doobie)
+2. Propagates effective access types up the call chain (memoized with cycle detection)
+3. Finds entry points (methods with no callers) and walks the call graph to discover all paths
+   from entry point to integration, producing `LineageChain` values
+
+### 3.6 Mermaid Visualization
+
+`MermaidRenderer.render(result)` produces a mermaid flowchart:
+- Classes as subgraphs containing their methods
+- DB tables as cylinder-shaped nodes
+- Call graph edges as solid arrows
+- Read integrations as dashed arrows (`-.->|Read|`)
+- Write integrations as thick arrows (`==>|Write|`)
+- Color coding: green (Read), red (Write), orange (ReadWrite), blue (DB)
+
+`MermaidRenderer.toViewUrl(mermaidCode)` generates a `mermaid.live/edit#base64:...` URL for viewing.
+
+Run with:
+```
+sbt "examples / runMain domaindocs4s.architecture.lineage.example.RenderLineage"
+```
+
+### 3.7 Example Output
+
+Given three example classes using real doobie (`UserGrpcApi → UserService → UserRepo`):
+
+```
+=== Data Lineage Chains ===
+
+  doobie: Write users
+    UserGrpcApi.deposit -> UserService.deposit -> UserRepo.updateBalance
+    evidence: UPDATE users SET balance =  WHERE id =
+
+  doobie: Write transactions
+    UserGrpcApi.deposit -> UserService.deposit -> UserRepo.insertTransaction
+    evidence: INSERT INTO transactions (user_id, amount, description) VALUES (, , )
+
+  doobie: Read users
+    UserGrpcApi.getBalance -> UserService.getBalance -> UserRepo.getBalance
+    evidence: SELECT balance FROM users WHERE id =
+
+  doobie: Read transactions
+    UserGrpcApi.getHistory -> UserService.getHistory -> UserRepo.getTransactions
+    evidence: SELECT id, user_id, amount, description FROM transactions WHERE user_id =
+```
+
+### 3.8 Learnings and Limitations
+
+**What worked well:**
+- tasty-query gives full access to method bodies, types, and symbol resolution
+- Real doobie types produce structurally predictable TASTy patterns
+- The multi-phase split keeps scanner implementations focused and composable
+- `TastyContext.fromCurrentProcess()` makes it trivial to scan from tests or `runMain`
+
+**Current limitations:**
+- SQL extraction from `sql"..."` interpolation loses parameter values (we get `WHERE id =` not `WHERE id = ?`).
+  This is sufficient for table name extraction but not for full SQL analysis.
+- Call graph extraction only resolves `val` field types in the immediate class. Constructor parameters that aren't
+  `val` fields or locally created instances aren't tracked.
+- The scanner matches specific AST shapes. Different doobie usage patterns (e.g., `HC.stream`, `Fragment.const`,
+  custom query helpers) would need additional patterns.
+- Package scanning is flat (one level). Nested packages or cross-package references need recursive scanning.
+
+---
+
+## 4. Concepts
+
+### 4.1 Service Flow
+
+> Design only — not yet implemented.
 
 Each service defines **one comprehensive flow declaration** capturing all its significant internal and external
 components and their relationships. This is the single source of truth for that service's architecture.
@@ -37,28 +252,29 @@ components and their relationships. This is the single source of truth for that 
 └─────────────────────────────────────────────────────────┘
 ```
 
-### 2.2 Views
+### 4.2 Views
 
 Users define **views** — named filters on the full flow that focus on a particular area or aspect. Views make large
 flows digestible without losing the single-source-of-truth property.
 
-Examples: "Data Ingestion", "Kafka Pipeline", "Projection Layer", "External Dependencies".
-
-### 2.3 External Spec
+### 4.3 External Spec
 
 Derived from the service flow. Nodes not marked as `internal` constitute the service's **external spec** — what it
 produces for and consumes from the outside world. This is serialized to JSON and uploaded to a central repository.
 
-### 2.4 System View
+### 4.4 System View
 
 A central aggregation tool reads external specs from all services, matches produced and consumed artifacts, and renders
 system-level dependency graphs.
 
 ---
 
-## 3. Core Model
+## 5. Core Model
 
-### 3.1 Node Categories and Artifacts
+> Design only — not yet implemented. The lineage prototype (section 3) uses its own model.
+> These two may converge as the design matures.
+
+### 5.1 Node Categories and Artifacts
 
 Nodes are typed using a two-layer system:
 
@@ -67,13 +283,7 @@ Nodes are typed using a two-layer system:
 2. **`Artifact`** — an open trait that carries category + instance-specific identifying information. The library ships
    common implementations, but users freely define their own.
 
-The name `Artifact` (rather than `NodeKind`) reflects that each instance describes a **specific** thing — e.g., a
-particular Kafka topic or a particular database table — not just a type of thing.
-
 ```scala
-package domaindocs4s.arch
-
-/** Fundamental architectural categories. Fixed set — drives visual encoding. */
 enum NodeCategory {
   case Api       // something that exposes an interface (gRPC, HTTP, GraphQL, ...)
   case Message   // asynchronous messaging (Kafka topic, RabbitMQ queue, SQS, ...)
@@ -81,905 +291,249 @@ enum NodeCategory {
   case Compute   // processing logic (component, projection, job, cache, ...)
 }
 
-/**
- * Describes a specific artifact in the architecture.
- *
- * Each Artifact carries its category (for visualization) and a matchKey that
- * uniquely identifies it. The matchKey is used both as the node's identity and
- * for cross-service artifact matching.
- *
- * The library provides common implementations (see below), but users can define
- * their own by extending this trait — no need to modify library code.
- */
 trait Artifact {
   def category: NodeCategory
-
-  /**
-   * Unique identifier for this artifact. Used as the Node's id and for
-   * cross-service matching (a produced artifact matches a consumed artifact
-   * with the same matchKey).
-   *
-   * Convention: "type-prefix:identifying-details"
-   * Examples: "kafka:ledger.movements", "db:projections.ledger.movements"
-   */
-  def matchKey: String
+  def matchKey: String  // unique identifier, e.g. "kafka:ledger.movements"
 }
 ```
 
-#### Library-provided artifacts
+Library-provided artifacts: `GrpcEndpoint`, `HttpEndpoint`, `KafkaTopic`, `DatabaseTable`, `DatabaseView`,
+`S3Location`, `Spreadsheet`, `DataWarehouse`, `Journal`, `Component`, `Projection`, `Job`, `Cache`.
 
-The library ships implementations for common integration patterns. These are regular classes, not a sealed hierarchy —
-users can always add more.
-
-```scala
-package domaindocs4s.arch
-
-object Artifacts {
-
-  // ── Api ─────────────────────────────────────────────────────
-  case class GrpcEndpoint(serviceName: String, methodName: String) extends Artifact {
-    val category = NodeCategory.Api
-    val matchKey = s"grpc:$serviceName/$methodName"
-  }
-
-  case class HttpEndpoint(method: String, path: String) extends Artifact {
-    val category = NodeCategory.Api
-    val matchKey = s"http:$method:$path"
-  }
-
-  // ── Message ─────────────────────────────────────────────────
-  case class KafkaTopic(topicName: String) extends Artifact {
-    val category = NodeCategory.Message
-    val matchKey = s"kafka:$topicName"
-  }
-
-  // ── Dataset ─────────────────────────────────────────────────
-  case class DatabaseTable(database: String, schema: String, tableName: String) extends Artifact {
-    val category = NodeCategory.Dataset
-    val matchKey = s"db:$database.$schema.$tableName"
-  }
-
-  case class DatabaseView(database: String, schema: String, viewName: String) extends Artifact {
-    val category = NodeCategory.Dataset
-    val matchKey = s"dbview:$database.$schema.$viewName"
-  }
-
-  case class S3Location(bucket: String, prefix: String = "") extends Artifact {
-    val category = NodeCategory.Dataset
-    val matchKey = s"s3:$bucket/$prefix"
-  }
-
-  case class Spreadsheet(provider: String, id: String = "") extends Artifact {
-    val category = NodeCategory.Dataset
-    val matchKey = s"sheet:$provider:$id"
-  }
-
-  case class DataWarehouse(system: String, table: String) extends Artifact {
-    val category = NodeCategory.Dataset
-    val matchKey = s"dw:$system:$table"
-  }
-
-  case class Journal(name: String) extends Artifact {
-    val category = NodeCategory.Dataset
-    val matchKey = s"journal:$name"
-  }
-
-  // ── Compute ─────────────────────────────────────────────────
-  case class Component(name: String) extends Artifact {
-    val category = NodeCategory.Compute
-    val matchKey = s"component:$name"
-  }
-
-  case class Projection(name: String) extends Artifact {
-    val category = NodeCategory.Compute
-    val matchKey = s"projection:$name"
-  }
-
-  case class Job(name: String) extends Artifact {
-    val category = NodeCategory.Compute
-    val matchKey = s"job:$name"
-  }
-
-  case class Cache(name: String) extends Artifact {
-    val category = NodeCategory.Compute
-    val matchKey = s"cache:$name"
-  }
-}
-```
-
-#### User-defined artifacts (example)
+### 5.2 Node, Edge, FlowChart
 
 ```scala
-// In user's codebase — no library changes needed
-case class PubSubTopic(projectId: String, topicName: String) extends Artifact {
-  val category = NodeCategory.Message
-  val matchKey = s"pubsub:$projectId/$topicName"
-}
-
-case class RedisCache(cluster: String, keyPattern: String) extends Artifact {
-  val category = NodeCategory.Dataset
-  val matchKey = s"redis:$cluster:$keyPattern"
-}
-```
-
-### 3.2 Node
-
-```scala
-case class Node(
-    label: String,
-    artifact: Artifact,
-    internal: Boolean = true, // true = not part of external spec
-) {
-  /** Derived from artifact.matchKey — no separate id needed. */
-  def id: String = artifact.matchKey
-}
-```
-
-The `internal` flag controls whether a node appears in the external spec. By default, everything is internal — users
-explicitly mark nodes as externally visible by setting `internal = false` (or via the `.exposed` DSL method).
-
-The node's **id is derived from `artifact.matchKey`**, eliminating the redundant `id` parameter. Since `matchKey`
-uniquely identifies an artifact (e.g., `"kafka:ledger.movements"`), it naturally serves as the node identity both within
-a flow and for cross-service matching.
-
-### 3.3 Edge
-
-Edges have two types: **produces** and **consumes**. These cover the fundamental relationships in a data architecture.
-
-```scala
-enum EdgeType {
-  case Produces  // from writes/pushes/creates data in to
-  case Consumes  // from reads/pulls/uses data from to
-}
-
+case class Node(label: String, artifact: Artifact, internal: Boolean = true)
+enum EdgeType { case Produces, Consumes }
 case class Edge(from: Node, edgeType: EdgeType, to: Node, label: String = "")
-```
-
-Semantics:
-- `A Produces B` — A writes data to B. Example: projection produces records in a DB table.
-- `A Consumes B` — A reads data from B. Example: projection consumes events from a journal.
-- For Compute → Compute edges (e.g., API calls an actor), `Produces` represents invocation direction (caller produces
-  a request consumed by callee). This is a simplification that works for visualization; if a third edge type (e.g.,
-  `Invokes`) proves necessary, it can be added later.
-
-### 3.4 Subgraph
-
-```scala
-case class Subgraph(
-    label: String,
-    nodes: List[Node],
-)
-```
-
-Subgraphs provide visual grouping. They don't affect semantics.
-
-### 3.5 FlowChart (the full service declaration)
-
-```scala
-case class FlowChart(
-    edges: List[Edge],
-    subgraphs: List[Subgraph] = Nil,
-) {
-  lazy val nodes: List[Node] = // deduplicated from edges, preserving order
-
-  /** Derive the external spec from this flow. */
-  def externalSpec(serviceId: String, serviceName: String): ExternalSpec
-
-  /** Create a filtered view of this flow. */
-  def view(name: String): ViewBuilder
-}
+case class Subgraph(label: String, nodes: List[Node])
+case class FlowChart(edges: List[Edge], subgraphs: List[Subgraph] = Nil)
 ```
 
 ---
 
-## 4. DSL
+## 6. DSL
 
-The DSL extends what already exists in the ledger service prototype, adding typed artifact constructors and the
-`internal` flag.
-
-### 4.1 Node Construction
+> Design only — not yet implemented.
 
 ```scala
-package domaindocs4s.arch
-
-import scala.reflect.ClassTag
-
-// From a class — matchKey derived from class name, label from camelCase splitting
+// Node construction
 def component[T](using ct: ClassTag[T]): Node
-def component[T](label: String)(using ct: ClassTag[T]): Node
-
-// Typed constructors for common artifact types
 def kafkaTopic(topicName: String, label: String = ""): Node
 def dbTable(database: String, schema: String, tableName: String, label: String = ""): Node
-def dbView(database: String, schema: String, viewName: String, label: String = ""): Node
-def grpcEndpoint(serviceName: String, methodName: String, label: String = ""): Node
-def httpEndpoint(method: String, path: String, label: String = ""): Node
-def s3Location(bucket: String, prefix: String = "", label: String = ""): Node
-def spreadsheet(provider: String, id: String = "", label: String = ""): Node
-def journal(name: String, label: String = ""): Node
-def cache(name: String, label: String = ""): Node
-def job[T](using ct: ClassTag[T]): Node
+// ... etc.
 
-// Generic fallback
-def node(label: String, artifact: Artifact): Node
-
-// Mark a node as externally visible
+// Edge construction
 extension (n: Node) {
-  def exposed: Node // sets internal = false
-}
-```
-
-Note: the `id` parameter is gone from DSL constructors. The node's identity comes from the artifact's `matchKey`. The
-`label` parameter defaults to a human-readable derivation from the artifact fields (e.g., `KafkaTopic("ledger.movements")`
-defaults to label `"ledger.movements"`).
-
-### 4.2 Edge Construction
-
-```scala
-extension (n: Node) {
-  infix def produces(to: Node): Edge = Edge(n, EdgeType.Produces, to)
-  infix def consumes(to: Node): Edge = Edge(n, EdgeType.Consumes, to)
+  infix def produces(to: Node): Edge
+  infix def consumes(to: Node): Edge
 }
 
-extension (e: Edge) {
-  infix def label(text: String): Edge = e.copy(label = text)
-}
-```
-
-Usage:
-
-```scala
+// Usage
 ledgerActor produces journal,
 dailyBalanceChange consumes journal,
 movementsProjection produces movementsTable,
-grpcApi consumes rateService,
-ledgerDataService consumes ledgerOperatorClosingTable label "daily deltas",
-```
-
-### 4.3 Subgraph Construction
-
-```scala
-def subgraph(label: String)(nodes: Node*): Subgraph
-```
-
-### 4.4 Views
-
-```scala
-class ViewBuilder(name: String, source: FlowChart) {
-  def only(nodes: Node*): ViewBuilder       // include only these nodes + edges between them
-  def exclude(nodes: Node*): ViewBuilder     // exclude these nodes
-  def build: FlowChart                       // produce filtered FlowChart
-}
 ```
 
 ---
 
-## 5. Scanners
+## 7. Scanners
 
-### 5.1 Design Principles
+### 7.1 Design Principles
 
 Scanning has **two distinct faces**:
 
-- **Consumed artifacts**: Scanning is authoritative. If the code calls a gRPC client, that's a real dependency. Scanner
-  output for consumed artifacts is correct by definition.
-- **Produced artifacts**: Scanning discovers what exists, but not everything produced is meant for external consumption.
-  Scanner output for produced artifacts feeds into the manual flow declaration; the user curates what to expose.
+- **Consumed artifacts**: Scanning is authoritative. If the code calls a gRPC client, that's a real dependency.
+- **Produced artifacts**: Scanning discovers what exists, but the user curates what to expose.
 
 There are **two kinds of scanners**:
 
-- **Code scanners** — TASTy-based, for patterns in compiled Scala code (gRPC clients, Kafka producers, etc.)
-- **Resource scanners** — file-based, for things TASTy can't see (SQL migrations, HOCON config, etc.)
+- **Code scanners** — TASTy-based, for patterns in compiled Scala code (gRPC clients, Kafka producers, doobie queries)
+- **Resource scanners** — file-based, for things TASTy can't see (SQL migrations, HOCON config)
 
-### 5.2 Common Types
+### 7.2 TASTy-Based Scanning — Learnings from Prototype
+
+The doobie scanner prototype (section 3.3) validated the TASTy scanning approach and revealed practical details:
+
+**Pattern matching on TASTy trees works, but requires precision.** Each library produces specific AST shapes.
+Real doobie's `.query[T]` has an extra `Apply` node for the implicit `Read[T]` parameter that a naive implementation
+wouldn't have. Developing a scanner requires: (1) write example code with real library types, (2) dump the TASTy
+tree to see actual patterns, (3) match those patterns precisely.
+
+**`TypeOrMethodic` traversal for return type checking.** Method return types may be wrapped in `MethodType` or
+`PolyType`. The scanner must unwrap recursively to find the actual return type (e.g., `ConnectionIO[_]`).
+
+**Type names may differ from what you expect.** tasty-query's `TypeRef`, `AppliedType` etc. are `final class`, not
+case classes. Pattern matching requires `.isInstanceOf` + field access, not constructor patterns.
+
+**String interpolation produces `StringContext` trees.** `sql"SELECT ... FROM users WHERE id = $userId"` doesn't
+produce a single string literal. Instead, the TASTy tree contains `StringContext.apply("SELECT ... FROM users WHERE id = ", "")`
+with the string parts as a `SeqLiteral` inside a `Typed` node. SQL extraction must collect these parts.
+
+**`TreeTraverser` handles desugared for-comprehensions.** For-comprehensions desugar to `flatMap`/`map` with
+lambda bodies. The `TreeTraverser` from tasty-query automatically recurses into these, so the call graph extractor
+finds method calls inside for-comprehension bodies without special handling.
+
+### 7.3 Code Scanner Trait
+
+> Design only — not yet implemented as a generic trait. The doobie scanner is a standalone class.
 
 ```scala
-package domaindocs4s.arch.scanner
-
-/** A discovered artifact from scanning the codebase. */
-case class DiscoveredArtifact(
-    artifact: Artifact,
-    evidence: String,     // where it was found (symbol path, file:line, etc.)
-    direction: Direction,
-)
-
-enum Direction {
-  case Consumed
-  case Produced
-}
-```
-
-### 5.3 Code Scanners (TASTy-based)
-
-Code scanners discover artifacts by inspecting compiled Scala symbols. The library provides the TASTy traversal
-infrastructure — scanner implementations only express **what to look for**, not how to walk the AST.
-
-```scala
-package domaindocs4s.arch.scanner
-
-import tastyquery.Symbols.*
-
-/**
- * A code scanner that runs over TASTy symbols.
- *
- * The library drives the TASTy traversal (via the existing TastyContext / Collector
- * infrastructure). The scanner receives each symbol and decides whether it's relevant.
- * Users never interact with tasty-query directly.
- */
 trait CodeScanner {
   def name: String
-
-  /**
-   * Inspect a single symbol. Return discovered artifacts if this symbol is relevant,
-   * or Nil if not. Called by the library for every symbol in the scanned packages.
-   */
   def inspect(symbol: Symbol): List[DiscoveredArtifact]
 }
 ```
 
-The library reuses the same `TastyContext` and package traversal as the `@domainDoc` collector. Users register scanners
-and call a single entry point:
+Planned built-in scanners:
 
-```scala
-val ctx = TastyContext.fromCurrentProcess()
-val results: List[DiscoveredArtifact] =
-  ArchScanner.scan(ctx, packages = List("com.swissborg.ledger"), scanners = List(
-    Fs2GrpcClientScanner,
-    DoobieTableScanner,
-    // user-defined scanners go here too
-  ))
-```
+| Scanner                | Detects                      | Status      |
+|------------------------|------------------------------|-------------|
+| `DoobieScanner`        | Doobie SQL table references   | Implemented |
+| `Fs2GrpcClientScanner` | gRPC client usages            | Planned     |
+| `Fs2GrpcServerScanner` | gRPC service implementations  | Planned     |
+| `Fs2KafkaScanner`      | Kafka topic configurations    | Planned     |
+| `SlickTableScanner`    | Slick table definitions       | Planned     |
+| `SttpClientScanner`    | HTTP client calls             | Planned     |
 
-Internally, `ArchScanner.scan` walks all symbols in the given packages (same traversal as the collector) and calls
-each scanner's `inspect` for every symbol.
+### 7.4 Resource Scanners
 
-#### Built-in code scanners
-
-| Scanner                | Detects                              | Direction | What `inspect` looks for                        |
-|------------------------|--------------------------------------|-----------|-------------------------------------------------|
-| `Fs2GrpcClientScanner` | gRPC client usages                  | Consumed  | Symbols extending `*Fs2Grpc` client traits      |
-| `Fs2GrpcServerScanner` | gRPC service implementations        | Produced  | Symbols implementing `*Fs2Grpc` service traits  |
-| `DoobieTableScanner`   | Doobie SQL table references         | Both      | `Fragment` / `Query` / `Update` with table refs |
-| `SlickTableScanner`    | Slick table definitions             | Both      | `Table[_]` / `TableQuery` instances             |
-| `Fs2KafkaScanner`      | Kafka topic configurations          | Both      | `ConsumerSettings` / `ProducerSettings`         |
-| `SttpClientScanner`    | HTTP client calls                   | Consumed  | `basicRequest` / sttp URI patterns              |
-| `S3ClientScanner`      | S3 bucket/key access                | Both      | AWS S3 SDK call patterns                        |
-
-#### User-space code scanner example
-
-Users write a small `inspect` function — no TASTy boilerplate:
-
-```scala
-object GoogleSheetsScanner extends CodeScanner {
-  val name = "google-sheets"
-
-  def inspect(symbol: Symbol): List[DiscoveredArtifact] = {
-    if (extendsType(symbol, "com.example.gsheets.GoogleSheetClient"))
-      List(DiscoveredArtifact(
-        artifact = Spreadsheet("Google Sheets"),
-        evidence = symbol.fullName.toString,
-        direction = Direction.Consumed,
-      ))
-    else Nil
-  }
-}
-```
-
-### 5.4 Resource Scanners (file-based)
-
-Config files (HOCON, YAML), SQL migrations (Flyway), and other resources carry information that TASTy can't see.
-Resource scanners operate on files, not symbols.
+> Design only.
 
 ```scala
 trait ResourceScanner {
   def name: String
-
-  /** Which files this scanner cares about (glob pattern). */
   def filePattern: String
-
-  /** Inspect a single file. Return discovered artifacts or Nil. */
   def inspect(path: Path, content: String): List[DiscoveredArtifact]
 }
 ```
 
-#### Built-in resource scanners
-
-| Scanner                   | Detects                       | Direction | File pattern            |
-|---------------------------|-------------------------------|-----------|-------------------------|
-| `FlywayMigrationScanner` | DB tables from SQL migrations | Produced  | `**/db/migration/*.sql` |
-| `HoconKafkaTopicScanner` | Kafka topics from config      | Both      | `**/*.conf`             |
-
-### 5.5 Unified Discovery Entry Point
-
-Both scanner types feed into the same pipeline:
-
-```scala
-val results: List[DiscoveredArtifact] = ArchScanner.discover(
-  tastyContext = TastyContext.fromCurrentProcess(),
-  packages = List("com.swissborg.ledger"),
-  codeScanners = List(Fs2GrpcClientScanner, DoobieTableScanner),
-  resourceScanners = List(FlywayMigrationScanner),
-  resourceRoots = List(Path.of("src/main/resources")),
-)
-```
-
-The result is a `List[DiscoveredArtifact]` — programmatic access that users can inspect, filter, or pass to the
-consistency checker. No automatic visualization; users decide how to use the data.
-
-### 5.6 Scanner Integration Workflow
-
-**Step 1: Discovery** — Run scanners, get `List[DiscoveredArtifact]`.
-
-**Step 2: Manual curation** — The user writes their service flow declaration (see section 4), incorporating
-scanner-discovered artifacts. The key workflow:
-
-1. Run discovery, inspect the results programmatically
-2. Write the manual flow, referencing the same class types the scanner found
-3. Optionally, use a **consistency check** that compares the manual flow against scanner output and warns about:
-    - Consumed artifacts found by scanner but missing from the flow (likely a real dependency you forgot)
-    - Produced artifacts in the flow that the scanner didn't find (maybe stale docs)
-
-```scala
-val consistency: ConsistencyReport =
-  ConsistencyChecker.check(manualFlow, results)
-
-// consistency.missingConsumed: List[DiscoveredArtifact]  — scanner found, flow doesn't have
-// consistency.extraProduced: List[Node]                   — flow has, scanner didn't find
-// consistency.matched: List[(Node, DiscoveredArtifact)]   — in sync
-```
-
-The consistency check can be run as a **test** in CI — no sbt plugin needed:
-
-```scala
-class ArchDocConsistencyTest extends AnyFreeSpec {
-  "all consumed dependencies are documented" in {
-    val discovered = ArchScanner.discover(...)
-    val flow = MyServiceFlow.flow
-    val report = ConsistencyChecker.check(flow, discovered)
-    assert(report.missingConsumed.isEmpty,
-      s"Undocumented dependencies: ${report.missingConsumed}")
-  }
-}
-```
-
-**Step 3: Local visualization** — Generate Mermaid or Cytoscape.js output from the flow declaration:
-
-```scala
-// Mermaid (for embedding in Markdown docs)
-val markdown = s"```mermaid\n${MermaidRenderer.render(MyServiceFlow.flow)}\n```"
-Files.writeString(Path.of("docs/generated/architecture.md"), markdown)
-
-// Cytoscape.js (standalone HTML)
-val html = CytoscapeRenderer.render(MyServiceFlow.flow)
-Files.writeString(Path.of("docs/generated/architecture.html"), html)
-```
+Planned: `FlywayMigrationScanner`, `HoconKafkaTopicScanner`.
 
 ---
 
-## 6. External Spec (JSON)
+## 8. External Spec (JSON)
 
-### 6.1 Derivation
+> Design only — not yet implemented.
 
-The external spec is derived from the service flow chart:
-
-1. Collect all nodes where `internal = false`
-2. Classify as produced or consumed based on edge types (nodes that are targets of `Produces` edges from internal nodes
-   are produced; nodes that are sources of `Consumes` edges to internal nodes are consumed)
-3. Serialize to JSON
-
-```scala
-case class ExternalSpec(
-    service: ServiceInfo,
-    produced: List[Artifact],
-    consumed: List[Artifact],
-)
-
-case class ServiceInfo(
-    id: String,
-    name: String,
-)
-```
-
-The artifact's `matchKey` serves as its id in the JSON. No separate `id` or `metadata` fields needed — the artifact
-type and its fields carry all necessary information.
-
-### 6.2 JSON Format
+Each service derives an external spec from its flow chart — the externally visible nodes serialized to JSON.
+Services upload these specs to a central repository; a system-level aggregator matches produced and consumed
+artifacts across services.
 
 ```json
 {
-  "service": {
-    "id": "financial-ledger-service",
-    "name": "Financial Ledger Service"
-  },
+  "service": { "id": "financial-ledger-service", "name": "Financial Ledger Service" },
   "produced": [
-    {
-      "type": "kafka-topic",
-      "topicName": "ledger.movements"
-    },
-    {
-      "type": "database-table",
-      "database": "operational_projections",
-      "schema": "ledger",
-      "tableName": "operator_closing_of_account"
-    },
-    {
-      "type": "grpc-endpoint",
-      "serviceName": "LedgerServiceAPI",
-      "methodName": "GetUserBalance"
-    },
-    {
-      "type": "grpc-endpoint",
-      "serviceName": "LedgerServiceAPI",
-      "methodName": "RecordUserDeposit"
-    },
-    {
-      "type": "s3-location",
-      "bucket": "ledger-exports",
-      "prefix": "user-assets/"
-    }
+    { "type": "kafka-topic", "topicName": "ledger.movements" },
+    { "type": "grpc-endpoint", "serviceName": "LedgerServiceAPI", "methodName": "GetUserBalance" }
   ],
   "consumed": [
-    {
-      "type": "grpc-endpoint",
-      "serviceName": "RateServiceAPI",
-      "methodName": "GetRate"
-    },
-    {
-      "type": "grpc-endpoint",
-      "serviceName": "ConfigServiceAPI",
-      "methodName": "GetCurrencyInventory"
-    }
+    { "type": "grpc-endpoint", "serviceName": "RateServiceAPI", "methodName": "GetRate" }
   ]
 }
 ```
 
-Note: gRPC consumptions are **per-endpoint** (per RPC method), not per-service. This gives precise dependency
-tracking — service A might only use 2 of 20 methods on service B.
+---
 
-**Open question — proto package extraction**: The fs2-grpc scanner sees Java package names, which don't necessarily
-match proto package names. For MVP, we use the service/method names from the generated Scala code. If finer matching
-is needed (e.g., cross-referencing with proto definitions), a pluggable matching strategy can be added.
+## 9. System-Level Aggregation
 
-### 6.3 Upload Workflow
+> Design only — not yet implemented.
 
-Each service's CI pipeline:
-
-1. Compiles the service + docs module
-2. Runs `sbt "docs/run --export-spec"` (or equivalent)
-3. Uploads the resulting JSON to the central repository (via git commit or S3 upload)
-
-The core library is **agnostic to the upload mechanism**. It generates the JSON file; the user provides CI
-instructions (Makefile target, sbt task, etc.) to push it.
+A separate tool reads all service JSON specs, matches artifacts by `matchKey`, and renders system-level dependency
+graphs where each service is a subgraph and shared artifacts (Kafka topics, DB tables, gRPC endpoints) appear as
+nodes between services.
 
 ---
 
-## 7. System-Level Aggregation
+## 10. Rendering
 
-### 7.1 How It Works
+### 10.1 Lineage Mermaid Renderer (Implemented)
 
-A separate tool (or module) in the central repository:
+`MermaidRenderer` in the lineage package converts `ScanResult` to a mermaid flowchart:
+- Classes as subgraphs, methods as nodes
+- DB tables as cylinder-shaped nodes labeled with integration type
+- Color-coded by access type (green=Read, red=Write, orange=ReadWrite, blue=DB)
+- Read edges dashed, write edges thick
+- `toViewUrl` generates a `mermaid.live/edit#base64:...` URL (same approach as workflows4s)
 
-1. **Reads** all service JSON specs from a directory (gathered by CI)
-2. **Matches** artifacts across services: a produced artifact matches a consumed artifact when their `matchKey` values
-   are equal (same type + same identifying fields). For example:
-    - `KafkaTopic("ledger.movements")` produced by Ledger matches `KafkaTopic("ledger.movements")` consumed by
-      Analytics
-    - `GrpcEndpoint("LedgerServiceAPI", "GetBalances")` produced by Ledger matches the same consumed by Controlling
-    - `DatabaseTable("operational_projections", "ledger", "operator_closing_of_account")` produced by Ledger matches
-      the same consumed by Controlling
-3. **Generates** a system-level flow chart where:
-    - Each service is a subgraph
-    - Shared artifacts (Kafka topics, DB tables, gRPC endpoints) appear as **nodes between services** (not collapsed
-      into edges) — making the shared resources visible
-    - Edges connect services to the shared artifacts via `Produces`/`Consumes`
-4. **Reports** anomalies:
-    - Consumed artifacts with no known producer (unknown dependency)
-    - Produced artifacts with no known consumer (potentially unused)
+### 10.2 Flow Chart Mermaid Renderer (Design Only)
 
-### 7.2 System Flow Output
+For the service flow model (section 5), a separate renderer with:
+- Node shapes by category: Dataset → `[(cylinder)]`, Message → `{{hexagon}}`, Api → `{diamond}`, Compute → `[rectangle]`
+- Edge styling: `Produces` → solid arrow, `Consumes` → dashed arrow
 
-Example system-level rendering:
+### 10.3 Cytoscape.js Renderer (Design Only)
 
-```
-┌─ Ledger Service ─┐                        ┌─ Controlling Service ─┐
-│                   │                        │                       │
-│  (internal)  ─────┼── Produces ──→ [operator_closing_of_account] ←── Consumes ──┼── (internal)
-│                   │                        │                       │
-│  (internal)  ─────┼── Produces ──→ [LedgerServiceAPI/GetBalances] ←── Consumes ──┼── (internal)
-│                   │                        │                       │
-│  (internal)  ─────┼── Produces ──→ [kafka:ledger.movements] ──→ ???  (no consumer)
-│                   │                        │                       │
-│  (internal)  ─────┼── Consumes ──→ [RateServiceAPI/GetRate] ←── Consumes ──┼── (internal)
-└───────────────────┘                        └───────────────────────┘
-```
-
-This system-level flow chart is rendered using the same renderers (Mermaid, Cytoscape.js).
+A rich interactive viewer producing standalone HTML with:
+- Pan/zoom, minimap, fit-to-screen
+- Click-to-inspect detail panel
+- Text search, view selector
+- Export to PNG/SVG
+- dagre layout (directed acyclic graph)
 
 ---
 
-## 8. Rendering
+## 11. Integration with Existing domainDocs4s
 
-### 8.1 Renderer Trait
-
-```scala
-package domaindocs4s.arch.render
-
-trait Renderer {
-  /** Render a flow chart to a string (Mermaid markdown, HTML, etc.) */
-  def render(chart: FlowChart): String
-}
-```
-
-### 8.2 Mermaid Renderer
-
-Extends the existing prototype. Enhancements:
-
-- **Node shapes by category**: Dataset → `[(cylinder)]`, Message → `{{hexagon}}`, Api → `{diamond}`,
-  Compute → `[rectangle]`
-- **Edge styling**: `Produces` → solid arrow, `Consumes` → dashed arrow (or similar distinction)
-- **Subgraph styling**: Different background colors per subgraph
-
-Output is a Mermaid flowchart string embeddable in Markdown.
-
-```scala
-object MermaidRenderer extends Renderer {
-  def render(chart: FlowChart): String = {
-    // flowchart LR
-    // subgraph Service["Service"]
-    //   component_LedgerActor["Ledger Actor"]
-    //   journal_pekko[("Pekko Journal")]          ← cylinder for Dataset
-    // end
-    // kafka_ledger_movements{{"ledger.movements"}} ← hexagon for Message
-    ???
-  }
-}
-```
-
-### 8.3 Cytoscape.js Renderer — Rich Interactive Viewer
-
-The Cytoscape.js renderer produces a **standalone HTML file** that can be:
-
-- Opened directly in a browser
-- Served by a local HTTP server (like scaladoc)
-- Embedded as an iframe in a documentation site
-- Published as static files to a hosting service
-
-#### 8.3.1 Architecture
+### 11.1 Current Package Structure
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  Generated HTML                                          │
-│                                                          │
-│  ┌─ <head> ──────────────────────────────────────────┐  │
-│  │  Cytoscape.js (from CDN)                           │  │
-│  │  cytoscape-dagre (layout plugin, from CDN)         │  │
-│  │  Viewer CSS                                        │  │
-│  └────────────────────────────────────────────────────┘  │
-│                                                          │
-│  ┌─ <body> ──────────────────────────────────────────┐  │
-│  │                                                    │  │
-│  │  ┌─ Toolbar ──────────────────────────────────┐   │  │
-│  │  │ [Search...] [View: ▼ Full] [Fit] [PNG]     │   │  │
-│  │  └────────────────────────────────────────────┘   │  │
-│  │                                                    │  │
-│  │  ┌─ Canvas ────────────┬─ Detail Panel ───────┐   │  │
-│  │  │                     │                       │   │  │
-│  │  │   ○──→□──→◇──→⬡    │  Node: movements     │   │  │
-│  │  │       ↓             │  Category: Dataset    │   │  │
-│  │  │   ○──→□──→⬡        │  Type: DB Table       │   │  │
-│  │  │                     │  Database: projections│   │  │
-│  │  │                     │  Table: movements     │   │  │
-│  │  │                     │                       │   │  │
-│  │  │                     │  Incoming:            │   │  │
-│  │  │                     │  ← MovementProjection │   │  │
-│  │  └─────────────────────┴───────────────────────┘   │  │
-│  │                                                    │  │
-│  │  ┌─ Legend ───────────────────────────────────┐   │  │
-│  │  │ ○ Compute  □ Dataset  ◇ Message  ⬡ Api    │   │  │
-│  │  │ ─── internal  ╌╌╌ exposed                  │   │  │
-│  │  └────────────────────────────────────────────┘   │  │
-│  │                                                    │  │
-│  │  ┌─ <script> ─────────────────────────────────┐   │  │
-│  │  │  const graphData = { /* JSON flow data */ } │   │  │
-│  │  │  // Viewer initialization code              │   │  │
-│  │  └────────────────────────────────────────────┘   │  │
-│  │                                                    │  │
-│  └────────────────────────────────────────────────────┘  │
-│                                                          │
-└─────────────────────────────────────────────────────────┘
+domainDocs4s-examples/src/main/scala/domaindocs4s/architecture/
+├── lineage/
+│   ├── model.scala                    ← Core types + TastyUtils
+│   ├── TastyDoobieScanner.scala       ← Doobie scanner + SqlUtils
+│   ├── TastyCallGraphExtractor.scala  ← Generic call graph extractor
+│   ├── LineageBuilder.scala           ← Generic lineage builder
+│   ├── MermaidRenderer.scala          ← Mermaid output + URL generation
+│   └── example/
+│       ├── ExampleClasses.scala       ← UserGrpcApi → UserService → UserRepo (real doobie)
+│       └── RenderLineage.scala        ← Main entry point for rendering
 ```
 
-#### 8.3.2 Features
+### 11.2 TASTy Scanning Reuse
 
-**Navigation:**
+The lineage scanners reuse `TastyContext.fromCurrentProcess()` from the core module. Both `Test / fork` and
+`run / fork` must be `true` in sbt for the TASTy context to find compiled classes on the classpath.
 
-- Pan and zoom with mouse/trackpad
-- Fit-to-screen button
-- Minimap for large graphs
+### 11.3 Dependencies
 
-**Selection & Inspection:**
-
-- Click a node to select it; detail panel shows all artifact fields
-- Click an edge to see its type (produces/consumes) and connected nodes
-- Text search across node labels
-
-**Layout:**
-
-- Default: dagre (directed acyclic graph layout) — good for data pipelines
-- Alternative layouts: breadthfirst, cose (force-directed), grid
-- Subgraph-aware: nodes in the same subgraph cluster together
-
-**Visual Encoding:**
-
-- Node shape by category (4 shapes for 4 categories)
-- Edge style by type (solid for Produces, dashed for Consumes)
-- Subgraph → colored background region
-- External (exposed) nodes have a distinct border style (e.g., thicker, colored)
-
-**Export:**
-
-- Export as PNG or SVG for embedding in presentations/wikis
-
-**Views:**
-
-- If the service defines named views, the toolbar includes a view selector dropdown
-- Selecting a view filters the graph to show only relevant nodes/edges
-- "Full" view is always available as the default
-
-#### 8.3.3 Data Format (embedded JSON)
-
-The flow chart is serialized into cytoscape.js-compatible JSON:
-
-```json
-{
-  "elements": {
-    "nodes": [
-      {
-        "data": {
-          "id": "component:LedgerActor",
-          "label": "Ledger Actor",
-          "category": "compute",
-          "internal": true,
-          "parent": "Service"
-        }
-      },
-      {
-        "data": {
-          "id": "Service",
-          "label": "Service"
-        },
-        "classes": ["subgraph"]
-      }
-    ],
-    "edges": [
-      {
-        "data": {
-          "source": "component:grpcApi",
-          "target": "component:LedgerActor",
-          "edgeType": "produces"
-        }
-      }
-    ]
-  },
-  "views": {
-    "Data Ingestion": {
-      "includeNodes": ["component:grpcApi", "component:sagaActors", "component:LedgerActor", "journal:pekko"]
-    }
-  }
-}
-```
-
-#### 8.3.4 Implementation Approach
-
-The Cytoscape.js renderer is a Scala object that:
-
-1. Converts `FlowChart` → cytoscape.js JSON (as above)
-2. Loads an HTML template from resources (`domaindocs4s/arch/viewer/template.html`)
-3. Injects the JSON data and any configuration
-4. Produces a self-contained HTML string
-
-The HTML template loads Cytoscape.js and plugins from CDN. The viewer JavaScript (search, detail panel, export) and CSS
-are embedded in the template.
-
-```scala
-object CytoscapeRenderer extends Renderer {
-  def render(chart: FlowChart): String = {
-    val json = toCytoscapeJson(chart)
-    val template = loadTemplate("domaindocs4s/arch/viewer/template.html")
-    template.replace("{{GRAPH_DATA}}", json)
-  }
-
-  /** Render with views included. */
-  def renderWithViews(chart: FlowChart, views: Map[String, FlowChart]): String
-}
-```
-
-#### 8.3.5 Multi-Page Documentation Site
-
-For services with multiple views or large architectures, the renderer can produce a **multi-page static site**:
-
-```
-docs/
-├── index.html          ← overview with links to all views
-├── full.html           ← complete flow chart
-├── data-ingestion.html ← "Data Ingestion" view
-├── kafka-pipeline.html ← "Kafka Pipeline" view
-├── glossary.html       ← domain glossary (from @domainDoc, if enabled)
-└── assets/
-    ├── viewer.js
-    └── styles.css
-```
+The examples module adds `"org.tpolecat" %% "doobie-core"` for real doobie types in the example classes.
+The scanner itself only depends on `tasty-query` — it pattern-matches TASTy tree shapes without importing doobie.
 
 ---
 
-## 9. Integration with Existing domainDocs4s
+## 12. Open Questions
 
-### 9.1 Package Structure
+1. **Scanner generalization**: The doobie scanner matches specific AST shapes. Should we build a mini-DSL for
+   declaring "match this call chain pattern" to make it easier to add new scanners? Or is hand-written pattern
+   matching sufficient?
 
-The architecture docs live in a separate package within the same module:
+2. **Cross-package scanning**: The current prototype scans a single package. Real services have classes spread
+   across multiple packages. Need recursive package scanning or explicit package lists.
 
-```
-domaindocs4s-core/
-├── src/main/scala/domaindocs4s/
-│   ├── domain/          ← existing @domainDoc annotation
-│   ├── collector/       ← existing TASTy collector
-│   ├── output/          ← existing Glossary renderer
-│   ├── arch/            ← NEW: architecture documentation
-│   │   ├── model.scala       ← Node, Edge, FlowChart, Artifact, etc.
-│   │   ├── dsl.scala         ← DSL functions
-│   │   ├── ExternalSpec.scala
-│   │   ├── scanner/
-│   │   │   ├── CodeScanner.scala
-│   │   │   ├── ResourceScanner.scala
-│   │   │   ├── Fs2GrpcClientScanner.scala
-│   │   │   └── ...
-│   │   ├── render/
-│   │   │   ├── Renderer.scala
-│   │   │   ├── MermaidRenderer.scala
-│   │   │   └── CytoscapeRenderer.scala
-│   │   └── aggregation/
-│   │       ├── SystemAggregator.scala
-│   │       └── ConsistencyChecker.scala
-├── src/main/resources/domaindocs4s/arch/viewer/
-│   └── template.html
-```
+3. **Lineage ↔ Service Flow convergence**: The lineage model (`DiscoveredIntegration`, `ScanResult`) and the
+   service flow model (`Artifact`, `FlowChart`) are separate. They should converge — lineage scanner output
+   could feed into the service flow model, with `DiscoveredIntegration` mapping to `Artifact` instances.
 
-Everything stays in `domainDocs4s-core` for now. If heavy external dependencies are introduced later (e.g., a JSON
-library for spec serialization), we can split then.
+4. **Additional doobie patterns**: The scanner handles `sql"...".query[T].{unique,option,to[F]}` and
+   `sql"...".update.run`. Real codebases also use `HC.stream`, `Fragment.const`, helper methods that wrap
+   doobie, and custom query builders. How much coverage is enough?
 
-### 9.2 TASTy Scanning Reuse
-
-The architecture scanners reuse the same `tasty-query` infrastructure as the domain docs collector. The `TastyContext`
-and symbol traversal machinery is shared; scanners just look for different patterns (gRPC client instantiation rather
-than `@domainDoc` annotations).
-
-### 9.3 Glossary Integration
-
-**Future possibility** (needs further exploration): architecture nodes could optionally link to `@domainDoc`-annotated
-domain concepts — e.g., a DB table node linking to the documented domain model it stores. This could enable showing
-glossary entries in the Cytoscape.js detail panel. Not designed in detail here; the current architecture is compatible
-with adding this later.
+5. **Proto package extraction**: The fs2-grpc scanner sees Java package names, not proto package names.
+   For MVP, use service/method names from generated code.
 
 ---
 
-## 10. Open Questions
+## 13. Example
 
-1. **Scanner implementation depth**: TASTy-based scanners for gRPC/Doobie/Kafka require understanding each library's
-   code patterns. How much investment in scanner accuracy vs. relying on manual declaration?
+See `domainDocs4s-examples/src/main/scala/domaindocs4s/architecture/` for the working prototype.
 
-2. **NodeCategory completeness**: Are the four categories (Api, Message, Dataset, Compute) sufficient, or do we need an
-   escape hatch (e.g., `Other`)? Deferring until real usage reveals gaps.
+Run the full pipeline:
+```
+sbt "examples / runMain domaindocs4s.architecture.lineage.example.RenderLineage"
+```
 
-3. **Proto package extraction**: The fs2-grpc scanner sees Java package names, not proto package names. For MVP, use
-   service/method names from generated code. If cross-referencing with proto definitions is needed later, add pluggable
-   matching.
-
-4. **Integration with existing `DataPipelineDoc.scala`**: The existing prototype in the ledger service uses the current
-   `flow.*` DSL. Migration path: the new model is a superset; existing code can be migrated by replacing `Node` with
-   typed artifacts and freeform edge labels with `produces`/`consumes`.
-
----
-
-## 11. Example
-
-See the companion example files in `domainDocs4s-examples/src/main/scala/domaindocs4s/architecture/` for a concrete,
-simplified model based on the financial-ledger-service and controlling-service.
+Run tests:
+```
+sbt "examples / Test / testOnly domaindocs4s.lineage.TastyLineageScannerTest"
+```
