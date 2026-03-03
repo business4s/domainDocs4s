@@ -35,5 +35,15 @@ object RenderLineage {
 
     println("=== Data flow ===")
     println(MermaidRenderer.toViewUrl(MermaidRenderer.renderDataFlow(result)))
+
+    val classLevelConfig = ClassLevelConfig.builder
+      .hide[UserRepo]
+      .build
+
+    println("=== Class-level access direction ===")
+    println(MermaidRenderer.toViewUrl(MermaidRenderer.renderClassLevel(result, classLevelConfig)))
+
+    println("=== Class-level data flow ===")
+    println(MermaidRenderer.toViewUrl(MermaidRenderer.renderClassLevelDataFlow(result, classLevelConfig)))
   }
 }

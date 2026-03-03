@@ -104,6 +104,27 @@ object IntegrationGroupConfig {
   def builder: Builder = new Builder
 }
 
+/** Configuration for class-level Mermaid rendering. */
+case class ClassLevelConfig(
+    foldByGroup: Set[String] = Set("grpc"),
+    hiddenClasses: Set[String] = Set.empty,
+)
+
+object ClassLevelConfig {
+  class Builder {
+    private var _foldByGroup: Set[String] = Set("grpc")
+    private val _hidden                   = scala.collection.mutable.Set.empty[String]
+
+    def foldByGroup(types: Set[String]): Builder = { _foldByGroup = types; this }
+    def hide[T: reflect.ClassTag]: Builder = {
+      _hidden += reflect.classTag[T].runtimeClass.getSimpleName.stripSuffix("$")
+      this
+    }
+    def build: ClassLevelConfig = ClassLevelConfig(_foldByGroup, _hidden.toSet)
+  }
+  def builder: Builder = new Builder
+}
+
 // ── Phase 2: Lineage builder output ──────────────────────────────────────────
 
 case class ScannedMethod(

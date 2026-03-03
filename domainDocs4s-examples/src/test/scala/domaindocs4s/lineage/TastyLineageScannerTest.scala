@@ -188,6 +188,98 @@ class TastyLineageScannerTest extends AnyFreeSpec {
     }
   }
 
+  "MermaidRenderer class-level" - {
+
+    // Build a result that includes kafka (manual) integrations, matching RenderLineage
+    val manualIntegrations = ManualScanner.builder
+      .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
+      .build
+    val allIntegrations = enrichment.enrich(doobieIntegrations ++ grpcIntegrations ++ manualIntegrations)
+    val resultWithManual = LineageBuilder.build(callGraph, allIntegrations)
+
+    "contains class names as nodes, not individual methods" in {
+      val diagram = MermaidRenderer.renderClassLevel(resultWithManual)
+
+      diagram should include("""["UserGrpcApi"]""")
+      diagram should include("""["UserService"]""")
+      diagram should include("""["UserRepo"]""")
+      diagram should include("""["EventPublisher"]""")
+
+      // Should not contain method-level nodes
+      diagram should not include """["getBalance"]"""
+      diagram should not include """["deposit"]"""
+      diagram should not include """["getHistory"]"""
+    }
+
+    "folds gRPC endpoints by service" in {
+      val diagram = MermaidRenderer.renderClassLevel(resultWithManual)
+
+      // Should contain folded service nodes
+      diagram should include("UserService (ext)")
+      diagram should include("RateService")
+
+      // Should not contain individual gRPC endpoints
+      diagram should not include "UserService/getBalance"
+      diagram should not include "UserService/deposit"
+      diagram should not include "RateService/getRate"
+    }
+
+    "keeps DB tables as individual nodes" in {
+      val diagram = MermaidRenderer.renderClassLevel(resultWithManual)
+
+      diagram should include("users")
+      diagram should include("transactions")
+    }
+
+    "keeps Kafka topics as individual nodes" in {
+      val diagram = MermaidRenderer.renderClassLevel(resultWithManual)
+
+      diagram should include("user.deposit-events")
+    }
+
+    "deduplicates class-to-class call edges" in {
+      val diagram = MermaidRenderer.renderClassLevel(resultWithManual)
+      val lines = diagram.split("\n")
+
+      // UserGrpcApi calls multiple methods on UserService, but should appear as one edge
+      lines.count(_.contains("cls_UserGrpcApi --> cls_UserService")) shouldBe 1
+      lines.count(_.contains("cls_UserService --> cls_UserRepo")) shouldBe 1
+    }
+
+    "hides specified classes from diagram" in {
+      val config = ClassLevelConfig.builder.hide[UserRepo].build
+      val diagram = MermaidRenderer.renderClassLevel(resultWithManual, config)
+
+      diagram should not include """["UserRepo"]"""
+      diagram should include("""["UserGrpcApi"]""")
+      diagram should include("""["UserService"]""")
+      diagram should include("""["EventPublisher"]""")
+    }
+
+    "promotes integrations from hidden class to callers" in {
+      val config = ClassLevelConfig.builder.hide[UserRepo].build
+      val diagram = MermaidRenderer.renderClassLevel(resultWithManual, config)
+
+      // UserRepo's DB integrations should be promoted to UserService
+      diagram should include("cls_UserService")
+      diagram should include("ext_users")
+      diagram should include("ext_transactions")
+
+      // No edges from hidden UserRepo
+      diagram should not include "cls_UserRepo"
+    }
+
+    "removes call edges to hidden classes" in {
+      val config = ClassLevelConfig.builder.hide[UserRepo].build
+      val diagram = MermaidRenderer.renderClassLevel(resultWithManual, config)
+
+      diagram should not include "cls_UserService --> cls_UserRepo"
+      // Other call edges remain
+      diagram should include("cls_UserGrpcApi --> cls_UserService")
+      diagram should include("cls_UserGrpcApi --> cls_EventPublisher")
+    }
+  }
+
   "TastyCallGraphExtractor" - {
 
     "discovers all three classes" in {

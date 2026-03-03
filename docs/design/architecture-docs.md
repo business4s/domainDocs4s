@@ -33,7 +33,9 @@ interactive views.
 | Example classes (doobie+grpc+kafka)| Implemented | `examples: lineage/example/ExampleClasses.scala`|
 | Proto files (user+rate service)  | Implemented | `examples: src/main/protobuf/{user,rate}_service.proto` |
 | Integration grouping             | Implemented | `core: lineage/model.scala` (IntegrationGroupConfig) |
-| Tests (26 tests passing)         | Implemented | `examples: TastyLineageScannerTest.scala`         |
+| Class-level Mermaid rendering    | Implemented | `core: lineage/MermaidRenderer.scala`             |
+| Class-level config (fold+hide)   | Implemented | `core: lineage/model.scala` (ClassLevelConfig)    |
+| Tests (34 tests passing)         | Implemented | `examples: TastyLineageScannerTest.scala`         |
 | Service flow DSL                 | Design only | Section 6 below                                   |
 | External spec / system view      | Design only | Sections 8-9 below                                |
 | Cytoscape.js renderer            | Design only | Section 10.3 below                                |
@@ -120,6 +122,13 @@ case class IntegrationGroupConfig(classToGroup: Map[String, String]) {
   def enrich(integrations: List[DiscoveredIntegration]): List[DiscoveredIntegration]
 }
 // Type-safe builder: IntegrationGroupConfig.builder.group[UserRepo]("user-db").build
+
+// Configuration for class-level Mermaid rendering
+case class ClassLevelConfig(
+    foldByGroup: Set[String] = Set("grpc"),  // integration types to collapse by group
+    hiddenClasses: Set[String] = Set.empty,   // classes to hide (integrations promoted to callers)
+)
+// Type-safe builder: ClassLevelConfig.builder.hide[UserRepo].build
 
 // Phase 2 output — full lineage result
 case class ScanResult(
@@ -255,24 +264,46 @@ are detected by the gRPC scanner instead, keeping concerns separated.
 
 ### 3.8 Mermaid Visualization
 
-`MermaidRenderer` converts `ScanResult` to a mermaid flowchart with two rendering modes:
+`MermaidRenderer` converts `ScanResult` to a mermaid flowchart. There are two levels of detail, each
+with two arrow modes:
 
-- **`render(result)`** — arrows follow access direction (method → target for both reads and writes)
-- **`renderDataFlow(result)`** — arrows follow data flow (target → method for reads, method → target for writes)
+**Method-level** (detailed — each class is a subgraph with method nodes):
+- **`render(result)`** — arrows follow access direction (method → target)
+- **`renderDataFlow(result)`** — arrows follow data flow (target → method for reads)
 
-Visual encoding:
-- Classes as subgraphs containing their methods
-- Integration targets grouped by `group` field into subgraphs (e.g., `user-db`, `UserService`)
-  - Targets with `group = None` render as standalone nodes (backwards compatible)
-  - Within a group, labels are shortened (e.g., `getBalance` instead of `UserService/getBalance`)
-  - When a group name collides with a class subgraph name, `(ext)` is appended to the label
+**Class-level** (architecture overview — each class is a single node):
+- **`renderClassLevel(result, config)`** — arrows follow access direction
+- **`renderClassLevelDataFlow(result, config)`** — arrows follow data flow
+
+Class-level rendering is controlled by `ClassLevelConfig`:
+- **`foldByGroup`** (default `Set("grpc")`): integration types in this set collapse all targets
+  within a group into a single node. E.g., `UserService/getBalance`, `UserService/deposit`,
+  `UserService/getHistory` → one `UserService` hexagon node.
+- **`hiddenClasses`**: classes to exclude from the diagram. Their integrations are promoted to the
+  nearest non-hidden caller class. E.g., hiding `UserRepo` makes `UserService` connect directly to
+  the DB tables `users` and `transactions`. Call edges through hidden classes are resolved
+  transitively (A → B(hidden) → C becomes A → C).
+
+Both use a type-safe builder with `ClassTag`:
+```scala
+val config = ClassLevelConfig.builder
+  .hide[UserRepo]
+  .foldByGroup(Set("grpc", "kafka"))
+  .build
+MermaidRenderer.renderClassLevel(result, config)
+```
+
+Visual encoding (shared across all modes):
 - DB tables as cylinder-shaped nodes (blue)
 - gRPC endpoints as hexagon-shaped nodes (purple)
 - Kafka topics as stadium-shaped nodes (green)
+- Integration targets grouped by `group` field into subgraphs (ungrouped targets render standalone)
+  - When a group name collides with a class name, `(ext)` is appended to the label
 - Call graph edges as solid arrows
 - Read integrations as dashed arrows (`-.->|Read|`)
 - Write integrations as thick arrows (`==>|Write|`)
-- Method color coding: green (Read), red (Write), orange (ReadWrite)
+- ReadWrite integrations as normal arrows (`-->|ReadWrite|`)
+- Node color coding: green (Read), red (Write), orange (ReadWrite)
 
 `MermaidRenderer.toViewUrl(mermaidCode)` generates a `mermaid.live/edit#base64:...` URL for viewing.
 
@@ -285,7 +316,9 @@ sbt "examples / runMain domaindocs4s.architecture.lineage.example.RenderLineage"
 
 Given four example classes using real doobie, fs2-grpc, and manual Kafka declarations
 (`UserGrpcApi → UserService → UserRepo`, `UserGrpcApi → RateServiceFs2Grpc`,
-`UserGrpcApi → EventPublisher → Kafka`):
+`UserGrpcApi → EventPublisher → Kafka`).
+
+**Method-level** lineage chains (text output):
 
 ```
 === Data Lineage Chains ===
@@ -325,6 +358,26 @@ Given four example classes using real doobie, fs2-grpc, and manual Kafka declara
   doobie: Read transactions
     UserGrpcApi.getHistory -> UserService.getHistory -> UserRepo.getTransactions
     evidence: SELECT id, user_id, amount, description FROM transactions WHERE user_id =
+```
+
+**Class-level** diagram with `hide[UserRepo]` (Mermaid nodes and edges):
+```
+Nodes: UserGrpcApi, UserService, EventPublisher  (UserRepo hidden)
+
+Call edges:
+  UserGrpcApi --> UserService
+  UserGrpcApi --> EventPublisher
+
+Integration edges (promoted from hidden UserRepo to UserService):
+  UserService -->|ReadWrite| users
+  UserService -->|ReadWrite| transactions
+
+Folded gRPC (one node per service):
+  UserGrpcApi ==>|Write| UserService (ext)  (hexagon)
+  UserGrpcApi -.->|Read| RateService        (hexagon)
+
+Kafka:
+  EventPublisher ==>|Write| user.deposit-events  (stadium)
 ```
 
 ### 3.10 Learnings and Limitations
@@ -593,23 +646,26 @@ nodes between services.
 
 ### 10.1 Lineage Mermaid Renderer (Implemented)
 
-`MermaidRenderer` in the lineage package converts `ScanResult` to a mermaid flowchart. Two rendering modes:
+`MermaidRenderer` in the lineage package converts `ScanResult` to mermaid flowcharts at two levels:
 
-**Access direction** (`render`):
-- All integration arrows go from method to target (method reads/writes target)
-- Natural for understanding "what does this method access?"
+**Method-level** (detailed view):
+- `render(result)` — access direction (method → target)
+- `renderDataFlow(result)` — data flow (reversed reads)
+- Classes as subgraphs, each method a node
 
-**Data flow** (`renderDataFlow`):
-- Read arrows reversed: target → method (data flows from source to consumer)
-- Write arrows unchanged: method → target (data flows from producer to target)
-- Natural for understanding "where does data come from and where does it go?"
+**Class-level** (architecture overview):
+- `renderClassLevel(result, config)` — access direction
+- `renderClassLevelDataFlow(result, config)` — data flow
+- Each class is a single node (not a subgraph with methods)
+- Configurable via `ClassLevelConfig`: fold integration groups (e.g., collapse all gRPC endpoints
+  per service into one node), hide technical classes (e.g., repo layer) with integration promotion
+  to callers
 
-Visual encoding:
-- Classes as subgraphs, methods as nodes
-- Integration targets grouped into subgraphs by `group` field (ungrouped targets render standalone)
+Visual encoding (both levels):
 - DB tables as cylinder-shaped nodes (blue)
 - gRPC endpoints as hexagon-shaped nodes (purple)
 - Kafka topics as stadium-shaped nodes (green)
+- Integration targets grouped into subgraphs by `group` field (ungrouped targets render standalone)
 - Color-coded by access type (green=Read, red=Write, orange=ReadWrite)
 - Read edges dashed, write edges thick
 - `toViewUrl` generates a `mermaid.live/edit#base64:...` URL (same approach as workflows4s)
@@ -816,12 +872,13 @@ Cons: Needs careful merge logic to avoid clobbering manual entries.
 
 See `domainDocs4s-examples/src/main/scala/domaindocs4s/architecture/` for the working prototype.
 
-Run the full pipeline:
+Run the full pipeline (outputs 4 mermaid.live URLs — method-level and class-level, each in access
+direction and data flow modes):
 ```
 sbt "examples / runMain domaindocs4s.architecture.lineage.example.RenderLineage"
 ```
 
-Run tests:
+Run tests (34 tests):
 ```
 sbt "examples / Test / testOnly domaindocs4s.lineage.TastyLineageScannerTest"
 ```
