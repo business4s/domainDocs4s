@@ -35,6 +35,7 @@ interactive views.
 | External spec / system view      | Design only | Sections 8-9 below                                |
 | Cytoscape.js renderer            | Design only | Section 10.3 below                                |
 | Other scanners (Kafka, etc.)     | Design only | Section 7 below                                   |
+| Backstage integration            | Research    | Section 13 below                                  |
 
 All implemented files are under `domainDocs4s-examples/src/main/scala/domaindocs4s/architecture/`.
 
@@ -634,7 +635,113 @@ doobie or gRPC libraries.
 
 ---
 
-## 13. Example
+## 13. Backstage Integration (Research)
+
+> Not yet implemented. Options documented here for further research.
+
+[Backstage](https://backstage.io/) is an open platform for building developer portals. Its **Software Catalog**
+models services, APIs, and their relationships using YAML descriptor files. domainDocs4s lineage output maps
+naturally onto Backstage's entity model.
+
+### 13.1 Relevant Backstage Entities
+
+| Backstage Kind | Maps from domainDocs4s | Key fields |
+|----------------|------------------------|------------|
+| `Component`    | Scanned service class (e.g., `UserGrpcApi`) | `spec.providesApis`, `spec.consumesApis` |
+| `API`          | `DiscoveredIntegration` with `integrationType = "grpc"` | `spec.type: grpc`, `spec.definition` (proto) |
+| `Resource`     | `DiscoveredIntegration` with `integrationType = "doobie"` | DB tables, Kafka topics |
+| `System`       | Group of related components | `spec.owner`, lifecycle |
+
+### 13.2 Mapping: Lineage → Backstage YAML
+
+A `ScanResult` contains enough information to generate Backstage catalog descriptors:
+
+**API entities** from gRPC integrations:
+```yaml
+apiVersion: backstage.io/v1alpha1
+kind: API
+metadata:
+  name: user-service
+  description: User balance and transaction management
+spec:
+  type: grpc
+  lifecycle: production
+  owner: team-payments
+  definition: |
+    # Could embed or reference the .proto file
+    service UserService { ... }
+```
+
+**Component entities** with `providesApis` / `consumesApis` derived from scan:
+```yaml
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: user-grpc-api
+spec:
+  type: service
+  lifecycle: production
+  owner: team-payments
+  providesApis:
+    - user-service          # from Write integrations (server impl)
+  consumesApis:
+    - rate-service          # from Read integrations (client usage)
+```
+
+The key mapping rules:
+- `DiscoveredIntegration(accessType=Write, integrationType="grpc")` → `spec.providesApis` entry
+- `DiscoveredIntegration(accessType=Read, integrationType="grpc")` → `spec.consumesApis` entry
+- Each unique gRPC service name → a `Kind: API` entity with `spec.type: grpc`
+- DB tables could map to `Kind: Resource` entities
+
+### 13.3 Integration Options
+
+**Option A: Generate catalog-info.yaml as a renderer output**
+
+Add a `BackstageCatalogRenderer` alongside `MermaidRenderer` that takes a `ScanResult` and produces
+Backstage-compatible YAML. This would be run during CI or as an sbt task, outputting catalog files
+that Backstage discovers via its entity provider.
+
+Pros: Simple, stateless, fits existing architecture (just another renderer).
+Cons: Requires additional metadata (owner, lifecycle, system) that the scanner doesn't produce — needs
+a user-provided mapping or config file.
+
+**Option B: Backstage entity provider plugin**
+
+Build a custom Backstage backend plugin that calls domainDocs4s at catalog refresh time. The plugin
+would run the scanner and translate results into Backstage entities dynamically.
+
+Pros: Always up-to-date, no generated files to commit.
+Cons: Requires a running Backstage instance, more complex to build, Backstage plugin in TypeScript
+vs domainDocs4s in Scala.
+
+**Option C: Enrich existing catalog-info.yaml**
+
+Many teams already maintain `catalog-info.yaml` manually. domainDocs4s could read an existing file,
+add/update `providesApis` and `consumesApis` based on scan results, and write it back — keeping
+manually maintained fields (owner, lifecycle, description) untouched.
+
+Pros: Works with existing Backstage setups, low risk, additive only.
+Cons: Needs careful merge logic to avoid clobbering manual entries.
+
+### 13.4 Open Questions for Further Research
+
+1. **Granularity**: Should each gRPC RPC method be its own API entity (`user-service-get-balance`), or
+   should the whole proto service be one API entity (`user-service`)? Backstage convention seems to
+   favor service-level granularity with the proto definition containing method details.
+2. **DB tables as Resources**: Backstage has `Kind: Resource` for infrastructure. DB tables could be
+   modeled there with `spec.type: database`. Worth exploring for the doobie scanner output.
+3. **Relation to External Spec (section 8)**: The External Spec JSON format and Backstage YAML serve
+   similar purposes (declaring what a service produces/consumes). Could Backstage YAML replace the
+   custom JSON format, or should both exist with a shared internal model?
+4. **Proto file linking**: Backstage API entities support `spec.definition` for the API schema. For
+   gRPC, this could embed or `$text: ./path/to/service.proto` reference the actual proto file.
+5. **`catalog-info.yaml` location**: Backstage typically expects one `catalog-info.yaml` at the repo
+   root. Multi-service repos need the multi-entity format (`---` separated documents in one file).
+
+---
+
+## 14. Example
 
 See `domainDocs4s-examples/src/main/scala/domaindocs4s/architecture/` for the working prototype.
 
