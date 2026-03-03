@@ -25,7 +25,8 @@ lazy val commonSettings = Seq(
   ),
   versionScheme := Some("semver-spec"),
   Test / tpolecatExcludeOptions += ScalacOptions.warnNonUnitStatement,
-  Test / fork := true // required for tasty collector to work
+  Test / fork := true, // required for tasty collector to work
+  run / fork  := true,
 )
 
 lazy val root = (project in file("."))
