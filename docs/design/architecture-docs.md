@@ -30,7 +30,8 @@ interactive views.
 | Mermaid visualization            | Implemented | `lineage/MermaidRenderer.scala`                   |
 | Example classes (doobie+fs2-grpc)| Implemented | `lineage/example/ExampleClasses.scala`            |
 | Proto files (user+rate service)  | Implemented | `src/main/protobuf/{user,rate}_service.proto`     |
-| Tests (14 tests passing)         | Implemented | `lineage/TastyLineageScannerTest.scala`           |
+| Integration grouping             | Implemented | `lineage/model.scala` (IntegrationGroupConfig)    |
+| Tests (16 tests passing)         | Implemented | `lineage/TastyLineageScannerTest.scala`           |
 | Service flow DSL                 | Design only | Section 6 below                                   |
 | External spec / system view      | Design only | Sections 8-9 below                                |
 | Cytoscape.js renderer            | Design only | Section 10.3 below                                |
@@ -105,7 +106,14 @@ case class DiscoveredIntegration(
     integrationType: String,        // "doobie", "kafka", "grpc", ...
     target: String,                 // table name, topic, endpoint, ...
     evidence: String,               // the actual SQL, config key, ...
+    group: Option[String] = None,   // logical group: service name, database, ...
 )
+
+// Enrichment — assign groups to integrations by source class
+case class IntegrationGroupConfig(classToGroup: Map[String, String]) {
+  def enrich(integrations: List[DiscoveredIntegration]): List[DiscoveredIntegration]
+}
+// Type-safe builder: IntegrationGroupConfig.builder.group[UserRepo]("user-db").build
 
 // Phase 2 output — full lineage result
 case class ScanResult(
@@ -129,6 +137,9 @@ Key design decisions:
 - Access types propagate recursively: if `Service.deposit` calls `Repo.updateBalance` (Write) and
   `Repo.insertTransaction` (Write), then `Service.deposit` is Write. If it called both reads and writes,
   it would be ReadWrite.
+- `group` enables visual grouping in diagrams: gRPC targets are auto-grouped by service name (set by the
+  scanner), while DB tables are grouped via user-supplied `IntegrationGroupConfig` enrichment (e.g.,
+  all integrations from `UserRepo` belong to `"user-db"`).
 
 ### 3.3 Doobie Scanner
 
@@ -160,7 +171,7 @@ The scanner detects two patterns:
 
 **Server detection (Write):** A class that extends a `*Fs2Grpc` trait is a gRPC server implementation.
 For each RPC method defined in the parent trait that the class implements, the scanner emits a Write
-integration with target `ServiceName/methodName`.
+integration with target `ServiceName/methodName` and `group = Some(serviceName)`.
 
 Detection approach:
 1. Inspect `cls.parents` (type-level, not `parentClasses` — see learnings below)
@@ -171,7 +182,7 @@ Detection approach:
 
 **Client detection (Read):** A `val` field whose type name ends with `*Fs2Grpc` is a gRPC client.
 When a method body calls `field.rpcMethod(...)`, the scanner emits a Read integration with target
-`ServiceName/methodName`.
+`ServiceName/methodName` and `group = Some(serviceName)`.
 
 Detection approach:
 1. Resolve field types (like the call graph extractor), handling both `TypeRef` and `AppliedType`
@@ -214,6 +225,10 @@ are detected by the gRPC scanner instead, keeping concerns separated.
 
 Visual encoding:
 - Classes as subgraphs containing their methods
+- Integration targets grouped by `group` field into subgraphs (e.g., `user-db`, `UserService`)
+  - Targets with `group = None` render as standalone nodes (backwards compatible)
+  - Within a group, labels are shortened (e.g., `getBalance` instead of `UserService/getBalance`)
+  - When a group name collides with a class subgraph name, `(ext)` is appended to the label
 - DB tables as cylinder-shaped nodes (blue)
 - gRPC endpoints as hexagon-shaped nodes (purple)
 - Call graph edges as solid arrows
@@ -548,6 +563,7 @@ nodes between services.
 
 Visual encoding:
 - Classes as subgraphs, methods as nodes
+- Integration targets grouped into subgraphs by `group` field (ungrouped targets render standalone)
 - DB tables as cylinder-shaped nodes (blue)
 - gRPC endpoints as hexagon-shaped nodes (purple)
 - Color-coded by access type (green=Read, red=Write, orange=ReadWrite)
