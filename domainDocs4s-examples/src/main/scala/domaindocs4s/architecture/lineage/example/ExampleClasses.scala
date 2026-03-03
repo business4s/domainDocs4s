@@ -66,6 +66,19 @@ class UserService(val repo: UserRepo) {
     repo.getTransactions(userId)
 }
 
+/** Event publisher — publishes domain events to Kafka.
+  *
+  * The actual Kafka interaction is library-specific (fs2-kafka, pekko-kafka, etc.)
+  * and can't be auto-detected from TASTy. Use ManualScanner to declare the
+  * Kafka integration:
+  *   ManualScanner.builder
+  *     .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
+  *     .build
+  */
+class EventPublisher {
+  def publishDeposit(@scala.annotation.unused userId: Long, @scala.annotation.unused amount: BigDecimal): IO[Unit] = IO.unit
+}
+
 /** gRPC API — entry point, delegates to service.
   *
   * Implements UserServiceFs2Grpc (server exposure) and consumes
@@ -74,6 +87,7 @@ class UserService(val repo: UserRepo) {
 class UserGrpcApi(
     val service: UserService,
     val rateClient: rateGrpc.RateServiceFs2Grpc[IO, Metadata],
+    val publisher: EventPublisher,
     xa: Transactor[IO],
 ) extends userGrpc.UserServiceFs2Grpc[IO, Metadata] {
 
@@ -85,6 +99,7 @@ class UserGrpcApi(
     for {
       rate <- rateClient.getRate(rateGrpc.GetRateRequest(request.currency), ctx)
       _    <- service.deposit(request.userId, BigDecimal(request.amount)).transact(xa)
+      _    <- publisher.publishDeposit(request.userId, BigDecimal(request.amount))
     } yield userGrpc.DepositResponse(true)
 
   def getHistory(request: userGrpc.GetHistoryRequest, ctx: Metadata): IO[userGrpc.GetHistoryResponse] =

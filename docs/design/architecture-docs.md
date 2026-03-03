@@ -22,23 +22,26 @@ interactive views.
 
 | Component                        | Status      | Location                                          |
 |----------------------------------|-------------|---------------------------------------------------|
-| Data lineage model               | Implemented | `lineage/model.scala`                             |
-| Doobie scanner (TASTy-based)     | Implemented | `lineage/TastyDoobieScanner.scala`                |
-| fs2-grpc scanner (server+client) | Implemented | `lineage/TastyFs2GrpcScanner.scala`               |
-| Call graph extractor             | Implemented | `lineage/TastyCallGraphExtractor.scala`           |
-| Lineage builder                  | Implemented | `lineage/LineageBuilder.scala`                    |
-| Mermaid visualization            | Implemented | `lineage/MermaidRenderer.scala`                   |
-| Example classes (doobie+fs2-grpc)| Implemented | `lineage/example/ExampleClasses.scala`            |
-| Proto files (user+rate service)  | Implemented | `src/main/protobuf/{user,rate}_service.proto`     |
-| Integration grouping             | Implemented | `lineage/model.scala` (IntegrationGroupConfig)    |
-| Tests (16 tests passing)         | Implemented | `lineage/TastyLineageScannerTest.scala`           |
+| Data lineage model               | Implemented | `core: lineage/model.scala`                       |
+| Doobie scanner (TASTy-based)     | Implemented | `core: lineage/TastyDoobieScanner.scala`          |
+| fs2-grpc scanner (server+client) | Implemented | `core: lineage/TastyFs2GrpcScanner.scala`         |
+| Manual scanner (Kafka + custom)  | Implemented | `core: lineage/ManualScanner.scala`               |
+| Method ref macro (`_.method`)    | Implemented | `core: macros/MethodRefMacro.scala`               |
+| Call graph extractor             | Implemented | `core: lineage/TastyCallGraphExtractor.scala`     |
+| Lineage builder                  | Implemented | `core: lineage/LineageBuilder.scala`              |
+| Mermaid visualization            | Implemented | `core: lineage/MermaidRenderer.scala`             |
+| Example classes (doobie+grpc+kafka)| Implemented | `examples: lineage/example/ExampleClasses.scala`|
+| Proto files (user+rate service)  | Implemented | `examples: src/main/protobuf/{user,rate}_service.proto` |
+| Integration grouping             | Implemented | `core: lineage/model.scala` (IntegrationGroupConfig) |
+| Tests (26 tests passing)         | Implemented | `examples: TastyLineageScannerTest.scala`         |
 | Service flow DSL                 | Design only | Section 6 below                                   |
 | External spec / system view      | Design only | Sections 8-9 below                                |
 | Cytoscape.js renderer            | Design only | Section 10.3 below                                |
-| Other scanners (Kafka, etc.)     | Design only | Section 7 below                                   |
+| Other TASTy scanners (Slick etc.)| Design only | Section 7 below                                   |
 | Backstage integration            | Research    | Section 13 below                                  |
 
-All implemented files are under `domainDocs4s-examples/src/main/scala/domaindocs4s/architecture/`.
+All lineage infrastructure is in `domainDocs4s-core/src/main/scala/domaindocs4s/architecture/lineage/`.
+Example classes and tests are in `domainDocs4s-examples/`.
 
 ---
 
@@ -52,15 +55,18 @@ scanners (kafka, gRPC, etc.) without changing the lineage builder.
 ```
 Phase 0: Call Graph Extraction          Phase 1: Integration Scanning
 ┌──────────────────────────┐            ┌───────────────────────────┐
-│  TastyCallGraphExtractor │            │    TastyDoobieScanner     │
-│                          │            │    TastyFs2GrpcScanner    │
-│  TASTy ──→ List[         │            │                           │
-│    ExtractedMethod       │            │  TASTy ──→ List[          │
-│  ]                       │            │    DiscoveredIntegration   │
-│                          │            │  ]                        │
-│  Generic: any package    │            │                           │
-│  field.method() calls    │            │  Per-scanner detection    │
-└────────────┬─────────────┘            └─────────────┬─────────────┘
+│  TastyCallGraphExtractor │            │  TASTy-based (automatic): │
+│                          │            │    TastyDoobieScanner     │
+│  TASTy ──→ List[         │            │    TastyFs2GrpcScanner    │
+│    ExtractedMethod       │            │                           │
+│  ]                       │            │  Manual declaration:      │
+│                          │            │    ManualScanner          │
+│  Generic: any package    │            │    (Kafka, custom, ...)   │
+│  field.method() calls    │            │                           │
+└────────────┬─────────────┘            │  All ──→ List[            │
+             │                          │    DiscoveredIntegration   │
+             │                          │  ]                        │
+             │                          └─────────────┬─────────────┘
              │                                        │
              └──────────────┬─────────────────────────┘
                             ▼
@@ -190,7 +196,38 @@ Detection approach:
 3. Walk method bodies with `TreeTraverser` looking for `Apply(Select(Ident(field), method), _)` patterns
 4. Service name derived from the field's type name minus the `Fs2Grpc` suffix
 
-### 3.5 Call Graph Extractor
+### 3.5 Manual Scanner (Kafka and Custom Integrations)
+
+`ManualScanner` handles integrations that can't be auto-detected from TASTy — Kafka producers/consumers
+(library-specific: fs2-kafka, pekko-kafka, etc.), custom protocols, or any integration where the usage
+pattern varies too much for reliable AST matching.
+
+The builder uses a compile-time macro (`MethodRefMacro` in `domainDocs4s-core`) to extract class and
+method names from `_.methodName` lambdas, providing type-safe references instead of raw strings:
+
+```scala
+val manualIntegrations = ManualScanner.builder
+  .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
+  .method[EventConsumer](_.consume).reads.kafka("input.events", cluster = "Analytics")
+  .method[S3Exporter](_.export).writes.custom("s3", "my-bucket/exports", group = Some("S3"))
+  .build
+```
+
+Key design decisions:
+- **Same output type**: Produces `List[DiscoveredIntegration]`, identical to automatic scanners.
+  Composable via simple concatenation before passing to `LineageBuilder`.
+- **Kafka cluster grouping**: `.kafka(topic, cluster)` sets `group = Some(cluster)`, defaulting to
+  `"Kafka"`. Topics render grouped by cluster in diagrams.
+- **Generic escape hatch**: `.custom(integrationType, target)` supports any integration type not
+  covered by specific methods. The `kafka()` method itself delegates to `custom()`.
+- **Macro in core module**: `MethodRefMacro` lives in `domainDocs4s-core` (compiles before examples)
+  and extracts `(className, methodName)` from `T => Any` lambdas at compile time. Zero runtime overhead.
+
+The manual scanner integrates with the call graph: if `UserGrpcApi.deposit` calls
+`EventPublisher.publishDeposit`, and ManualScanner declares that `publishDeposit` writes to Kafka,
+the lineage builder produces the chain: `UserGrpcApi.deposit → EventPublisher.publishDeposit → kafka:user.deposit-events`.
+
+### 3.6 Call Graph Extractor
 
 `TastyCallGraphExtractor` is generic (not scanner-specific). It:
 
@@ -206,7 +243,7 @@ Note: The call graph extractor currently only resolves simple `TypeRef` field ty
 `AppliedType` (e.g., `RateServiceFs2Grpc[IO, Metadata]`) are not resolved — those external calls
 are detected by the gRPC scanner instead, keeping concerns separated.
 
-### 3.6 Lineage Builder
+### 3.7 Lineage Builder
 
 `LineageBuilder.build(callGraph, integrations)` combines both phases:
 
@@ -216,7 +253,7 @@ are detected by the gRPC scanner instead, keeping concerns separated.
 3. Finds entry points (methods with no callers) and walks the call graph to discover all paths
    from entry point to integration, producing `LineageChain` values
 
-### 3.7 Mermaid Visualization
+### 3.8 Mermaid Visualization
 
 `MermaidRenderer` converts `ScanResult` to a mermaid flowchart with two rendering modes:
 
@@ -231,6 +268,7 @@ Visual encoding:
   - When a group name collides with a class subgraph name, `(ext)` is appended to the label
 - DB tables as cylinder-shaped nodes (blue)
 - gRPC endpoints as hexagon-shaped nodes (purple)
+- Kafka topics as stadium-shaped nodes (green)
 - Call graph edges as solid arrows
 - Read integrations as dashed arrows (`-.->|Read|`)
 - Write integrations as thick arrows (`==>|Write|`)
@@ -243,10 +281,11 @@ Run with:
 sbt "examples / runMain domaindocs4s.architecture.lineage.example.RenderLineage"
 ```
 
-### 3.8 Example Output
+### 3.9 Example Output
 
-Given three example classes using real doobie and fs2-grpc
-(`UserGrpcApi → UserService → UserRepo`, `UserGrpcApi → RateServiceFs2Grpc`):
+Given four example classes using real doobie, fs2-grpc, and manual Kafka declarations
+(`UserGrpcApi → UserService → UserRepo`, `UserGrpcApi → RateServiceFs2Grpc`,
+`UserGrpcApi → EventPublisher → Kafka`):
 
 ```
 === Data Lineage Chains ===
@@ -267,6 +306,10 @@ Given three example classes using real doobie and fs2-grpc
     UserGrpcApi.deposit -> UserService.deposit -> UserRepo.insertTransaction
     evidence: INSERT INTO transactions (user_id, amount, description) VALUES (, , )
 
+  kafka: Write user.deposit-events
+    UserGrpcApi.deposit -> EventPublisher.publishDeposit
+    evidence: manual declaration
+
   grpc: Write UserService/getBalance
     UserGrpcApi.getBalance
     evidence: implements UserServiceFs2Grpc
@@ -284,7 +327,7 @@ Given three example classes using real doobie and fs2-grpc
     evidence: SELECT id, user_id, amount, description FROM transactions WHERE user_id =
 ```
 
-### 3.9 Learnings and Limitations
+### 3.10 Learnings and Limitations
 
 **What worked well:**
 - tasty-query gives full access to method bodies, types, and symbol resolution
@@ -493,7 +536,7 @@ Implemented and planned scanners:
 | `DoobieScanner`        | Doobie SQL table references   | Implemented |
 | `Fs2GrpcClientScanner` | gRPC client usages            | Implemented |
 | `Fs2GrpcServerScanner` | gRPC service implementations  | Implemented |
-| `Fs2KafkaScanner`      | Kafka topic configurations    | Planned     |
+| `ManualScanner`        | Kafka, custom integrations    | Implemented |
 | `SlickTableScanner`    | Slick table definitions       | Planned     |
 | `SttpClientScanner`    | HTTP client calls             | Planned     |
 
@@ -566,6 +609,7 @@ Visual encoding:
 - Integration targets grouped into subgraphs by `group` field (ungrouped targets render standalone)
 - DB tables as cylinder-shaped nodes (blue)
 - gRPC endpoints as hexagon-shaped nodes (purple)
+- Kafka topics as stadium-shaped nodes (green)
 - Color-coded by access type (green=Read, red=Write, orange=ReadWrite)
 - Read edges dashed, write edges thick
 - `toViewUrl` generates a `mermaid.live/edit#base64:...` URL (same approach as workflows4s)
@@ -592,21 +636,28 @@ A rich interactive viewer producing standalone HTML with:
 ### 11.1 Current Package Structure
 
 ```
+domainDocs4s-core/
+├── src/main/scala/domaindocs4s/
+│   ├── macros/
+│   │   └── MethodRefMacro.scala           ← Compile-time _.method name extraction
+│   └── architecture/lineage/
+│       ├── model.scala                    ← Core types + TastyUtils
+│       ├── TastyDoobieScanner.scala       ← Doobie scanner + SqlUtils
+│       ├── TastyFs2GrpcScanner.scala      ← fs2-grpc server + client scanner
+│       ├── ManualScanner.scala            ← Manual integration declarations (Kafka, custom)
+│       ├── TastyCallGraphExtractor.scala  ← Generic call graph extractor
+│       ├── LineageBuilder.scala           ← Generic lineage builder
+│       └── MermaidRenderer.scala          ← Mermaid output + URL generation
+
 domainDocs4s-examples/
 ├── src/main/protobuf/
 │   ├── user_service.proto             ← UserService gRPC definition
 │   └── rate_service.proto             ← RateService gRPC definition
 ├── src/main/scala/domaindocs4s/architecture/
-│   └── lineage/
-│       ├── model.scala                    ← Core types + TastyUtils
-│       ├── TastyDoobieScanner.scala       ← Doobie scanner + SqlUtils
-│       ├── TastyFs2GrpcScanner.scala      ← fs2-grpc server + client scanner
-│       ├── TastyCallGraphExtractor.scala  ← Generic call graph extractor
-│       ├── LineageBuilder.scala           ← Generic lineage builder
-│       ├── MermaidRenderer.scala          ← Mermaid output + URL generation
-│       └── example/
-│           ├── ExampleClasses.scala       ← UserGrpcApi → UserService → UserRepo
-│           └── RenderLineage.scala        ← Main entry point for rendering
+│   └── lineage/example/
+│       ├── ExampleClasses.scala       ← UserGrpcApi → UserService → UserRepo → DB
+│       │                                 UserGrpcApi → EventPublisher → Kafka
+│       └── RenderLineage.scala        ← Main entry point for rendering
 ```
 
 ### 11.2 TASTy Scanning Reuse
@@ -616,14 +667,18 @@ The lineage scanners reuse `TastyContext.fromCurrentProcess()` from the core mod
 
 ### 11.3 Dependencies
 
-The examples module uses:
+The core module (`domainDocs4s-core`) depends on:
+- `"ch.epfl.scala" %% "tasty-query"` — used by all TASTy-based scanners and `TastyUtils`
+
+The TASTy scanners only depend on `tasty-query` — they pattern-match TASTy tree shapes by string name
+without importing doobie or gRPC libraries. This is why all lineage infrastructure lives in core.
+`ManualScanner` depends on `MethodRefMacro` (uses `scala.quoted.*` macros).
+
+The examples module (`domainDocs4s-examples`) depends on core and adds:
 - `"org.tpolecat" %% "doobie-core"` for real doobie types in the example classes
 - `sbt-fs2-grpc` plugin for proto compilation and fs2-grpc code generation (brings in `fs2-grpc-runtime`,
   `scalapb-runtime`, `grpc-api` transitively)
 - `-Wconf:src=target/scala-.*:s` to suppress warnings from generated protobuf/scalapb code
-
-The scanners themselves only depend on `tasty-query` — they pattern-match TASTy tree shapes without importing
-doobie or gRPC libraries.
 
 ---
 

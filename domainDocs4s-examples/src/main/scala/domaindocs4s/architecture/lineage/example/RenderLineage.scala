@@ -20,10 +20,14 @@ object RenderLineage {
     val doobieIntegrations = new TastyDoobieScanner().scan(pkg)
     val grpcIntegrations   = new TastyFs2GrpcScanner().scan(pkg)
 
+    val manualIntegrations = ManualScanner.builder
+      .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
+      .build
+
     val enrichment = IntegrationGroupConfig.builder
       .group[UserRepo]("user-db")
       .build
-    val allIntegrations = enrichment.enrich(doobieIntegrations ++ grpcIntegrations)
+    val allIntegrations = enrichment.enrich(doobieIntegrations ++ grpcIntegrations ++ manualIntegrations)
     val result          = LineageBuilder.build(callGraph, allIntegrations)
 
     println("=== Access direction ===")

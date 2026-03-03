@@ -1,7 +1,7 @@
 package domaindocs4s.lineage
 
 import domaindocs4s.architecture.lineage.*
-import domaindocs4s.architecture.lineage.example.UserRepo
+import domaindocs4s.architecture.lineage.example.{EventPublisher, UserGrpcApi, UserRepo, UserService}
 import domaindocs4s.collector.TastyContext
 import org.scalatest.freespec.AnyFreeSpec
 import org.scalatest.matchers.should.Matchers.*
@@ -112,6 +112,79 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       val rateServiceIntegrations = grpcIntegrations.filter(_.target.startsWith("RateService/"))
       rateServiceIntegrations should not be empty
       rateServiceIntegrations.foreach(_.group shouldBe Some("RateService"))
+    }
+  }
+
+  "ManualScanner" - {
+
+    "produces kafka integrations with correct fields" in {
+      val manual = ManualScanner.builder
+        .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
+        .build
+
+      manual should have size 1
+      val di = manual.head
+      di.method shouldBe MethodRef("EventPublisher", "publishDeposit")
+      di.accessType shouldBe DataAccessType.Write
+      di.integrationType shouldBe "kafka"
+      di.target shouldBe "user.deposit-events"
+      di.evidence shouldBe "manual declaration"
+      di.group shouldBe Some("Kafka")
+    }
+
+    "uses default Kafka cluster as group" in {
+      val manual = ManualScanner.builder
+        .method[UserRepo](_.getBalance).reads.kafka("some.topic")
+        .build
+
+      manual.head.group shouldBe Some("Kafka")
+    }
+
+    "supports custom cluster name" in {
+      val manual = ManualScanner.builder
+        .method[UserRepo](_.getBalance).reads.kafka("analytics.events", cluster = "Analytics")
+        .build
+
+      manual.head.group shouldBe Some("Analytics")
+    }
+
+    "supports generic custom integration type" in {
+      val manual = ManualScanner.builder
+        .method[UserRepo](_.getBalance).writes.custom("s3", "my-bucket/exports", group = Some("S3"))
+        .build
+
+      val di = manual.head
+      di.integrationType shouldBe "s3"
+      di.target shouldBe "my-bucket/exports"
+      di.group shouldBe Some("S3")
+    }
+
+    "composes with automatic scanner results in LineageBuilder" in {
+      val manualIntegrations = ManualScanner.builder
+        .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
+        .build
+
+      val allIntegrations = enrichment.enrich(doobieIntegrations ++ grpcIntegrations ++ manualIntegrations)
+      val resultWithManual = LineageBuilder.build(callGraph, allIntegrations)
+
+      val depositChains = resultWithManual.lineageFrom(MethodRef("UserGrpcApi", "deposit"))
+      val kafkaChains = depositChains.filter(_.integration.integrationType == "kafka")
+      kafkaChains should have size 1
+      kafkaChains.head.integration.target shouldBe "user.deposit-events"
+      kafkaChains.head.integration.accessType shouldBe DataAccessType.Write
+      kafkaChains.head.path.map(_.className) shouldBe List("UserGrpcApi", "EventPublisher")
+    }
+
+    "supports multiple declarations in a single builder" in {
+      val manual = ManualScanner.builder
+        .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
+        .method[UserGrpcApi](_.getHistory).reads.kafka("user.history-events", cluster = "Analytics")
+        .method[UserService](_.deposit).writes.custom("audit", "audit-log", group = Some("Audit"))
+        .build
+
+      manual should have size 3
+      manual.count(_.integrationType == "kafka") shouldBe 2
+      manual.count(_.integrationType == "audit") shouldBe 1
     }
   }
 
