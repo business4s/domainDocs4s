@@ -2,15 +2,21 @@ package domaindocs4s.architecture.lineage.example
 
 import doobie.*
 import doobie.implicits.*
-import cats.syntax.all.*
+import cats.effect.IO
+import io.grpc.Metadata
+import domaindocs4s.architecture.lineage.example.grpc.user_service as userGrpc
+import domaindocs4s.architecture.lineage.example.grpc.rate_service as rateGrpc
 
 // ============================================================================
-// Example service layers with real doobie for TASTy scanning.
+// Example service layers with real doobie + fs2-grpc for TASTy scanning.
 //
 // Architecture: UserGrpcApi -> UserService -> UserRepo -> Database
+//               UserGrpcApi -> RateServiceFs2Grpc (gRPC client)
 //
 // UserRepo uses real doobie: sql"..." interpolation, .query[T].unique,
 // .update.run, etc. The TASTy scanner detects these patterns.
+// UserGrpcApi implements UserServiceFs2Grpc (server) and calls
+// RateServiceFs2Grpc (client). The gRPC scanner detects these patterns.
 // ============================================================================
 
 // ── Domain types ─────────────────────────────────────────────────────────────
@@ -20,13 +26,6 @@ object Transaction {
   given Read[Transaction] = Read.derived
   given Write[Transaction] = Write.derived
 }
-
-case class GetBalanceRequest(userId: Long)
-case class GetBalanceResponse(balance: BigDecimal)
-case class DepositRequest(userId: Long, amount: BigDecimal)
-case class DepositResponse(success: Boolean)
-case class GetHistoryRequest(userId: Long)
-case class GetHistoryResponse(transactions: List[Transaction])
 
 // ============================================================================
 // Service layers — real method bodies that produce inspectable TASTy
@@ -67,15 +66,29 @@ class UserService(val repo: UserRepo) {
     repo.getTransactions(userId)
 }
 
-/** gRPC API — entry point, delegates to service. */
-class UserGrpcApi(val service: UserService) {
+/** gRPC API — entry point, delegates to service.
+  *
+  * Implements UserServiceFs2Grpc (server exposure) and consumes
+  * RateServiceFs2Grpc (client usage). The gRPC scanner detects both.
+  */
+class UserGrpcApi(
+    val service: UserService,
+    val rateClient: rateGrpc.RateServiceFs2Grpc[IO, Metadata],
+    xa: Transactor[IO],
+) extends userGrpc.UserServiceFs2Grpc[IO, Metadata] {
 
-  def getBalance(req: GetBalanceRequest): ConnectionIO[GetBalanceResponse] =
-    service.getBalance(req.userId).map(GetBalanceResponse(_))
+  def getBalance(request: userGrpc.GetBalanceRequest, ctx: Metadata): IO[userGrpc.GetBalanceResponse] =
+    service.getBalance(request.userId).transact(xa)
+      .map(b => userGrpc.GetBalanceResponse(b.toString))
 
-  def deposit(req: DepositRequest): ConnectionIO[DepositResponse] =
-    service.deposit(req.userId, req.amount).as(DepositResponse(true))
+  def deposit(request: userGrpc.DepositRequest, ctx: Metadata): IO[userGrpc.DepositResponse] =
+    for {
+      rate <- rateClient.getRate(rateGrpc.GetRateRequest(request.currency), ctx)
+      _    <- service.deposit(request.userId, BigDecimal(request.amount)).transact(xa)
+    } yield userGrpc.DepositResponse(true)
 
-  def getHistory(req: GetHistoryRequest): ConnectionIO[GetHistoryResponse] =
-    service.getHistory(req.userId).map(GetHistoryResponse(_))
+  def getHistory(request: userGrpc.GetHistoryRequest, ctx: Metadata): IO[userGrpc.GetHistoryResponse] =
+    service.getHistory(request.userId).transact(xa)
+      .map(txs => userGrpc.GetHistoryResponse(txs.map(t =>
+        userGrpc.TransactionProto(t.id, t.userId, t.amount.toString, t.description))))
 }

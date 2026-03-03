@@ -15,16 +15,15 @@ object RenderLineage {
 
     val pkg = "domaindocs4s.architecture.lineage.example"
 
-    val callGraph    = new TastyCallGraphExtractor().extract(pkg)
-    val integrations = new TastyDoobieScanner().scan(pkg)
-    val result       = LineageBuilder.build(callGraph, integrations)
+    val callGraph         = new TastyCallGraphExtractor().extract(pkg)
+    val doobieIntegrations = new TastyDoobieScanner().scan(pkg)
+    val grpcIntegrations   = new TastyFs2GrpcScanner().scan(pkg)
+    val result             = LineageBuilder.build(callGraph, doobieIntegrations ++ grpcIntegrations)
 
-    val mermaid = MermaidRenderer.render(result)
-    val url     = MermaidRenderer.toViewUrl(mermaid)
+    println("=== Access direction ===")
+    println(MermaidRenderer.toViewUrl(MermaidRenderer.render(result)))
 
-    println("=== Mermaid Diagram ===")
-    println(mermaid)
-    println("=== View URL ===")
-    println(url)
+    println("=== Data flow ===")
+    println(MermaidRenderer.toViewUrl(MermaidRenderer.renderDataFlow(result)))
   }
 }

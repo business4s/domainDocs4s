@@ -5,7 +5,15 @@ import java.util.Base64
 
 object MermaidRenderer {
 
-  def render(result: ScanResult): String = {
+  /** Render with arrows following call/access direction (method → target for both reads and writes). */
+  def render(result: ScanResult): String =
+    renderInternal(result, dataFlow = false)
+
+  /** Render with arrows following data flow (target → method for reads, method → target for writes). */
+  def renderDataFlow(result: ScanResult): String =
+    renderInternal(result, dataFlow = true)
+
+  private def renderInternal(result: ScanResult, dataFlow: Boolean): String = {
     val sb = new StringBuilder
     sb.append("flowchart LR\n")
 
@@ -27,9 +35,13 @@ object MermaidRenderer {
 
     sb.append("\n")
 
-    // Integration target nodes (DB tables as cylinders)
+    // Integration target nodes — shape varies by integration type
     for ((target, itype) <- targets) {
-      sb.append(s"""  ${targetNodeId(target)}[("${target}\n[$itype]")]\n""")
+      val id = targetNodeId(target)
+      itype match {
+        case "grpc" => sb.append(s"""  $id{{"${target}\n[$itype]"}}\n""") // hexagon for gRPC
+        case _      => sb.append(s"""  $id[("${target}\n[$itype]")]\n""") // cylinder for DB
+      }
     }
 
     sb.append("\n")
@@ -43,14 +55,15 @@ object MermaidRenderer {
 
     sb.append("\n")
 
-    // Integration edges (method -> target)
+    // Integration edges
     for (i <- result.integrations) {
-      val from = nodeId(i.method)
-      val to = targetNodeId(i.target)
-      i.accessType match {
-        case DataAccessType.Read  => sb.append(s"""  $from -.->|Read| $to\n""")
-        case DataAccessType.Write => sb.append(s"""  $from ==>|Write| $to\n""")
-        case _                    => sb.append(s"""  $from -->|${i.accessType}| $to\n""")
+      val methodNode = nodeId(i.method)
+      val targetNode = targetNodeId(i.target)
+      (i.accessType, dataFlow) match {
+        case (DataAccessType.Read, false) => sb.append(s"""  $methodNode -.->|Read| $targetNode\n""")
+        case (DataAccessType.Read, true)  => sb.append(s"""  $targetNode -.->|Read| $methodNode\n""")
+        case (DataAccessType.Write, _)    => sb.append(s"""  $methodNode ==>|Write| $targetNode\n""")
+        case _                            => sb.append(s"""  $methodNode -->|${i.accessType}| $targetNode\n""")
       }
     }
 
@@ -60,6 +73,7 @@ object MermaidRenderer {
     sb.append("  classDef writeNode fill:#f8d7da,stroke:#dc3545\n")
     sb.append("  classDef rwNode fill:#fff3cd,stroke:#ffc107\n")
     sb.append("  classDef dbNode fill:#d1ecf1,stroke:#17a2b8\n")
+    sb.append("  classDef grpcNode fill:#e8daef,stroke:#8e44ad\n")
 
     for (m <- result.allMethods if m.effectiveAccess != DataAccessType.Pure) {
       val cls = m.effectiveAccess match {
@@ -71,8 +85,10 @@ object MermaidRenderer {
       if (cls.nonEmpty) sb.append(s"  class ${nodeId(m.ref)} $cls\n")
     }
 
-    for ((target, _) <- targets)
-      sb.append(s"  class ${targetNodeId(target)} dbNode\n")
+    for ((target, itype) <- targets) {
+      val style = if (itype == "grpc") "grpcNode" else "dbNode"
+      sb.append(s"  class ${targetNodeId(target)} $style\n")
+    }
 
     sb.toString()
   }
@@ -90,7 +106,7 @@ object MermaidRenderer {
     s"${ref.className}_${ref.methodName}".replaceAll("[^a-zA-Z0-9_]", "_")
 
   private def targetNodeId(target: String): String =
-    s"db_${target.replaceAll("[^a-zA-Z0-9_]", "_")}"
+    s"ext_${target.replaceAll("[^a-zA-Z0-9_]", "_")}"
 
   private def isCalledByOthers(ref: MethodRef, result: ScanResult): Boolean =
     result.callGraph.exists(_.callee == ref)

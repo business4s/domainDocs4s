@@ -46,6 +46,7 @@ lazy val core = (project in file("domainDocs4s-core"))
   )
 
 lazy val examples = (project in file("domainDocs4s-examples"))
+  .enablePlugins(Fs2Grpc)
   .settings(commonSettings)
   .settings(
     name              := "domainDocs4s-examples",
@@ -54,6 +55,10 @@ lazy val examples = (project in file("domainDocs4s-examples"))
       "org.tpolecat"  %% "doobie-core" % "1.0.0-RC6",
     ),
     semanticdbEnabled := true,
+    // suppress warnings from protobuf/scalapb generated code
+    scalacOptions ++= Seq(
+      "-Wconf:src=target/scala-.*:s",
+    ),
   )
   .dependsOn(core)
 
