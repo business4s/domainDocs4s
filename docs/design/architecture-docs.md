@@ -20,27 +20,27 @@ interactive views.
 
 ## 2. Status
 
-| Component                        | Status      | Location                                          |
-|----------------------------------|-------------|---------------------------------------------------|
-| Data lineage model               | Implemented | `core: lineage/model.scala`                       |
-| Doobie scanner (TASTy-based)     | Implemented | `core: lineage/TastyDoobieScanner.scala`          |
-| fs2-grpc scanner (server+client) | Implemented | `core: lineage/TastyFs2GrpcScanner.scala`         |
-| Manual scanner (Kafka + custom)  | Implemented | `core: lineage/ManualScanner.scala`               |
-| Method ref macro (`_.method`)    | Implemented | `core: macros/MethodRefMacro.scala`               |
-| Call graph extractor             | Implemented | `core: lineage/TastyCallGraphExtractor.scala`     |
-| Lineage builder                  | Implemented | `core: lineage/LineageBuilder.scala`              |
-| Mermaid visualization            | Implemented | `core: lineage/MermaidRenderer.scala`             |
-| Example classes (doobie+grpc+kafka)| Implemented | `examples: lineage/example/ExampleClasses.scala`|
-| Proto files (user+rate service)  | Implemented | `examples: src/main/protobuf/{user,rate}_service.proto` |
-| Integration grouping             | Implemented | `core: lineage/model.scala` (IntegrationGroupConfig) |
-| Class-level Mermaid rendering    | Implemented | `core: lineage/MermaidRenderer.scala`             |
-| Class-level config (fold+hide)   | Implemented | `core: lineage/model.scala` (ClassLevelConfig)    |
-| Tests (34 tests passing)         | Implemented | `examples: TastyLineageScannerTest.scala`         |
-| Service flow DSL                 | Design only | Section 6 below                                   |
-| External spec / system view      | Design only | Sections 8-9 below                                |
-| Cytoscape.js renderer            | Design only | Section 10.3 below                                |
-| Other TASTy scanners (Slick etc.)| Design only | Section 7 below                                   |
-| Backstage integration            | Research    | Section 13 below                                  |
+| Component                            | Status      | Location                                                      |
+|--------------------------------------|-------------|---------------------------------------------------------------|
+| Data lineage model                   | Implemented | `core: lineage/model.scala`                                   |
+| Doobie scanner (TASTy-based)         | Implemented | `core: lineage/TastyDoobieScanner.scala`                      |
+| fs2-grpc scanner (server+client)     | Implemented | `core: lineage/TastyFs2GrpcScanner.scala`                     |
+| Manual scanner (Kafka + custom)      | Implemented | `core: lineage/ManualScanner.scala`                           |
+| Method ref macro (`_.method`)        | Implemented | `core: macros/MethodRefMacro.scala`                           |
+| Call graph extractor                 | Implemented | `core: lineage/TastyCallGraphExtractor.scala`                 |
+| Lineage builder                      | Implemented | `core: lineage/LineageBuilder.scala`                          |
+| Mermaid visualization                | Implemented | `core: lineage/MermaidRenderer.scala`                         |
+| Example classes (doobie+grpc+kafka)  | Implemented | `examples: lineage/example/ExampleClasses.scala`              |
+| Proto files (user+rate service)      | Implemented | `examples: src/main/protobuf/{user,rate}_service.proto`       |
+| Integration grouping                 | Implemented | `core: lineage/model.scala` (IntegrationGroupConfig)          |
+| Class-level Mermaid rendering        | Implemented | `core: lineage/MermaidRenderer.scala`                         |
+| Class-level config (fold+hide+group) | Implemented | `core: lineage/model.scala` (ClassLevelConfig, ClassGrouping) |
+| Tests (37 tests passing)             | Implemented | `examples: TastyLineageScannerTest.scala`                     |
+| Service flow DSL                     | Design only | Section 6 below                                               |
+| External spec / system view          | Design only | Sections 8-9 below                                            |
+| Cytoscape.js renderer                | Design only | Section 10.3 below                                            |
+| Other TASTy scanners (Slick etc.)    | Design only | Section 7 below                                               |
+| Backstage integration                | Research    | Section 13 below                                              |
 
 All lineage infrastructure is in `domainDocs4s-core/src/main/scala/domaindocs4s/architecture/lineage/`.
 Example classes and tests are in `domainDocs4s-examples/`.
@@ -100,7 +100,9 @@ Phase 0: Call Graph Extraction          Phase 1: Integration Scanning
 Core types in `model.scala`:
 
 ```scala
-enum DataAccessType { case Read, Write, ReadWrite, Pure }
+enum DataAccessType {
+  case Read, Write, ReadWrite, Pure
+}
 
 case class MethodRef(className: String, methodName: String)
 
@@ -109,13 +111,13 @@ case class ExtractedMethod(className: String, packageName: String, methodName: S
 
 // Phase 1 output — scanner-specific integration discovery
 case class DiscoveredIntegration(
-    method: MethodRef,              // classA.methodB
-    accessType: DataAccessType,     // reads or writes
-    integrationType: String,        // "doobie", "kafka", "grpc", ...
-    target: String,                 // table name, topic, endpoint, ...
-    evidence: String,               // the actual SQL, config key, ...
-    group: Option[String] = None,   // logical group: service name, database, ...
-)
+                                  method: MethodRef, // classA.methodB
+                                  accessType: DataAccessType, // reads or writes
+                                  integrationType: String, // "doobie", "kafka", "grpc", ...
+                                  target: String, // table name, topic, endpoint, ...
+                                  evidence: String, // the actual SQL, config key, ...
+                                  group: Option[String] = None, // logical group: service name, database, ...
+                                )
 
 // Enrichment — assign groups to integrations by source class
 case class IntegrationGroupConfig(classToGroup: Map[String, String]) {
@@ -123,29 +125,44 @@ case class IntegrationGroupConfig(classToGroup: Map[String, String]) {
 }
 // Type-safe builder: IntegrationGroupConfig.builder.group[UserRepo]("user-db").build
 
+// How to group class nodes in class-level diagrams
+sealed trait ClassGrouping
+
+object ClassGrouping {
+  case object NoGrouping extends ClassGrouping
+
+  case class ByPackage(scanBase: String) extends ClassGrouping // group by first sub-package below base
+
+  case class Custom(groupOf: ScannedClass => Option[String]) extends ClassGrouping
+}
+
 // Configuration for class-level Mermaid rendering
 case class ClassLevelConfig(
-    foldByGroup: Set[String] = Set("grpc"),  // integration types to collapse by group
-    hiddenClasses: Set[String] = Set.empty,   // classes to hide (integrations promoted to callers)
-)
-// Type-safe builder: ClassLevelConfig.builder.hide[UserRepo].build
+                             foldByGroup: Set[String] = Set("grpc"), // integration types to collapse by group
+                             hiddenClasses: Set[String] = Set.empty, // classes to hide (integrations promoted to callers)
+                             classGrouping: ClassGrouping = ClassGrouping.NoGrouping, // spatial grouping of class nodes
+                           )
+// Type-safe builder:
+//   ClassLevelConfig.builder.hide[UserRepo].groupByPackage("com.foo").build
+//   ClassLevelConfig.builder.groupClassesBy(cls => Some(cls.name.head.toString)).build
 
 // Phase 2 output — full lineage result
 case class ScanResult(
-    classes: List[ScannedClass],
-    callGraph: List[CallEdge],
-    integrations: List[DiscoveredIntegration],
-    lineageChains: List[LineageChain],
-)
+                       classes: List[ScannedClass],
+                       callGraph: List[CallEdge],
+                       integrations: List[DiscoveredIntegration],
+                       lineageChains: List[LineageChain],
+                     )
 
 case class LineageChain(
-    entryPoint: MethodRef,          // API method where the chain starts
-    path: List[MethodRef],          // full call path
-    integration: DiscoveredIntegration, // the external operation at the end
-)
+                         entryPoint: MethodRef, // API method where the chain starts
+                         path: List[MethodRef], // full call path
+                         integration: DiscoveredIntegration, // the external operation at the end
+                       )
 ```
 
 Key design decisions:
+
 - `DiscoveredIntegration` is the contract any scanner must produce. Adding a Kafka scanner means
   producing `DiscoveredIntegration(integrationType = "kafka", target = "topic-name", ...)`.
 - `LineageBuilder` is fully generic — it doesn't know about doobie or gRPC, only about call graphs and integrations.
@@ -163,12 +180,12 @@ then pattern-matches the TASTy AST for doobie query chains.
 
 Detected patterns (real doobie with `sql"..."` interpolation):
 
-| Code pattern                          | TASTy AST shape                                                       | Classification |
-|---------------------------------------|-----------------------------------------------------------------------|----------------|
-| `sql"...".query[T].unique`            | `Select(Apply(TypeApply(Select(frag, query), _), _), unique)`         | Read           |
-| `sql"...".query[T].option`            | `Select(Apply(TypeApply(Select(frag, query), _), _), option)`         | Read           |
-| `sql"...".query[T].to[List]`          | `Apply(TypeApply(Select(Apply(TypeApply(Select(frag, query), _), _), to), _), _)` | Read |
-| `sql"...".update.run`                 | `Select(Select(frag, update), run)`                                   | Write          |
+| Code pattern                 | TASTy AST shape                                                                   | Classification |
+|------------------------------|-----------------------------------------------------------------------------------|----------------|
+| `sql"...".query[T].unique`   | `Select(Apply(TypeApply(Select(frag, query), _), _), unique)`                     | Read           |
+| `sql"...".query[T].option`   | `Select(Apply(TypeApply(Select(frag, query), _), _), option)`                     | Read           |
+| `sql"...".query[T].to[List]` | `Apply(TypeApply(Select(Apply(TypeApply(Select(frag, query), _), _), to), _), _)` | Read           |
+| `sql"...".update.run`        | `Select(Select(frag, update), run)`                                               | Write          |
 
 SQL extraction: the `sql"..."` interpolator produces a `StringContext.apply("part1", "part2", ...)` in the TASTy tree.
 The scanner collects all string literal parts and joins them to recover the SQL template. Table names are extracted
@@ -189,6 +206,7 @@ For each RPC method defined in the parent trait that the class implements, the s
 integration with target `ServiceName/methodName` and `group = Some(serviceName)`.
 
 Detection approach:
+
 1. Inspect `cls.parents` (type-level, not `parentClasses` — see learnings below)
 2. Filter for parent types whose name ends with `Fs2Grpc`
 3. Resolve the parent trait's `ClassSymbol` via `TypeRef.optSymbol`
@@ -200,6 +218,7 @@ When a method body calls `field.rpcMethod(...)`, the scanner emits a Read integr
 `ServiceName/methodName` and `group = Some(serviceName)`.
 
 Detection approach:
+
 1. Resolve field types (like the call graph extractor), handling both `TypeRef` and `AppliedType`
 2. Filter fields whose type name ends with `Fs2Grpc`
 3. Walk method bodies with `TreeTraverser` looking for `Apply(Select(Ident(field), method), _)` patterns
@@ -218,11 +237,13 @@ method names from `_.methodName` lambdas, providing type-safe references instead
 val manualIntegrations = ManualScanner.builder
   .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
   .method[EventConsumer](_.consume).reads.kafka("input.events", cluster = "Analytics")
-  .method[S3Exporter](_.export).writes.custom("s3", "my-bucket/exports", group = Some("S3"))
+  .method[S3Exporter](_.
+export).writes.custom("s3", "my-bucket/exports", group = Some("S3"))
   .build
 ```
 
 Key design decisions:
+
 - **Same output type**: Produces `List[DiscoveredIntegration]`, identical to automatic scanners.
   Composable via simple concatenation before passing to `LineageBuilder`.
 - **Kafka cluster grouping**: `.kafka(topic, cluster)` sets `group = Some(cluster)`, defaulting to
@@ -234,7 +255,8 @@ Key design decisions:
 
 The manual scanner integrates with the call graph: if `UserGrpcApi.deposit` calls
 `EventPublisher.publishDeposit`, and ManualScanner declares that `publishDeposit` writes to Kafka,
-the lineage builder produces the chain: `UserGrpcApi.deposit → EventPublisher.publishDeposit → kafka:user.deposit-events`.
+the lineage builder produces the chain:
+`UserGrpcApi.deposit → EventPublisher.publishDeposit → kafka:user.deposit-events`.
 
 ### 3.6 Call Graph Extractor
 
@@ -268,14 +290,17 @@ are detected by the gRPC scanner instead, keeping concerns separated.
 with two arrow modes:
 
 **Method-level** (detailed — each class is a subgraph with method nodes):
+
 - **`render(result)`** — arrows follow access direction (method → target)
 - **`renderDataFlow(result)`** — arrows follow data flow (target → method for reads)
 
 **Class-level** (architecture overview — each class is a single node):
+
 - **`renderClassLevel(result, config)`** — arrows follow access direction
 - **`renderClassLevelDataFlow(result, config)`** — arrows follow data flow
 
 Class-level rendering is controlled by `ClassLevelConfig`:
+
 - **`foldByGroup`** (default `Set("grpc")`): integration types in this set collapse all targets
   within a group into a single node. E.g., `UserService/getBalance`, `UserService/deposit`,
   `UserService/getHistory` → one `UserService` hexagon node.
@@ -283,22 +308,33 @@ Class-level rendering is controlled by `ClassLevelConfig`:
   nearest non-hidden caller class. E.g., hiding `UserRepo` makes `UserService` connect directly to
   the DB tables `users` and `transactions`. Call edges through hidden classes are resolved
   transitively (A → B(hidden) → C becomes A → C).
+- **`classGrouping`**: spatial grouping of class nodes into Mermaid subgraphs. Three modes:
+    - `ClassGrouping.NoGrouping` (default) — all class nodes render standalone
+    - `ClassGrouping.ByPackage(scanBase)` — group by the first sub-package relative to the scan base.
+      E.g., with `scanBase = "com.foo"`, a class in `com.foo.api.rest` goes into the `"api"` subgraph;
+      a class directly in `com.foo` remains ungrouped (standalone).
+    - `ClassGrouping.Custom(fn)` — user-provided `ScannedClass => Option[String]` function.
+      Returns `Some("groupName")` to place the class in a subgraph, or `None` for standalone.
+      Only class nodes are grouped — integration target nodes are unaffected.
 
-Both use a type-safe builder with `ClassTag`:
+All use a type-safe builder with `ClassTag`:
+
 ```scala
 val config = ClassLevelConfig.builder
   .hide[UserRepo]
+  .groupByPackage("com.myapp")
   .foldByGroup(Set("grpc", "kafka"))
   .build
 MermaidRenderer.renderClassLevel(result, config)
 ```
 
 Visual encoding (shared across all modes):
+
 - DB tables as cylinder-shaped nodes (blue)
 - gRPC endpoints as hexagon-shaped nodes (purple)
 - Kafka topics as stadium-shaped nodes (green)
 - Integration targets grouped by `group` field into subgraphs (ungrouped targets render standalone)
-  - When a group name collides with a class name, `(ext)` is appended to the label
+    - When a group name collides with a class name, `(ext)` is appended to the label
 - Call graph edges as solid arrows
 - Read integrations as dashed arrows (`-.->|Read|`)
 - Write integrations as thick arrows (`==>|Write|`)
@@ -308,6 +344,7 @@ Visual encoding (shared across all modes):
 `MermaidRenderer.toViewUrl(mermaidCode)` generates a `mermaid.live/edit#base64:...` URL for viewing.
 
 Run with:
+
 ```
 sbt "examples / runMain domaindocs4s.architecture.lineage.example.RenderLineage"
 ```
@@ -361,6 +398,7 @@ Given four example classes using real doobie, fs2-grpc, and manual Kafka declara
 ```
 
 **Class-level** diagram with `hide[UserRepo]` (Mermaid nodes and edges):
+
 ```
 Nodes: UserGrpcApi, UserService, EventPublisher  (UserRepo hidden)
 
@@ -383,6 +421,7 @@ Kafka:
 ### 3.10 Learnings and Limitations
 
 **What worked well:**
+
 - tasty-query gives full access to method bodies, types, and symbol resolution
 - Real doobie types produce structurally predictable TASTy patterns
 - The multi-phase split keeps scanner implementations focused and composable
@@ -392,6 +431,7 @@ Kafka:
   scanners produce the same output type and the lineage builder handles both generically
 
 **tasty-query quirks:**
+
 - `ClassSymbol.parentClasses` throws `MemberNotFoundException` when it can't resolve `java.lang.Object`
   in the classpath. Workaround: use `cls.parents` (returns `List[Type]`) and resolve via `TypeRef.optSymbol`.
 - Field types for generic types like `Fs2Grpc[IO, Metadata]` are `AppliedType`, not `TypeRef`. The underlying
@@ -400,6 +440,7 @@ Kafka:
   not the proto package directly. This doesn't affect the scanner since it resolves parent symbols across packages.
 
 **Current limitations:**
+
 - SQL extraction from `sql"..."` interpolation loses parameter values (we get `WHERE id =` not `WHERE id = ?`).
   This is sufficient for table name extraction but not for full SQL analysis.
 - Call graph extraction only resolves simple `TypeRef` field types. `AppliedType` fields (generic types) are
@@ -469,15 +510,16 @@ Nodes are typed using a two-layer system:
 
 ```scala
 enum NodeCategory {
-  case Api       // something that exposes an interface (gRPC, HTTP, GraphQL, ...)
-  case Message   // asynchronous messaging (Kafka topic, RabbitMQ queue, SQS, ...)
-  case Dataset   // persistent data (DB table, S3 object, data warehouse, spreadsheet, ...)
-  case Compute   // processing logic (component, projection, job, cache, ...)
+  case Api // something that exposes an interface (gRPC, HTTP, GraphQL, ...)
+  case Message // asynchronous messaging (Kafka topic, RabbitMQ queue, SQS, ...)
+  case Dataset // persistent data (DB table, S3 object, data warehouse, spreadsheet, ...)
+  case Compute // processing logic (component, projection, job, cache, ...)
 }
 
 trait Artifact {
   def category: NodeCategory
-  def matchKey: String  // unique identifier, e.g. "kafka:ledger.movements"
+
+  def matchKey: String // unique identifier, e.g. "kafka:ledger.movements"
 }
 ```
 
@@ -488,9 +530,15 @@ Library-provided artifacts: `GrpcEndpoint`, `HttpEndpoint`, `KafkaTopic`, `Datab
 
 ```scala
 case class Node(label: String, artifact: Artifact, internal: Boolean = true)
-enum EdgeType { case Produces, Consumes }
+
+enum EdgeType {
+  case Produces, Consumes
+}
+
 case class Edge(from: Node, edgeType: EdgeType, to: Node, label: String = "")
+
 case class Subgraph(label: String, nodes: List[Node])
+
 case class FlowChart(edges: List[Edge], subgraphs: List[Subgraph] = Nil)
 ```
 
@@ -514,9 +562,12 @@ extension (n: Node) {
 }
 
 // Usage
-ledgerActor produces journal,
-dailyBalanceChange consumes journal,
-movementsProjection produces movementsTable,
+ledgerActor produces journal
+,
+dailyBalanceChange consumes journal
+,
+movementsProjection produces movementsTable
+,
 ```
 
 ---
@@ -551,7 +602,8 @@ tree to see actual patterns, (3) match those patterns precisely.
 case classes. Pattern matching requires `.isInstanceOf` + field access, not constructor patterns.
 
 **String interpolation produces `StringContext` trees.** `sql"SELECT ... FROM users WHERE id = $userId"` doesn't
-produce a single string literal. Instead, the TASTy tree contains `StringContext.apply("SELECT ... FROM users WHERE id = ", "")`
+produce a single string literal. Instead, the TASTy tree contains
+`StringContext.apply("SELECT ... FROM users WHERE id = ", "")`
 with the string parts as a `SeqLiteral` inside a `Typed` node. SQL extraction must collect these parts.
 
 **`TreeTraverser` handles desugared for-comprehensions.** For-comprehensions desugar to `flatMap`/`map` with
@@ -578,6 +630,7 @@ reliable detection signal for the scanner.
 ```scala
 trait CodeScanner {
   def name: String
+
   def inspect(symbol: Symbol): List[DiscoveredArtifact]
 }
 ```
@@ -586,12 +639,12 @@ Implemented and planned scanners:
 
 | Scanner                | Detects                      | Status      |
 |------------------------|------------------------------|-------------|
-| `DoobieScanner`        | Doobie SQL table references   | Implemented |
-| `Fs2GrpcClientScanner` | gRPC client usages            | Implemented |
-| `Fs2GrpcServerScanner` | gRPC service implementations  | Implemented |
-| `ManualScanner`        | Kafka, custom integrations    | Implemented |
-| `SlickTableScanner`    | Slick table definitions       | Planned     |
-| `SttpClientScanner`    | HTTP client calls             | Planned     |
+| `DoobieScanner`        | Doobie SQL table references  | Implemented |
+| `Fs2GrpcClientScanner` | gRPC client usages           | Implemented |
+| `Fs2GrpcServerScanner` | gRPC service implementations | Implemented |
+| `ManualScanner`        | Kafka, custom integrations   | Implemented |
+| `SlickTableScanner`    | Slick table definitions      | Planned     |
+| `SttpClientScanner`    | HTTP client calls            | Planned     |
 
 ### 7.4 Resource Scanners
 
@@ -600,7 +653,9 @@ Implemented and planned scanners:
 ```scala
 trait ResourceScanner {
   def name: String
+
   def filePattern: String
+
   def inspect(path: Path, content: String): List[DiscoveredArtifact]
 }
 ```
@@ -619,13 +674,27 @@ artifacts across services.
 
 ```json
 {
-  "service": { "id": "financial-ledger-service", "name": "Financial Ledger Service" },
+  "service": {
+    "id": "financial-ledger-service",
+    "name": "Financial Ledger Service"
+  },
   "produced": [
-    { "type": "kafka-topic", "topicName": "ledger.movements" },
-    { "type": "grpc-endpoint", "serviceName": "LedgerServiceAPI", "methodName": "GetUserBalance" }
+    {
+      "type": "kafka-topic",
+      "topicName": "ledger.movements"
+    },
+    {
+      "type": "grpc-endpoint",
+      "serviceName": "LedgerServiceAPI",
+      "methodName": "GetUserBalance"
+    }
   ],
   "consumed": [
-    { "type": "grpc-endpoint", "serviceName": "RateServiceAPI", "methodName": "GetRate" }
+    {
+      "type": "grpc-endpoint",
+      "serviceName": "RateServiceAPI",
+      "methodName": "GetRate"
+    }
   ]
 }
 ```
@@ -649,19 +718,22 @@ nodes between services.
 `MermaidRenderer` in the lineage package converts `ScanResult` to mermaid flowcharts at two levels:
 
 **Method-level** (detailed view):
+
 - `render(result)` — access direction (method → target)
 - `renderDataFlow(result)` — data flow (reversed reads)
 - Classes as subgraphs, each method a node
 
 **Class-level** (architecture overview):
+
 - `renderClassLevel(result, config)` — access direction
 - `renderClassLevelDataFlow(result, config)` — data flow
 - Each class is a single node (not a subgraph with methods)
 - Configurable via `ClassLevelConfig`: fold integration groups (e.g., collapse all gRPC endpoints
   per service into one node), hide technical classes (e.g., repo layer) with integration promotion
-  to callers
+  to callers, group class nodes into subgraphs by package or custom function
 
 Visual encoding (both levels):
+
 - DB tables as cylinder-shaped nodes (blue)
 - gRPC endpoints as hexagon-shaped nodes (purple)
 - Kafka topics as stadium-shaped nodes (green)
@@ -673,12 +745,14 @@ Visual encoding (both levels):
 ### 10.2 Flow Chart Mermaid Renderer (Design Only)
 
 For the service flow model (section 5), a separate renderer with:
+
 - Node shapes by category: Dataset → `[(cylinder)]`, Message → `{{hexagon}}`, Api → `{diamond}`, Compute → `[rectangle]`
 - Edge styling: `Produces` → solid arrow, `Consumes` → dashed arrow
 
 ### 10.3 Cytoscape.js Renderer (Design Only)
 
 A rich interactive viewer producing standalone HTML with:
+
 - Pan/zoom, minimap, fit-to-screen
 - Click-to-inspect detail panel
 - Text search, view selector
@@ -724,6 +798,7 @@ The lineage scanners reuse `TastyContext.fromCurrentProcess()` from the core mod
 ### 11.3 Dependencies
 
 The core module (`domainDocs4s-core`) depends on:
+
 - `"ch.epfl.scala" %% "tasty-query"` — used by all TASTy-based scanners and `TastyUtils`
 
 The TASTy scanners only depend on `tasty-query` — they pattern-match TASTy tree shapes by string name
@@ -731,6 +806,7 @@ without importing doobie or gRPC libraries. This is why all lineage infrastructu
 `ManualScanner` depends on `MethodRefMacro` (uses `scala.quoted.*` macros).
 
 The examples module (`domainDocs4s-examples`) depends on core and adds:
+
 - `"org.tpolecat" %% "doobie-core"` for real doobie types in the example classes
 - `sbt-fs2-grpc` plugin for proto compilation and fs2-grpc code generation (brings in `fs2-grpc-runtime`,
   `scalapb-runtime`, `grpc-api` transitively)
@@ -772,18 +848,19 @@ naturally onto Backstage's entity model.
 
 ### 13.1 Relevant Backstage Entities
 
-| Backstage Kind | Maps from domainDocs4s | Key fields |
-|----------------|------------------------|------------|
-| `Component`    | Scanned service class (e.g., `UserGrpcApi`) | `spec.providesApis`, `spec.consumesApis` |
-| `API`          | `DiscoveredIntegration` with `integrationType = "grpc"` | `spec.type: grpc`, `spec.definition` (proto) |
-| `Resource`     | `DiscoveredIntegration` with `integrationType = "doobie"` | DB tables, Kafka topics |
-| `System`       | Group of related components | `spec.owner`, lifecycle |
+| Backstage Kind | Maps from domainDocs4s                                    | Key fields                                   |
+|----------------|-----------------------------------------------------------|----------------------------------------------|
+| `Component`    | Scanned service class (e.g., `UserGrpcApi`)               | `spec.providesApis`, `spec.consumesApis`     |
+| `API`          | `DiscoveredIntegration` with `integrationType = "grpc"`   | `spec.type: grpc`, `spec.definition` (proto) |
+| `Resource`     | `DiscoveredIntegration` with `integrationType = "doobie"` | DB tables, Kafka topics                      |
+| `System`       | Group of related components                               | `spec.owner`, lifecycle                      |
 
 ### 13.2 Mapping: Lineage → Backstage YAML
 
 A `ScanResult` contains enough information to generate Backstage catalog descriptors:
 
 **API entities** from gRPC integrations:
+
 ```yaml
 apiVersion: backstage.io/v1alpha1
 kind: API
@@ -800,6 +877,7 @@ spec:
 ```
 
 **Component entities** with `providesApis` / `consumesApis` derived from scan:
+
 ```yaml
 apiVersion: backstage.io/v1alpha1
 kind: Component
@@ -816,6 +894,7 @@ spec:
 ```
 
 The key mapping rules:
+
 - `DiscoveredIntegration(accessType=Write, integrationType="grpc")` → `spec.providesApis` entry
 - `DiscoveredIntegration(accessType=Read, integrationType="grpc")` → `spec.consumesApis` entry
 - Each unique gRPC service name → a `Kind: API` entity with `spec.type: grpc`
@@ -874,11 +953,13 @@ See `domainDocs4s-examples/src/main/scala/domaindocs4s/architecture/` for the wo
 
 Run the full pipeline (outputs 4 mermaid.live URLs — method-level and class-level, each in access
 direction and data flow modes):
+
 ```
 sbt "examples / runMain domaindocs4s.architecture.lineage.example.RenderLineage"
 ```
 
-Run tests (34 tests):
+Run tests (37 tests):
+
 ```
 sbt "examples / Test / testOnly domaindocs4s.lineage.TastyLineageScannerTest"
 ```
