@@ -104,23 +104,35 @@ object IntegrationGroupConfig {
   def builder: Builder = new Builder
 }
 
+/** How to group class nodes in class-level diagrams. */
+sealed trait ClassGrouping
+object ClassGrouping {
+  case object NoGrouping extends ClassGrouping
+  case class ByPackage(scanBase: String) extends ClassGrouping
+  case class Custom(groupOf: ScannedClass => Option[String]) extends ClassGrouping
+}
+
 /** Configuration for class-level Mermaid rendering. */
 case class ClassLevelConfig(
     foldByGroup: Set[String] = Set("grpc"),
     hiddenClasses: Set[String] = Set.empty,
+    classGrouping: ClassGrouping = ClassGrouping.NoGrouping,
 )
 
 object ClassLevelConfig {
   class Builder {
-    private var _foldByGroup: Set[String] = Set("grpc")
-    private val _hidden                   = scala.collection.mutable.Set.empty[String]
+    private var _foldByGroup: Set[String]      = Set("grpc")
+    private val _hidden                        = scala.collection.mutable.Set.empty[String]
+    private var _classGrouping: ClassGrouping   = ClassGrouping.NoGrouping
 
     def foldByGroup(types: Set[String]): Builder = { _foldByGroup = types; this }
     def hide[T: reflect.ClassTag]: Builder = {
       _hidden += reflect.classTag[T].runtimeClass.getSimpleName.stripSuffix("$")
       this
     }
-    def build: ClassLevelConfig = ClassLevelConfig(_foldByGroup, _hidden.toSet)
+    def groupByPackage(scanBase: String): Builder = { _classGrouping = ClassGrouping.ByPackage(scanBase); this }
+    def groupClassesBy(fn: ScannedClass => Option[String]): Builder = { _classGrouping = ClassGrouping.Custom(fn); this }
+    def build: ClassLevelConfig = ClassLevelConfig(_foldByGroup, _hidden.toSet, _classGrouping)
   }
   def builder: Builder = new Builder
 }

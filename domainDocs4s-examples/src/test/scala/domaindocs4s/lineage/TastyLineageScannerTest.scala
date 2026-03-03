@@ -278,6 +278,51 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       diagram should include("cls_UserGrpcApi --> cls_UserService")
       diagram should include("cls_UserGrpcApi --> cls_EventPublisher")
     }
+
+    "groups classes into subgraphs with custom grouping" in {
+      val config = ClassLevelConfig.builder
+        .groupClassesBy { cls =>
+          if (cls.name.startsWith("User")) Some("user-domain")
+          else Some("events")
+        }
+        .build
+      val diagram = MermaidRenderer.renderClassLevel(resultWithManual, config)
+
+      diagram should include("""subgraph pkg_user_domain ["user-domain"]""")
+      diagram should include("""subgraph pkg_events ["events"]""")
+      diagram should include("""cls_UserGrpcApi["UserGrpcApi"]""")
+      diagram should include("""cls_EventPublisher["EventPublisher"]""")
+    }
+
+    "ungrouped classes render as standalone nodes" in {
+      val config = ClassLevelConfig.builder
+        .groupClassesBy { cls =>
+          if (cls.name == "UserGrpcApi") Some("api") else None
+        }
+        .build
+      val diagram = MermaidRenderer.renderClassLevel(resultWithManual, config)
+
+      diagram should include("""subgraph pkg_api ["api"]""")
+      // Classes outside the subgraph should still appear as standalone
+      diagram should include("""cls_UserService["UserService"]""")
+      // Standalone nodes should NOT be inside the subgraph
+      val lines = diagram.split("\n")
+      val subgraphStart = lines.indexWhere(_.contains("subgraph pkg_api"))
+      val subgraphEnd = lines.indexWhere(l => l.trim == "end", subgraphStart)
+      val subgraphBlock = lines.slice(subgraphStart, subgraphEnd + 1).mkString("\n")
+      subgraphBlock should not include "UserService"
+    }
+
+    "ByPackage with same package produces no grouping" in {
+      val config = ClassLevelConfig.builder
+        .groupByPackage(pkg)
+        .build
+      val diagram = MermaidRenderer.renderClassLevel(resultWithManual, config)
+
+      diagram should not include "subgraph pkg_"
+      // Classes should still render as standalone nodes
+      diagram should include("""cls_UserGrpcApi["UserGrpcApi"]""")
+    }
   }
 
   "TastyCallGraphExtractor" - {

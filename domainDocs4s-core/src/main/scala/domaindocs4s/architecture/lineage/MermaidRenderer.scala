@@ -42,7 +42,7 @@ object MermaidRenderer {
     // Grouped targets in subgraphs
     for (case (Some(groupName), entries) <- integrationsByGroup) {
       // Disambiguate from class subgraphs that share the same name
-      val safeId = s"ext_group_${groupName.replaceAll("[^a-zA-Z0-9_]", "_")}"
+      val safeId = extGroupNodeId(groupName)
       val label = if (classNames.contains(groupName)) s"$groupName (ext)" else groupName
       sb.append(s"""  subgraph $safeId ["$label"]\n""")
       for ((target, itype, _) <- entries) {
@@ -129,13 +129,37 @@ object MermaidRenderer {
     // Build promoted-callers map: for each hidden class, find non-hidden classes that call it
     val promotedCallers = buildPromotedCallers(hidden, result.callGraph)
 
-    // Class nodes — one node per visible class
-    for (cls <- result.classes if !hidden.contains(cls.name)) {
-      val relevant = cls.methods.filter(m => m.calls.nonEmpty || m.integrations.nonEmpty || isCalledByOthers(m.ref, result))
-      if (relevant.nonEmpty) {
-        val id = classNodeId(cls.name)
-        sb.append(s"""  $id["${cls.name}"]\n""")
+    // Class nodes — one node per visible class, optionally grouped into subgraphs
+    val groupFn: ScannedClass => Option[String] = config.classGrouping match {
+      case ClassGrouping.NoGrouping => _ => None
+      case ClassGrouping.ByPackage(base) =>
+        val prefix = if (base.endsWith(".")) base else base + "."
+        cls => {
+          val rest = if (cls.packageName.startsWith(prefix)) cls.packageName.drop(prefix.length) else ""
+          val seg = rest.takeWhile(_ != '.')
+          if (seg.isEmpty) None else Some(seg)
+        }
+      case ClassGrouping.Custom(fn) => fn
+    }
+
+    val visibleClasses = result.classes.filter { cls =>
+      !hidden.contains(cls.name) &&
+        cls.methods.exists(m => m.calls.nonEmpty || m.integrations.nonEmpty || isCalledByOthers(m.ref, result))
+    }
+
+    val grouped = visibleClasses.groupBy(groupFn)
+
+    for (case (Some(groupName), classes) <- grouped) {
+      val gid = packageGroupId(groupName)
+      sb.append(s"""  subgraph $gid ["$groupName"]\n""")
+      for (cls <- classes) {
+        sb.append(s"""    ${classNodeId(cls.name)}["${cls.name}"]\n""")
       }
+      sb.append("  end\n")
+    }
+
+    for (cls <- grouped.getOrElse(None, Nil)) {
+      sb.append(s"""  ${classNodeId(cls.name)}["${cls.name}"]\n""")
     }
 
     sb.append("\n")
@@ -164,7 +188,7 @@ object MermaidRenderer {
     val nonFoldedByGroup = nonFoldedRaw.groupBy(_._3)
 
     for (case (Some(groupName), entries) <- nonFoldedByGroup) {
-      val safeId = s"ext_group_${groupName.replaceAll("[^a-zA-Z0-9_]", "_")}"
+      val safeId = extGroupNodeId(groupName)
       val label  = if (classNames.contains(groupName)) s"$groupName (ext)" else groupName
       sb.append(s"""  subgraph $safeId ["$label"]\n""")
       for ((target, itype, _) <- entries) {
@@ -234,17 +258,14 @@ object MermaidRenderer {
     sb.append("  classDef grpcNode fill:#e8daef,stroke:#8e44ad\n")
     sb.append("  classDef kafkaNode fill:#d5f5e3,stroke:#27ae60\n")
 
-    for (cls <- result.classes if !hidden.contains(cls.name)) {
-      val relevant = cls.methods.filter(m => m.calls.nonEmpty || m.integrations.nonEmpty || isCalledByOthers(m.ref, result))
-      if (relevant.nonEmpty) {
-        val style = cls.effectiveAccess match {
-          case DataAccessType.Read      => "readNode"
-          case DataAccessType.Write     => "writeNode"
-          case DataAccessType.ReadWrite => "rwNode"
-          case _                        => ""
-        }
-        if (style.nonEmpty) sb.append(s"  class ${classNodeId(cls.name)} $style\n")
+    for (cls <- visibleClasses) {
+      val style = cls.effectiveAccess match {
+        case DataAccessType.Read      => "readNode"
+        case DataAccessType.Write     => "writeNode"
+        case DataAccessType.ReadWrite => "rwNode"
+        case _                        => ""
       }
+      if (style.nonEmpty) sb.append(s"  class ${classNodeId(cls.name)} $style\n")
     }
 
     for ((groupName, itype) <- foldedGroups) {
@@ -327,17 +348,26 @@ object MermaidRenderer {
     s"https://mermaid.live/edit#base64:$base64url"
   }
 
+  private def sanitizeId(raw: String): String =
+    raw.replaceAll("[^a-zA-Z0-9_]", "_")
+
   private def nodeId(ref: MethodRef): String =
-    s"${ref.className}_${ref.methodName}".replaceAll("[^a-zA-Z0-9_]", "_")
+    sanitizeId(s"${ref.className}_${ref.methodName}")
 
   private def targetNodeId(target: String): String =
-    s"ext_${target.replaceAll("[^a-zA-Z0-9_]", "_")}"
+    s"ext_${sanitizeId(target)}"
 
   private def classNodeId(className: String): String =
-    s"cls_${className.replaceAll("[^a-zA-Z0-9_]", "_")}"
+    s"cls_${sanitizeId(className)}"
 
   private def foldedGroupNodeId(groupName: String): String =
-    s"fold_${groupName.replaceAll("[^a-zA-Z0-9_]", "_")}"
+    s"fold_${sanitizeId(groupName)}"
+
+  private def packageGroupId(groupName: String): String =
+    s"pkg_${sanitizeId(groupName)}"
+
+  private def extGroupNodeId(groupName: String): String =
+    s"ext_group_${sanitizeId(groupName)}"
 
   private def isCalledByOthers(ref: MethodRef, result: ScanResult): Boolean =
     result.callGraph.exists(_.callee == ref)

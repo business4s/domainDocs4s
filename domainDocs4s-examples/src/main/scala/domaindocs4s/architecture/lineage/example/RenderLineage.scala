@@ -38,6 +38,7 @@ object RenderLineage {
 
     val classLevelConfig = ClassLevelConfig.builder
       .hide[UserRepo]
+      .groupByPackage(pkg)
       .build
 
     println("=== Class-level access direction ===")
