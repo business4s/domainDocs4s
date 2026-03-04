@@ -36,6 +36,7 @@ interactive views.
 | Class-level Mermaid rendering        | Implemented | `core: lineage/MermaidRenderer.scala`                         |
 | Class-level config (fold+hide+group) | Implemented | `core: lineage/model.scala` (ClassLevelConfig, ClassGrouping) |
 | Pekko journal scanner                | Implemented | `core: lineage/TastyPekkoJournalScanner.scala`                |
+| TASTy debug utility                  | Implemented | `core: lineage/TastyDebug.scala`                              |
 | Tests (45 tests passing)             | Implemented | `examples: TastyLineageScannerTest.scala`                     |
 | Service flow DSL                     | Design only | Section 6 below                                               |
 | External spec / system view          | Design only | Sections 8-9 below                                            |
@@ -624,6 +625,58 @@ resolves type names must handle both cases.
 **Code generation naming conventions are stable detection signals.** `sbt-fs2-grpc` consistently generates
 traits named `*Fs2Grpc[F[_], A]` in sub-packages named after the proto service. This naming convention is a
 reliable detection signal for the scanner.
+
+**Method names in TASTy are `SignedName`s, not plain strings.** A `Select(qualifier, name)` node's `name`
+field is a `TermName` which may be a `SignedName` wrapping the actual simple name with a type signature.
+For example, `readJournalFor` appears as `readJournalFor[with sig (1,java.lang.String):java.lang.Object @readJournalFor]`.
+Use `TastyUtils.simpleName(name)` (which pattern-matches on `SignedName` to extract `underlying`) instead of
+`name.toString`. The old workaround `name.toString.takeWhile(_ != '[')` was brittle and has been replaced.
+
+### 7.2.1 Developing a New Scanner — Workflow
+
+When adding a new TASTy scanner, follow this process:
+
+**Step 1: Write example code using real library types.** Add the library dependency to the `examples` module
+and create minimal classes that exercise the pattern you want to detect. The code must compile but doesn't
+need to run — the scanner inspects TASTy trees, not runtime behavior.
+
+**Step 2: Dump the TASTy tree with `TastyDebug`.** Use the debug utility to see exactly what the compiler
+produced:
+
+```scala
+given ctx: Context = TastyContext.fromCurrentProcess()
+println(TastyDebug.dumpMethod("my.package", "MyClass", "myMethod"))
+```
+
+This prints two views: (1) a Scala-like rendering via `showMultiline`, and (2) an indented AST dump showing
+each node's type and name (with both simple and raw `SignedName` forms). Example output:
+
+```
+=== AST nodes (type + name) ===
+Apply(...)
+  TypeApply(...)
+    Select(_, readJournalFor)  [raw: readJournalFor[with sig ...]]
+      Apply(...)
+        Select(_, apply)  [raw: apply[with sig ...]]
+          Ident(PersistenceQuery)
+        Ident(system)
+    TypeTree
+  Ident(pluginId)
+```
+
+**Step 3: Write the pattern match.** Common TASTy patterns for method calls:
+
+```
+obj.method(args)                → Apply(Select(Ident(obj), method), args)
+obj.method[T](args)             → Apply(TypeApply(Select(Ident(obj), method), types), args)
+expr.method(args)               → Apply(Select(expr, method), args)
+expr.method[T](args)            → Apply(TypeApply(Select(expr, method), types), args)
+```
+
+Always compare names via `TastyUtils.simpleName(name)`, never `name.toString`.
+
+**Step 4: Write tests against the example code.** Run the scanner on the examples package and assert on the
+produced `DiscoveredIntegration` list.
 
 ### 7.3 Code Scanner Trait
 
