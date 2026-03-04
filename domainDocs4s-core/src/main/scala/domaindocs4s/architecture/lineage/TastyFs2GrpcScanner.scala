@@ -122,9 +122,9 @@ class TastyFs2GrpcScanner(using ctx: Context) {
     override def traverse(tree: Tree): Unit = {
       tree match {
         case Apply(Select(Ident(fieldName), methodName), _) =>
-          addIfGrpc(fieldName.toString, methodName.toString)
+          addIfGrpc(TastyUtils.simpleName(fieldName), TastyUtils.simpleName(methodName))
         case Apply(TypeApply(Select(Ident(fieldName), methodName), _), _) =>
-          addIfGrpc(fieldName.toString, methodName.toString)
+          addIfGrpc(TastyUtils.simpleName(fieldName), TastyUtils.simpleName(methodName))
         case _ =>
       }
       super.traverse(tree)
@@ -132,7 +132,7 @@ class TastyFs2GrpcScanner(using ctx: Context) {
 
     private def addIfGrpc(fieldName: String, methodName: String): Unit =
       grpcFields.get(fieldName).foreach { serviceName =>
-        calls += GrpcCall(fieldName, serviceName, methodName.takeWhile(_ != '['))
+        calls += GrpcCall(fieldName, serviceName, methodName)
       }
   }
 }

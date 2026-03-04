@@ -1,6 +1,7 @@
 package domaindocs4s.architecture.lineage
 
 import tastyquery.Contexts.Context
+import tastyquery.Names.{Name, SignedName}
 import tastyquery.Symbols.{ClassSymbol, PackageSymbol}
 import tastyquery.Types.*
 
@@ -24,6 +25,17 @@ private[lineage] object TastyUtils {
   private def isModuleClass(cls: ClassSymbol): Boolean = {
     val name = cls.name.toString
     name.endsWith("$") && !name.startsWith("<")
+  }
+
+  /** Extract the simple name from a TASTy Name, unwrapping SignedName if needed.
+    *
+    * TASTy method names may be SignedNames that include type signatures,
+    * e.g. `readJournalFor[with sig (1,java.lang.String):java.lang.Object @readJournalFor]`.
+    * This extracts the underlying simple name string.
+    */
+  def simpleName(name: Name): String = name match {
+    case SignedName(underlying, _, _) => underlying.toString
+    case other                        => other.toString
   }
 
   /** Extract the underlying TypeRef from a Type, unwrapping AppliedType if needed. */

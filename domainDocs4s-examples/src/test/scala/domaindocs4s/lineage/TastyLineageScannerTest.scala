@@ -212,11 +212,30 @@ class TastyLineageScannerTest extends AnyFreeSpec {
     }
 
     "detects journal query usage as Read from journal" in {
-      val reads = pekkoIntegrations.filter(_.accessType == DataAccessType.Read)
+      val reads = pekkoIntegrations.filter { di =>
+        di.accessType == DataAccessType.Read && di.method.className == "EventProjection"
+      }
       reads should have size 1
-      reads.head.method.className shouldBe "EventProjection"
       reads.head.method.methodName shouldBe "streamByTag"
       reads.head.target shouldBe "journal"
+    }
+
+    "detects EventSourcedProvider usage as Read from journal" in {
+      val espReads = pekkoIntegrations.filter { di =>
+        di.method.className == "TagBasedProjection" && di.accessType == DataAccessType.Read
+      }
+      espReads should have size 1
+      espReads.head.method.methodName shouldBe "createSource"
+      espReads.head.evidence should include("EventSourcedProvider")
+    }
+
+    "detects PersistenceQuery.readJournalFor as Read from journal" in {
+      val pqReads = pekkoIntegrations.filter { di =>
+        di.method.className == "QueryBasedProjection" && di.accessType == DataAccessType.Read
+      }
+      pqReads should have size 1
+      pqReads.head.method.methodName shouldBe "createReader"
+      pqReads.head.evidence should include("readJournalFor")
     }
 
     "all pekko integrations have integrationType pekko-journal" in {

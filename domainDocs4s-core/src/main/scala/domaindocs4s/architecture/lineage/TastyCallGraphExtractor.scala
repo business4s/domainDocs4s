@@ -75,9 +75,9 @@ class TastyCallGraphExtractor(using ctx: Context) {
     override def traverse(tree: Tree): Unit = {
       tree match {
         case Apply(Select(Ident(fieldName), methodName), _) =>
-          addIfKnown(fieldName.toString, methodName.toString)
+          addIfKnown(TastyUtils.simpleName(fieldName), TastyUtils.simpleName(methodName))
         case Apply(TypeApply(Select(Ident(fieldName), methodName), _), _) =>
-          addIfKnown(fieldName.toString, methodName.toString)
+          addIfKnown(TastyUtils.simpleName(fieldName), TastyUtils.simpleName(methodName))
         case _ =>
       }
       super.traverse(tree)
@@ -85,7 +85,7 @@ class TastyCallGraphExtractor(using ctx: Context) {
 
     private def addIfKnown(fieldName: String, methodName: String): Unit =
       fieldTypes.get(fieldName).foreach { className =>
-        calls += MethodRef(className, methodName.takeWhile(_ != '['))
+        calls += MethodRef(className, methodName)
       }
   }
 }

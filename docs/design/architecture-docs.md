@@ -36,7 +36,7 @@ interactive views.
 | Class-level Mermaid rendering        | Implemented | `core: lineage/MermaidRenderer.scala`                         |
 | Class-level config (fold+hide+group) | Implemented | `core: lineage/model.scala` (ClassLevelConfig, ClassGrouping) |
 | Pekko journal scanner                | Implemented | `core: lineage/TastyPekkoJournalScanner.scala`                |
-| Tests (43 tests passing)             | Implemented | `examples: TastyLineageScannerTest.scala`                     |
+| Tests (45 tests passing)             | Implemented | `examples: TastyLineageScannerTest.scala`                     |
 | Service flow DSL                     | Design only | Section 6 below                                               |
 | External spec / system view          | Design only | Sections 8-9 below                                            |
 | Cytoscape.js renderer                | Design only | Section 10.3 below                                            |
@@ -993,6 +993,7 @@ Based on concrete investigation of the reference service, here is what the scann
 | gRPC client calls (injected fs2-grpc fields)                        | 1 node, 1 edge     | fs2-grpc client scanner   |
 | Doobie DB reads/writes (FS2-based projections + their repositories) | ~6 nodes, ~6 edges | Doobie scanner            |
 | Pekko persistent actors (classic + typed) + journal reads           | 1 node, 2 edges    | Pekko journal scanner     |
+| Pekko projection sources (EventSourcedProvider + readJournalFor)    | 0 (node exists), 11 edges | Pekko journal scanner |
 | Class-to-class call graph (API → actors → core logic)               | ~5 edges           | Call graph extractor      |
 | Class discovery (all scanned classes appear as nodes)               | ~20 nodes          | Call graph extractor      |
 
@@ -1000,7 +1001,6 @@ Based on concrete investigation of the reference service, here is what the scann
 
 | Gap                             | Nodes                | Edges      | Root cause                                                                                                                         | Solution                                                     |
 |---------------------------------|----------------------|------------|------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------|
-| **Pekko projection sources**    | 0 (journal exists)   | 11 (reads) | Projections read journal via `EventSourcedProvider.eventsByTag()` / `PersistenceQuery.readJournalFor` — not field-based calls      | Pekko projection scanner or class-level attachment (§15.3.2) |
 | **Slick projections**           | ~6 tables            | ~8 edges   | External projection actors use `SlickProjection.groupedWithin()` with `SlickHandler` — not doobie                                  | Slick scanner (§15.3.3)                                      |
 | **Pekko Kafka producers**       | 2 topics             | 2 edges    | Kafka handler classes use Pekko Kafka `flexiFlow` + `ProducerRecord` — not fs2-kafka                                               | Pekko Kafka scanner (§15.3.4)                                |
 | **Flyway-managed views/tables** | 1 view + schema info | 2 edges    | DB views defined in SQL migrations, not in Scala code                                                                              | Flyway migration scanner (§15.3.5)                           |
@@ -1013,7 +1013,7 @@ Based on concrete investigation of the reference service, here is what the scann
 |           | Manual diagram | Currently auto-detected | After all improvements |
 |-----------|----------------|-------------------------|------------------------|
 | Nodes     | 38             | ~23 (61%)               | ~36 (95%)              |
-| Edges     | 47             | ~14 (30%)               | ~44 (94%)              |
+| Edges     | 47             | ~25 (53%)               | ~44 (94%)              |
 | Subgraphs | 8              | 0 (package-based only)  | ~7 (88%)               |
 
 The remaining ~5% gap is downstream infrastructure (data warehouses) and DB view joins — addressable via
@@ -1035,42 +1035,18 @@ See `core: lineage/TastyPekkoJournalScanner.scala`.
 **Output:** `DiscoveredIntegration` with `integrationType = "pekko-journal"`, `target = "journal"`,
 `group = Some("Journal")`.
 
-#### 15.3.2 Pekko Projection Source Scanner (HIGH — unlocks 11 "feeds" edges)
+#### 15.3.2 Pekko Projection Source Scanner — IMPLEMENTED
+
+Integrated into `TastyPekkoJournalScanner` (projection source detection).
 
 **What it detects:**
 
-Projections that read from the journal via Pekko Persistence Query:
+- Any method referencing `EventSourcedProvider` (e.g., `.eventsByTag`, `.eventsBySlices`) → Read from journal
+- Any method calling `readJournalFor` (the `PersistenceQuery` pattern) → Read from journal
 
-- `EventSourcedProvider.eventsByTag[Event](...)` — FS2-based projections
-- `PersistenceQuery(system).readJournalFor[EventsByPersistenceIdQuery](...)` — query-based projections
-- `SlickProjection.groupedWithin(sourceProvider, ...)` — Slick-based projections using a source provider
-
-**Example patterns:**
-
-```scala
-// FS2-based projections:
-EventSourcedProvider.eventsByTag[Event](system, readJournalPluginId, tag)
-
-// Query-based projections:
-PersistenceQuery(system).readJournalFor[EventsByPersistenceIdQuery](pluginId)
-  .eventsByPersistenceId(persistenceId, ...)
-```
-
-In the reference service, both patterns are used — FS2-based for internal DB projections, query-based
-for single-entity projections.
-
-**Detection approach:** This is tricky for TASTy because the connection between a projection class and
-"reads the journal" often goes through factory methods, config values, and runtime wiring. Two approaches:
-
-1. **Class-level attachment** (pragmatic, near-term): A mechanism similar to `ManualScanner` but operating
-   at the class level — declare that all instances of a class (or classes extending a trait) have an
-   implicit integration. E.g., "any class using a source provider base trait reads the pekko-journal".
-   This could be a `ClassIntegrationScanner` that attaches integrations to all methods of matching classes.
-2. **TASTy detection** (thorough, longer-term): Pattern-match on `EventSourcedProvider.eventsByTag`,
-   `PersistenceQuery(...).readJournalFor`, and `SourceProvider` factory calls in TASTy trees.
-
-**Impact:** Adds ~11 edges from journal to all projection classes. This is the single highest-value
-improvement — it connects the two halves of the diagram (write path and read path).
+These patterns are detected by symbol name in TASTy trees. The call graph extractor propagates the
+journal-read transitively — so a shared `SourceProvider` factory method gets detected once, and all
+projection actors calling it inherit the read edge automatically.
 
 #### 15.3.3 Slick Scanner (MEDIUM — unlocks external projection DB writes)
 
@@ -1217,15 +1193,10 @@ This is a rendering enhancement, not a scanner improvement.
 Done:
   ┌─────────────────────────────────────┐
   │ 15.3.1  Pekko Persistence Scanner   │──→ journal node + write/read edges  ✓
+  │ 15.3.2  Pekko Projection Sources    │──→ 11 journal→projection edges      ✓
   └─────────────────────────────────────┘
 
-Phase 1 — Critical path (unlocks structural parity):
-  ┌─────────────────────────────────────┐
-  │ 15.3.2  Pekko Projection Sources    │──→ 11 journal→projection edges
-  └─────────────────────────────────────┘
-  Connects the write path to the read path through the journal.
-
-Phase 2 — Coverage (fills in remaining integration types):
+Phase 1 — Coverage (fills in remaining integration types):
   ┌─────────────────────────────────────┐
   │ 15.3.3  Slick Scanner               │──→ 6 tables, 8 edges
   │ 15.3.4  Pekko Kafka Scanner         │──→ 2 topics, 2 edges
@@ -1250,8 +1221,7 @@ Updated version of the table from §7.3 with newly identified scanners:
 | `Fs2GrpcClientScanner`      | gRPC client usages                        | Implemented |
 | `Fs2GrpcServerScanner`      | gRPC service implementations              | Implemented |
 | `ManualScanner`             | Kafka, custom integrations                | Implemented |
-| `PekkoJournalScanner`       | Persistent actor writes (classic + typed) + journal reads | Implemented |
-| `PekkoProjectionScanner`    | Projection journal reads (source providers) | Planned   |
+| `PekkoJournalScanner`       | Persistent actor writes + journal reads + projection sources | Implemented |
 | `SlickTableScanner`         | Slick DBIO table writes                   | Planned     |
 | `PekkoKafkaScanner`         | Pekko Kafka producer/consumer patterns    | Planned     |
 | `S3Scanner`                 | AWS SDK S3 put/get operations             | Planned     |

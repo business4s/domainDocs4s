@@ -25,6 +25,11 @@ import scala.collection.mutable.ListBuffer
 // Read side — Journal query consumers:
 //   val field whose type has ReadJournal as ancestor
 //   → each call to field.method(...) is a Read from journal
+//
+// Read side — Projection source providers:
+//   method body references EventSourcedProvider (any method)
+//   method body calls readJournalFor (PersistenceQuery pattern)
+//   → Read from journal
 // ============================================================================
 
 class TastyPekkoJournalScanner(using ctx: Context) {
@@ -32,15 +37,17 @@ class TastyPekkoJournalScanner(using ctx: Context) {
   private val PersistentActorNames = Set("PersistentActor", "AbstractPersistentActor")
   private val EventSourcedBehaviorName = "EventSourcedBehavior"
   private val ReadJournalName = "ReadJournal"
+  private val EventSourcedProviderName = "EventSourcedProvider"
+  private val ReadJournalForMethod = "readJournalFor"
 
   def scan(packageName: String): List[DiscoveredIntegration] = {
     val pkg = ctx.findPackage(packageName)
     val classes = TastyUtils.userClasses(pkg)
     val objects = TastyUtils.moduleClasses(pkg)
     classes.flatMap { cls =>
-      scanClassicPersistentActor(cls) ++ scanEventSourcedBehavior(cls) ++ scanJournalReader(cls)
+      scanClassicPersistentActor(cls) ++ scanEventSourcedBehavior(cls) ++ scanJournalReader(cls) ++ scanProjectionSource(cls)
     } ++ objects.flatMap { cls =>
-      scanEventSourcedBehavior(cls) ++ scanJournalReader(cls)
+      scanEventSourcedBehavior(cls) ++ scanJournalReader(cls) ++ scanProjectionSource(cls)
     }
   }
 
@@ -155,6 +162,34 @@ class TastyPekkoJournalScanner(using ctx: Context) {
     }
   }
 
+  // ── Read side: Projection source providers ──────────────────────────────
+
+  /** Projection sources: method body references EventSourcedProvider or calls readJournalFor → Read from journal. */
+  private def scanProjectionSource(cls: ClassSymbol): List[DiscoveredIntegration] = {
+    val className = cls.name.toString.stripSuffix("$")
+    cls.declarations.collect {
+      case ts: TermSymbol if ts.tree.exists(_.isInstanceOf[DefDef]) =>
+        val methodName = ts.name.toString
+        ts.tree.toList.flatMap {
+          case defDef: DefDef =>
+            defDef.rhs.toList.flatMap { rhs =>
+              val detector = new ProjectionSourceDetector
+              detector.traverse(rhs)
+              if (detector.found) List(DiscoveredIntegration(
+                method = MethodRef(className, methodName),
+                accessType = DataAccessType.Read,
+                integrationType = "pekko-journal",
+                target = "journal",
+                evidence = detector.evidence,
+                group = Some("Journal"),
+              ))
+              else Nil
+            }
+          case _ => Nil
+        }
+    }.flatten
+  }
+
   // ── Tree traversers ─────────────────────────────────────────────────────
 
   /** TreeTraverser that detects any reference to EventSourcedBehavior in a method body. */
@@ -190,5 +225,32 @@ class TastyPekkoJournalScanner(using ctx: Context) {
 
     private def addIfJournal(fieldName: String): Unit =
       if (journalFields.contains(fieldName)) calls += fieldName
+  }
+
+  /** TreeTraverser that detects EventSourcedProvider references or readJournalFor calls. */
+  private class ProjectionSourceDetector extends TreeTraverser {
+    var foundEventSourcedProvider: Boolean = false
+    var foundReadJournalFor: Boolean = false
+
+    def found: Boolean = foundEventSourcedProvider || foundReadJournalFor
+
+    def evidence: String = (foundEventSourcedProvider, foundReadJournalFor) match {
+      case (true, true)   => "calls EventSourcedProvider, readJournalFor"
+      case (true, false)  => "calls EventSourcedProvider"
+      case (false, true)  => "calls readJournalFor"
+      case (false, false) => ""
+    }
+
+    override def traverse(tree: Tree): Unit = {
+      if (!(foundEventSourcedProvider && foundReadJournalFor)) {
+        tree match {
+          case Ident(name) if TastyUtils.simpleName(name) == EventSourcedProviderName     => foundEventSourcedProvider = true
+          case Select(_, name) if TastyUtils.simpleName(name) == EventSourcedProviderName => foundEventSourcedProvider = true
+          case Select(_, name) if TastyUtils.simpleName(name) == ReadJournalForMethod     => foundReadJournalFor = true
+          case _ =>
+        }
+        super.traverse(tree)
+      }
+    }
   }
 }
