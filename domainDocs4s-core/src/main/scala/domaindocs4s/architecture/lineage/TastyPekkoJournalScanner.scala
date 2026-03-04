@@ -32,7 +32,9 @@ import scala.collection.mutable.ListBuffer
 //   → Read from journal
 // ============================================================================
 
-class TastyPekkoJournalScanner(using ctx: Context) extends IntegrationScanner {
+class TastyPekkoJournalScanner(
+    group: Option[String] = None,
+)(using ctx: Context) extends IntegrationScanner {
 
   private val PersistentActorNames = Set("PersistentActor", "AbstractPersistentActor")
   private val EventSourcedBehaviorName = "EventSourcedBehavior"
@@ -58,7 +60,7 @@ class TastyPekkoJournalScanner(using ctx: Context) extends IntegrationScanner {
 
   /** Classic: class extends PersistentActor → Write to journal. */
   private def scanClassicPersistentActor(packageName: String, cls: ClassSymbol): List[DiscoveredIntegration] = {
-    val className = cls.name.toString
+    val className = cls.name.toString.stripSuffix("$")
     val isPersistent = try cls.parents.exists { parentType =>
       TastyUtils.extractTypeName(parentType).exists(PersistentActorNames.contains)
     } catch { case _: Exception => false }
@@ -71,7 +73,7 @@ class TastyPekkoJournalScanner(using ctx: Context) extends IntegrationScanner {
       scanner = "pekko-journal",
       target = "journal",
       evidence = "extends PersistentActor",
-      group = Some("Journal"),
+      group = group,
     ))
   }
 
@@ -95,7 +97,7 @@ class TastyPekkoJournalScanner(using ctx: Context) extends IntegrationScanner {
                 scanner = "pekko-journal",
                 target = "journal",
                 evidence = "calls EventSourcedBehavior",
-                group = Some("Journal"),
+                group = group,
               ))
               else Nil
             }
@@ -128,7 +130,7 @@ class TastyPekkoJournalScanner(using ctx: Context) extends IntegrationScanner {
                   scanner = "pekko-journal",
                   target = "journal",
                   evidence = s"calls $fieldName (ReadJournal)",
-                  group = Some("Journal"),
+                  group = group,
                 )
               }
             }
@@ -188,7 +190,7 @@ class TastyPekkoJournalScanner(using ctx: Context) extends IntegrationScanner {
                 scanner = "pekko-journal",
                 target = "journal",
                 evidence = detector.evidence,
-                group = Some("Journal"),
+                group = group,
               ))
               else Nil
             }

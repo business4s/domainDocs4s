@@ -35,7 +35,7 @@ class TastyDoobieScanner(
     val classes = TastyUtils.userClasses(ctx.findPackage(packageName))
 
     classes.flatMap { cls =>
-      val className = cls.name.toString
+      val className = cls.name.toString.stripSuffix("$")
       cls.declarations.collect {
         case ts: TermSymbol if returnsConnectionIO(ts.declaredType) =>
           val ref = MethodRef(packageName, className, ts.name.toString)

@@ -137,10 +137,20 @@ object MermaidRenderer {
       case ClassGrouping.Custom(fn) => fn
     }
 
-    val visibleClasses = result.classes.filter { cls =>
-      !hidden.contains(cls.name) &&
+    val visibleFromCallGraph = result.classes.filter { cls =>
+      !hidden.contains((cls.packageName, cls.name)) &&
         cls.methods.exists(m => m.calls.nonEmpty || m.integrations.nonEmpty || isCalledByOthers(m.ref, result))
     }
+
+    // Classes from integrations not in result.classes (e.g., Scala objects detected by scanners)
+    val knownClassKeys: Set[ClassKey] = result.classes.map(cls => (cls.packageName, cls.name)).toSet
+    val integrationOnlyClasses: List[ScannedClass] = result.integrations
+      .map(i => (i.method.packageName, i.method.className))
+      .distinct
+      .filterNot(k => knownClassKeys.contains(k) || hidden.contains(k))
+      .map { case (pkg, name) => ScannedClass(name = name, packageName = pkg, methods = Nil) }
+
+    val visibleClasses = visibleFromCallGraph ++ integrationOnlyClasses
 
     val grouped = visibleClasses.groupBy(groupFn)
 
@@ -148,13 +158,13 @@ object MermaidRenderer {
       val gid = packageGroupId(groupName)
       sb.append(s"""  subgraph $gid ["$groupName"]\n""")
       for (cls <- classes) {
-        sb.append(s"""    ${classNodeId(cls.name)}["${cls.name}"]\n""")
+        sb.append(s"""    ${classNodeId(cls.packageName, cls.name)}["${cls.name}"]\n""")
       }
       sb.append("  end\n")
     }
 
     for (cls <- grouped.getOrElse(None, Nil)) {
-      sb.append(s"""  ${classNodeId(cls.name)}["${cls.name}"]\n""")
+      sb.append(s"""  ${classNodeId(cls.packageName, cls.name)}["${cls.name}"]\n""")
     }
 
     sb.append("\n")
@@ -198,49 +208,52 @@ object MermaidRenderer {
     sb.append("\n")
 
     // Class-to-class call graph edges (deduplicated, with transitive edges through hidden classes)
-    val rawClassEdges = result.callGraph
-      .map(e => (e.caller.className, e.callee.className))
+    val declaredClassKeys: Set[ClassKey] = visibleClasses.map(cls => (cls.packageName, cls.name)).toSet
+    val rawClassEdges: List[(ClassKey, ClassKey)] = result.callGraph
+      .map(e => ((e.caller.packageName, e.caller.className), (e.callee.packageName, e.callee.className)))
       .distinct
 
     val visibleEdges = resolveCallEdges(rawClassEdges, hidden)
+      .filter { case (from, to) => declaredClassKeys.contains(from) && declaredClassKeys.contains(to) }
     for ((from, to) <- visibleEdges) {
-      sb.append(s"  ${classNodeId(from)} --> ${classNodeId(to)}\n")
+      sb.append(s"  ${classNodeId(from._1, from._2)} --> ${classNodeId(to._1, to._2)}\n")
     }
 
     sb.append("\n")
 
     // Re-attribute integrations: promote hidden class integrations to their callers
     val effectiveIntegrations = result.integrations.flatMap { i =>
-      if (!hidden.contains(i.method.className)) List(i)
-      else promotedCallers.getOrElse(i.method.className, Set.empty).toList.map(caller =>
-        i.copy(method = i.method.copy(className = caller))
+      val key: ClassKey = (i.method.packageName, i.method.className)
+      if (!hidden.contains(key)) List(i)
+      else promotedCallers.getOrElse(key, Set.empty).toList.map(caller =>
+        i.copy(method = i.method.copy(packageName = caller._1, className = caller._2))
       )
     }
 
-    // Integration edges — folded types: one edge per (className, group)
+    // Integration edges — folded types: one edge per (classKey, group)
     val foldedEdges = effectiveIntegrations
       .filter(i => foldByGroup.contains(i.resourceType) && i.group.isDefined)
-      .groupBy(i => (i.method.className, i.group.get))
-      .map { case ((className, groupName), integrations) =>
+      .groupBy(i => ((i.method.packageName, i.method.className), i.group.get))
+      .map { case ((classKey, groupName), integrations) =>
         val combined = DataAccessType.combineAll(integrations.map(_.accessType).toList)
-        (className, groupName, combined)
+        (classKey, groupName, combined)
       }
 
-    for ((className, groupName, accessType) <- foldedEdges) {
-      renderEdge(sb, classNodeId(className), foldedGroupNodeId(groupName), accessType, dataFlow)
+    for ((classKey, groupName, accessType) <- foldedEdges) {
+      renderEdge(sb, classNodeId(classKey._1, classKey._2), foldedGroupNodeId(groupName), accessType, dataFlow)
     }
 
-    // Integration edges — non-folded types: one edge per (className, target)
+    // Integration edges — non-folded types: one edge per (classKey, target)
     val nonFoldedEdges = effectiveIntegrations
       .filterNot(i => foldByGroup.contains(i.resourceType) && i.group.isDefined)
-      .groupBy(i => (i.method.className, i.target))
-      .map { case ((className, target), integrations) =>
+      .groupBy(i => ((i.method.packageName, i.method.className), i.target))
+      .map { case ((classKey, target), integrations) =>
         val combined = DataAccessType.combineAll(integrations.map(_.accessType).toList)
-        (className, target, combined)
+        (classKey, target, combined)
       }
 
-    for ((className, target, accessType) <- nonFoldedEdges) {
-      renderEdge(sb, classNodeId(className), targetNodeId(target), accessType, dataFlow)
+    for ((classKey, target, accessType) <- nonFoldedEdges) {
+      renderEdge(sb, classNodeId(classKey._1, classKey._2), targetNodeId(target), accessType, dataFlow)
     }
 
     // Styling
@@ -260,7 +273,7 @@ object MermaidRenderer {
         case DataAccessType.ReadWrite => "rwNode"
         case _                        => ""
       }
-      if (style.nonEmpty) sb.append(s"  class ${classNodeId(cls.name)} $style\n")
+      if (style.nonEmpty) sb.append(s"  class ${classNodeId(cls.packageName, cls.name)} $style\n")
     }
 
     for ((groupName, rtype) <- foldedGroups) {
@@ -277,14 +290,14 @@ object MermaidRenderer {
   }
 
   /** For each hidden class, find the set of non-hidden classes that call it (transitively). */
-  private def buildPromotedCallers(hidden: Set[String], callGraph: List[CallEdge]): Map[String, Set[String]] = {
+  private def buildPromotedCallers(hidden: Set[ClassKey], callGraph: List[CallEdge]): Map[ClassKey, Set[ClassKey]] = {
     val callers = callGraph
-      .map(e => (e.caller.className, e.callee.className))
+      .map(e => ((e.caller.packageName, e.caller.className), (e.callee.packageName, e.callee.className)))
       .distinct
       .groupBy(_._2)
       .view.mapValues(_.map(_._1).toSet).toMap
 
-    def findNonHidden(cls: String, visited: Set[String]): Set[String] = {
+    def findNonHidden(cls: ClassKey, visited: Set[ClassKey]): Set[ClassKey] = {
       if (visited.contains(cls)) Set.empty
       else callers.getOrElse(cls, Set.empty).flatMap { c =>
         if (!hidden.contains(c)) Set(c)
@@ -296,10 +309,10 @@ object MermaidRenderer {
   }
 
   /** Resolve call edges: remove hidden classes, add transitive edges through them. */
-  private def resolveCallEdges(edges: List[(String, String)], hidden: Set[String]): List[(String, String)] = {
+  private def resolveCallEdges(edges: List[(ClassKey, ClassKey)], hidden: Set[ClassKey]): List[(ClassKey, ClassKey)] = {
     val callees = edges.groupBy(_._1).view.mapValues(_.map(_._2).toSet).toMap
 
-    def resolveTarget(target: String, visited: Set[String]): Set[String] = {
+    def resolveTarget(target: ClassKey, visited: Set[ClassKey]): Set[ClassKey] = {
       if (visited.contains(target)) Set.empty
       else if (!hidden.contains(target)) Set(target)
       else callees.getOrElse(target, Set.empty).flatMap(t => resolveTarget(t, visited + target))
@@ -345,17 +358,23 @@ object MermaidRenderer {
     s"https://mermaid.live/edit#base64:$base64url"
   }
 
+  private type ClassKey = (String, String) // (packageName, className)
+
+  private def hashPkg(pkg: String): String =
+    if (pkg.isEmpty) "0"
+    else f"${pkg.hashCode.abs}%08x".take(8)
+
   private def sanitizeId(raw: String): String =
     raw.replaceAll("[^a-zA-Z0-9_]", "_")
 
   private def nodeId(ref: MethodRef): String =
-    sanitizeId(s"${ref.className}_${ref.methodName}")
+    s"${hashPkg(ref.packageName)}_${sanitizeId(s"${ref.className}_${ref.methodName}")}"
 
   private def targetNodeId(target: String): String =
     s"ext_${sanitizeId(target)}"
 
-  private def classNodeId(className: String): String =
-    s"cls_${sanitizeId(className)}"
+  private def classNodeId(packageName: String, className: String): String =
+    s"cls_${hashPkg(packageName)}_${sanitizeId(className)}"
 
   private def foldedGroupNodeId(groupName: String): String =
     s"fold_${sanitizeId(groupName)}"

@@ -23,7 +23,7 @@ class TastyCallGraphExtractor(using ctx: Context) {
     val classes = TastyUtils.userClasses(ctx.findPackage(packageName))
 
     classes.flatMap { cls =>
-      val className = cls.name.toString
+      val className = cls.name.toString.stripSuffix("$")
       val fieldTypes = resolveFieldTypes(cls)
 
       cls.declarations.collect {
@@ -40,7 +40,7 @@ class TastyCallGraphExtractor(using ctx: Context) {
         ts.declaredType match {
           case tr: TypeRef =>
             val pkg = TastyUtils.typeRefPackage(tr)
-            Some(ts.name.toString -> (pkg, tr.name.toString))
+            Some(ts.name.toString -> (pkg, tr.name.toString.stripSuffix("$")))
           case _ => None
         }
     }.flatten.toMap

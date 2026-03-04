@@ -37,7 +37,7 @@ class TastyFs2GrpcScanner(using ctx: Context) extends IntegrationScanner {
 
   /** Server: class extends *Fs2Grpc trait → Write integrations for each implemented RPC method. */
   private def scanServer(packageName: String, cls: ClassSymbol): List[DiscoveredIntegration] = {
-    val className = cls.name.toString
+    val className = cls.name.toString.stripSuffix("$")
     // Use cls.parents (types) instead of cls.parentClasses (symbols) because
     // parentClasses throws when it can't resolve java.lang.Object in the classpath.
     val grpcParentSymbols = try cls.parents.flatMap { parentType =>
@@ -75,7 +75,7 @@ class TastyFs2GrpcScanner(using ctx: Context) extends IntegrationScanner {
 
   /** Client: val fields of type *Fs2Grpc → Read integrations for each call to those fields. */
   private def scanClient(packageName: String, cls: ClassSymbol): List[DiscoveredIntegration] = {
-    val className = cls.name.toString
+    val className = cls.name.toString.stripSuffix("$")
     val grpcFields = resolveGrpcFieldTypes(cls)
     if (grpcFields.isEmpty) return Nil
 

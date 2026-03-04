@@ -220,19 +220,19 @@ object ClassGrouping {
 /** Configuration for class-level Mermaid rendering. */
 case class ClassLevelConfig(
     foldByGroup: Set[String] = Set("grpc"),
-    hiddenClasses: Set[String] = Set.empty,
+    hiddenClasses: Set[(String, String)] = Set.empty,
     classGrouping: ClassGrouping = ClassGrouping.NoGrouping,
 )
 
 object ClassLevelConfig {
   class Builder {
     private var _foldByGroup: Set[String]      = Set("grpc")
-    private val _hidden                        = scala.collection.mutable.Set.empty[String]
+    private val _hidden                        = scala.collection.mutable.Set.empty[(String, String)]
     private var _classGrouping: ClassGrouping   = ClassGrouping.NoGrouping
 
     def foldByGroup(types: Set[String]): Builder = { _foldByGroup = types; this }
     def hide[T: reflect.ClassTag]: Builder = {
-      _hidden += splitClassTag(reflect.classTag[T])._2
+      _hidden += splitClassTag(reflect.classTag[T])
       this
     }
     def groupByPackage(scanBase: String): Builder = { _classGrouping = ClassGrouping.ByPackage(scanBase); this }

@@ -15,6 +15,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
   given ctx: Context = TastyContext.fromCurrentProcess()
 
   private val pkg = "domaindocs4s.architecture.lineage.example"
+  private val ph  = f"${pkg.hashCode.abs}%08x".take(8) // package hash for node ID assertions
 
   // Phase 0: extract call graph
   private val callGraph = new TastyCallGraphExtractor().extract(pkg)
@@ -423,8 +424,8 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       val lines = diagram.split("\n")
 
       // UserGrpcApi calls multiple methods on UserService, but should appear as one edge
-      lines.count(_.contains("cls_UserGrpcApi --> cls_UserService")) shouldBe 1
-      lines.count(_.contains("cls_UserService --> cls_UserRepo")) shouldBe 1
+      lines.count(_.contains(s"cls_${ph}_UserGrpcApi --> cls_${ph}_UserService")) shouldBe 1
+      lines.count(_.contains(s"cls_${ph}_UserService --> cls_${ph}_UserRepo")) shouldBe 1
     }
 
     "hides specified classes from diagram" in {
@@ -442,22 +443,22 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       val diagram = MermaidRenderer.renderClassLevel(resultWithManual, config)
 
       // UserRepo's DB integrations should be promoted to UserService
-      diagram should include("cls_UserService")
+      diagram should include(s"cls_${ph}_UserService")
       diagram should include("ext_users")
       diagram should include("ext_transactions")
 
       // No edges from hidden UserRepo
-      diagram should not include "cls_UserRepo"
+      diagram should not include s"cls_${ph}_UserRepo"
     }
 
     "removes call edges to hidden classes" in {
       val config = ClassLevelConfig.builder.hide[UserRepo].build
       val diagram = MermaidRenderer.renderClassLevel(resultWithManual, config)
 
-      diagram should not include "cls_UserService --> cls_UserRepo"
+      diagram should not include s"cls_${ph}_UserService --> cls_${ph}_UserRepo"
       // Other call edges remain
-      diagram should include("cls_UserGrpcApi --> cls_UserService")
-      diagram should include("cls_UserGrpcApi --> cls_EventPublisher")
+      diagram should include(s"cls_${ph}_UserGrpcApi --> cls_${ph}_UserService")
+      diagram should include(s"cls_${ph}_UserGrpcApi --> cls_${ph}_EventPublisher")
     }
 
     "groups classes into subgraphs with custom grouping" in {
@@ -471,8 +472,8 @@ class TastyLineageScannerTest extends AnyFreeSpec {
 
       diagram should include("""subgraph pkg_user_domain ["user-domain"]""")
       diagram should include("""subgraph pkg_events ["events"]""")
-      diagram should include("""cls_UserGrpcApi["UserGrpcApi"]""")
-      diagram should include("""cls_EventPublisher["EventPublisher"]""")
+      diagram should include(s"""cls_${ph}_UserGrpcApi["UserGrpcApi"]""")
+      diagram should include(s"""cls_${ph}_EventPublisher["EventPublisher"]""")
     }
 
     "ungrouped classes render as standalone nodes" in {
@@ -485,7 +486,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
 
       diagram should include("""subgraph pkg_api ["api"]""")
       // Classes outside the subgraph should still appear as standalone
-      diagram should include("""cls_UserService["UserService"]""")
+      diagram should include(s"""cls_${ph}_UserService["UserService"]""")
       // Standalone nodes should NOT be inside the subgraph
       val lines = diagram.split("\n")
       val subgraphStart = lines.indexWhere(_.contains("subgraph pkg_api"))
@@ -502,7 +503,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
 
       diagram should not include "subgraph pkg_"
       // Classes should still render as standalone nodes
-      diagram should include("""cls_UserGrpcApi["UserGrpcApi"]""")
+      diagram should include(s"""cls_${ph}_UserGrpcApi["UserGrpcApi"]""")
     }
   }
 

@@ -23,7 +23,7 @@ object RenderLineage {
       scanners = List(
         new TastyDoobieScanner(),
         new TastyFs2GrpcScanner(),
-        new TastyPekkoJournalScanner(),
+        new TastyPekkoJournalScanner(group = Some("user-db")),
         new TastySlickScanner(),
         new TastyPekkoKafkaScanner(),
       ),
