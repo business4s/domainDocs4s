@@ -124,55 +124,55 @@ class TastyLineageScannerTest extends AnyFreeSpec {
 
   "ManualScanner" - {
 
-    "produces kafka integrations with correct fields" in {
-      val manual = ManualScanner.builder
+    "produces kafka entries with correct fields" in {
+      val entries = ManualScanner.builder
         .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
-        .build.methodEntries
+        .build.entries
 
-      manual should have size 1
-      val di = manual.head
-      di.method shouldBe MethodRef("EventPublisher", "publishDeposit")
-      di.accessType shouldBe DataAccessType.Write
-      di.resourceType shouldBe "kafka"
-      di.scanner shouldBe "manual"
-      di.target shouldBe "user.deposit-events"
-      di.evidence shouldBe "manual declaration"
-      di.group shouldBe Some("Kafka")
+      entries should have size 1
+      val e = entries.head
+      e.className shouldBe "EventPublisher"
+      e.methodName shouldBe Some("publishDeposit")
+      e.accessType shouldBe DataAccessType.Write
+      e.resourceType shouldBe "kafka"
+      e.target shouldBe "user.deposit-events"
+      e.group shouldBe Some("Kafka")
+      e.strict shouldBe true
     }
 
     "uses default Kafka cluster as group" in {
-      val manual = ManualScanner.builder
+      val entries = ManualScanner.builder
         .method[UserRepo](_.getBalance).reads.kafka("some.topic")
-        .build.methodEntries
+        .build.entries
 
-      manual.head.group shouldBe Some("Kafka")
+      entries.head.group shouldBe Some("Kafka")
     }
 
-    "supports custom cluster name" in {
-      val manual = ManualScanner.builder
-        .method[UserRepo](_.getBalance).reads.kafka("analytics.events", cluster = "Analytics")
-        .build.methodEntries
+    "supports custom group via custom method" in {
+      val entries = ManualScanner.builder
+        .method[UserRepo](_.getBalance).reads.custom("kafka", "analytics.events", group = Some("Analytics"))
+        .build.entries
 
-      manual.head.group shouldBe Some("Analytics")
+      entries.head.group shouldBe Some("Analytics")
     }
 
     "supports generic custom resource type" in {
-      val manual = ManualScanner.builder
+      val entries = ManualScanner.builder
         .method[UserRepo](_.getBalance).writes.custom("s3", "my-bucket/exports", group = Some("S3"))
-        .build.methodEntries
+        .build.entries
 
-      val di = manual.head
-      di.resourceType shouldBe "s3"
-      di.scanner shouldBe "manual"
-      di.target shouldBe "my-bucket/exports"
-      di.group shouldBe Some("S3")
+      val e = entries.head
+      e.resourceType shouldBe "s3"
+      e.target shouldBe "my-bucket/exports"
+      e.group shouldBe Some("S3")
     }
 
     "composes with automatic scanner results in LineageBuilder" in {
-      val manualIntegrations = ManualScanner.builder
-        .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
-        .build.methodEntries
+      val manual = ManualScanner.builder
+        .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events").lenient
+        .build
 
+      val manualIntegrations = manual.apply(Nil)
       val allIntegrations = enrichment.enrich(doobieIntegrations ++ grpcIntegrations ++ manualIntegrations)
       val resultWithManual = LineageBuilder.build(callGraph, allIntegrations)
 
@@ -185,15 +185,55 @@ class TastyLineageScannerTest extends AnyFreeSpec {
     }
 
     "supports multiple declarations in a single builder" in {
-      val manual = ManualScanner.builder
+      val entries = ManualScanner.builder
         .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
-        .method[UserGrpcApi](_.getHistory).reads.kafka("user.history-events", cluster = "Analytics")
+        .method[UserGrpcApi](_.getHistory).reads.custom("kafka", "user.history-events", group = Some("Analytics"))
         .method[UserService](_.deposit).writes.custom("audit", "audit-log", group = Some("Audit"))
-        .build.methodEntries
+        .build.entries
 
-      manual should have size 3
-      manual.count(_.resourceType == "kafka") shouldBe 2
-      manual.count(_.resourceType == "audit") shouldBe 1
+      entries should have size 3
+      entries.count(_.resourceType == "kafka") shouldBe 2
+      entries.count(_.resourceType == "audit") shouldBe 1
+    }
+
+    "lenient marks all entries from the same chain as non-strict" in {
+      val entries = ManualScanner.builder
+        .method[EventPublisher](_.publishDeposit).writes.kafka("topic-a")
+        .cls[KafkaFlexiFlowProducer].writes.kafka("topic-b").kafka("topic-c").lenient
+        .build.entries
+
+      entries(0).strict shouldBe true
+      entries(1).strict shouldBe false
+      entries(2).strict shouldBe false
+    }
+
+    "cls builder creates class-level entries via chaining" in {
+      val entries = ManualScanner.builder
+        .cls[KafkaFlexiFlowProducer].writes.kafka("topic.a").kafka("topic.b")
+        .build.entries
+
+      entries should have size 2
+      entries.foreach { e =>
+        e.className shouldBe "KafkaFlexiFlowProducer"
+        e.methodName shouldBe None
+        e.accessType shouldBe DataAccessType.Write
+        e.resourceType shouldBe "kafka"
+        e.group shouldBe Some("Kafka")
+      }
+      entries.map(_.target).toSet shouldBe Set("topic.a", "topic.b")
+    }
+
+    "transitions from IntegrationBuilder to new declaration" in {
+      val entries = ManualScanner.builder
+        .cls[KafkaFlexiFlowProducer].writes.kafka("topic.a")
+        .method[EventPublisher](_.publishDeposit).writes.kafka("topic.b")
+        .build.entries
+
+      entries should have size 2
+      entries(0).className shouldBe "KafkaFlexiFlowProducer"
+      entries(0).methodName shouldBe None
+      entries(1).className shouldBe "EventPublisher"
+      entries(1).methodName shouldBe Some("publishDeposit")
     }
   }
 
@@ -333,8 +373,8 @@ class TastyLineageScannerTest extends AnyFreeSpec {
 
     // Build a result that includes kafka (manual) integrations, matching RenderLineage
     val manualIntegrations = ManualScanner.builder
-      .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
-      .build.methodEntries
+      .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events").lenient
+      .build.apply(Nil)
     val allIntegrations = enrichment.enrich(doobieIntegrations ++ grpcIntegrations ++ manualIntegrations)
     val resultWithManual = LineageBuilder.build(callGraph, allIntegrations)
 
@@ -611,7 +651,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
 
   "ManualDeclarations" - {
 
-    "method-level upsert replaces target when match exists" in {
+    "method-level override replaces target when match exists" in {
       val autoDetected = List(
         DiscoveredIntegration(
           method = MethodRef("MyProducer", "send"),
@@ -625,16 +665,8 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       )
 
       val manual = ManualDeclarations(
-        methodEntries = List(
-          DiscoveredIntegration(
-            method = MethodRef("MyProducer", "send"),
-            accessType = DataAccessType.Write,
-            resourceType = "kafka",
-            scanner = "manual",
-            target = "my-actual-topic",
-            evidence = "manual declaration",
-            group = Some("Kafka"),
-          ),
+        entries = List(
+          ManualEntry("MyProducer", Some("send"), DataAccessType.Write, "kafka", "my-actual-topic", Some("Kafka")),
         ),
       )
 
@@ -642,9 +674,10 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       result should have size 1
       result.head.target shouldBe "my-actual-topic"
       result.head.scanner shouldBe "manual"
+      result.head.evidence shouldBe "manual override"
     }
 
-    "method-level upsert adds when no match exists" in {
+    "lenient method-level adds when no match exists" in {
       val autoDetected = List(
         DiscoveredIntegration(
           method = MethodRef("MyProducer", "send"),
@@ -658,22 +691,40 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       )
 
       val manual = ManualDeclarations(
-        methodEntries = List(
-          DiscoveredIntegration(
-            method = MethodRef("OtherClass", "publish"),
-            accessType = DataAccessType.Write,
-            resourceType = "kafka",
-            scanner = "manual",
-            target = "other-topic",
-            evidence = "manual declaration",
-            group = Some("Kafka"),
-          ),
+        entries = List(
+          ManualEntry("OtherClass", Some("publish"), DataAccessType.Write, "kafka", "other-topic", Some("Kafka"), strict = false),
         ),
       )
 
       val result = manual.apply(autoDetected)
       result should have size 2
       result.map(_.target).toSet shouldBe Set("unknown topic from MyProducer.send", "other-topic")
+    }
+
+    "strict method-level throws when no match exists" in {
+      val autoDetected = List(
+        DiscoveredIntegration(
+          method = MethodRef("MyProducer", "send"),
+          accessType = DataAccessType.Write,
+          resourceType = "kafka",
+          scanner = "pekko-kafka",
+          target = "unknown topic from MyProducer.send",
+          evidence = "calls Producer.plainSink",
+          group = Some("Kafka"),
+        ),
+      )
+
+      val manual = ManualDeclarations(
+        entries = List(
+          ManualEntry("NonExistent", Some("publish"), DataAccessType.Write, "kafka", "topic", Some("Kafka")),
+        ),
+      )
+
+      val error = intercept[ManualOverrideError] {
+        manual.apply(autoDetected)
+      }
+      error.unmatched should have size 1
+      error.unmatched.head.className shouldBe "NonExistent"
     }
 
     "class-level override replaces all of resourceType with cross-product" in {
@@ -707,15 +758,9 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       )
 
       val manual = ManualDeclarations(
-        classOverrides = List(
-          ManualClassOverride(
-            className = "Handler",
-            resourceType = "kafka",
-            targets = List(
-              ManualClassTarget("topic.a", DataAccessType.Write, Some("Kafka")),
-              ManualClassTarget("topic.b", DataAccessType.Write, Some("Kafka")),
-            ),
-          ),
+        entries = List(
+          ManualEntry("Handler", None, DataAccessType.Write, "kafka", "topic.a", Some("Kafka")),
+          ManualEntry("Handler", None, DataAccessType.Write, "kafka", "topic.b", Some("Kafka")),
         ),
       )
 
@@ -727,7 +772,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       kafkaResults.map(_.target).toSet shouldBe Set("topic.a", "topic.b")
       kafkaResults.foreach { di =>
         di.scanner shouldBe "manual"
-        di.evidence shouldBe "class-level declaration"
+        di.evidence shouldBe "manual override"
       }
       // database integration untouched
       val dbResults = result.filter(_.resourceType == "database")
@@ -735,7 +780,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       dbResults.head.target shouldBe "users"
     }
 
-    "strict mode throws on unmatched class-level override" in {
+    "strict class-level throws on unmatched override" in {
       val autoDetected = List(
         DiscoveredIntegration(
           method = MethodRef("Other", "m"),
@@ -748,14 +793,9 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       )
 
       val manual = ManualDeclarations(
-        classOverrides = List(
-          ManualClassOverride(
-            className = "NonExistent",
-            resourceType = "kafka",
-            targets = List(ManualClassTarget("topic", DataAccessType.Write, Some("Kafka"))),
-          ),
+        entries = List(
+          ManualEntry("NonExistent", None, DataAccessType.Write, "kafka", "topic", Some("Kafka")),
         ),
-        strict = true,
       )
 
       val error = intercept[ManualOverrideError] {
@@ -765,7 +805,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       error.unmatched.head.className shouldBe "NonExistent"
     }
 
-    "lenient mode ignores unmatched class-level override" in {
+    "lenient class-level ignores unmatched override" in {
       val autoDetected = List(
         DiscoveredIntegration(
           method = MethodRef("Other", "m"),
@@ -778,19 +818,43 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       )
 
       val manual = ManualDeclarations(
-        classOverrides = List(
-          ManualClassOverride(
-            className = "NonExistent",
-            resourceType = "kafka",
-            targets = List(ManualClassTarget("topic", DataAccessType.Write, Some("Kafka"))),
-          ),
+        entries = List(
+          ManualEntry("NonExistent", None, DataAccessType.Write, "kafka", "topic", Some("Kafka"), strict = false),
         ),
-        strict = false,
       )
 
       val result = manual.apply(autoDetected)
       result should have size 1
       result.head.target shouldBe "users"
+    }
+
+    "per-entry strictness: strict entry throws while lenient entry passes" in {
+      val autoDetected = List(
+        DiscoveredIntegration(
+          method = MethodRef("MyProducer", "send"),
+          accessType = DataAccessType.Write,
+          resourceType = "kafka",
+          scanner = "pekko-kafka",
+          target = "unknown",
+          evidence = "calls Producer",
+          group = Some("Kafka"),
+        ),
+      )
+
+      // First entry matches, second is lenient (no match but OK), third is strict (no match → error)
+      val manual = ManualDeclarations(
+        entries = List(
+          ManualEntry("MyProducer", Some("send"), DataAccessType.Write, "kafka", "real-topic", Some("Kafka")),
+          ManualEntry("OtherClass", Some("publish"), DataAccessType.Write, "kafka", "other-topic", Some("Kafka"), strict = false),
+          ManualEntry("Missing", None, DataAccessType.Write, "kafka", "fail-topic", Some("Kafka")),
+        ),
+      )
+
+      val error = intercept[ManualOverrideError] {
+        manual.apply(autoDetected)
+      }
+      error.unmatched should have size 1
+      error.unmatched.head.className shouldBe "Missing"
     }
 
     "empty ManualDeclarations passes through unchanged" in {

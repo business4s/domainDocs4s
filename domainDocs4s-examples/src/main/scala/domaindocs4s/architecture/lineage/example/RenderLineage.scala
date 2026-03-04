@@ -28,7 +28,7 @@ object RenderLineage {
         new TastyPekkoKafkaScanner(),
       ),
       manual = ManualScanner.builder
-        .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
+        .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events").lenient
         .build,
       enrichment = IntegrationGroupConfig.builder
         .group[UserRepo]("user-db")

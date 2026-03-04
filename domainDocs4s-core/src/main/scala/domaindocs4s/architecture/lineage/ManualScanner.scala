@@ -10,23 +10,19 @@ import scala.reflect.ClassTag
 // Declares integrations that can't be detected automatically from TASTy,
 // and refines auto-detected integrations via override semantics.
 //
-// Method-level (upsert): if a manual entry matches an auto-detected integration
-// (same className + methodName + resourceType), it replaces the target.
-// If no match, it's added as new.
+// Both method-level and class-level entries work the same way:
+//   1. Match auto-detected integrations by (className [+ methodName], resourceType)
+//   2. If matches found → replace with cross-product of detected methods x manual targets
+//   3. If no matches → strict (default) throws error; lenient adds as new (method) or skips (class)
 //
-// Class-level (replace): replaces ALL auto-detected integrations of that
-// resourceType for the class, creating a cross-product of detected methods
-// x override targets.
+// The only difference: method-level matches a single method, class-level matches all methods.
 //
 // Usage:
 //   val manual = ManualScanner.builder
-//     // Method-level (upsert: override if match, add if not)
 //     .method[KafkaHandler](_.handle).writes.kafka("ledger.movements")
-//     .method[EventConsumer](_.consume).reads.kafka("input.events", cluster = "Analytics")
-//     .method[S3Exporter](_.export).writes.custom("s3", "my-bucket/exports")
-//     // Class-level (replace all of resourceType for the class)
-//     .cls[KafkaMovementHandler].writes.kafka("topic.a", "topic.b")
-//     .cls[S3Handler].writes.custom("s3", "bucket-a", "bucket-b")
+//     .method[EventPublisher](_.publish).writes.kafka("events.topic").lenient
+//     .cls[KafkaMovementHandler].writes.kafka("topic.a").kafka("topic.b")
+//     .cls[S3Handler].writes.custom("s3", "bucket-a").custom("s3", "bucket-b")
 //     .build
 // ============================================================================
 
@@ -35,9 +31,7 @@ object ManualScanner {
   def builder: Builder = new Builder
 
   class Builder {
-    private val integrations = ListBuffer.empty[DiscoveredIntegration]
-    private val classOverrides = ListBuffer.empty[ManualClassOverride]
-    private var _strict: Boolean = true
+    private val _entries = ListBuffer.empty[ManualEntry]
 
     inline def method[T](inline selector: T => Any): MethodBuilder = {
       val (className, methodName) = MethodRefMacro.extract[T](selector)
@@ -49,147 +43,114 @@ object ManualScanner {
       new ClassBuilder(className)
     }
 
-    def lenient: Builder = { _strict = false; this }
-
-    def build: ManualDeclarations =
-      ManualDeclarations(
-        methodEntries = integrations.toList,
-        classOverrides = classOverrides.toList,
-        strict = _strict,
-      )
+    def build: ManualDeclarations = ManualDeclarations(_entries.toList)
 
     class MethodBuilder(className: String, methodName: String) {
-      def reads: IntegrationBuilder = new IntegrationBuilder(className, methodName, DataAccessType.Read)
-      def writes: IntegrationBuilder = new IntegrationBuilder(className, methodName, DataAccessType.Write)
-    }
-
-    class IntegrationBuilder(className: String, methodName: String, accessType: DataAccessType) {
-
-      def kafka(topic: String, cluster: String = "Kafka"): Builder =
-        custom(resourceType = "kafka", target = topic, group = Some(cluster))
-
-      def custom(
-          resourceType: String,
-          target: String,
-          group: Option[String] = None,
-          evidence: String = "manual declaration",
-      ): Builder = {
-        integrations += DiscoveredIntegration(
-          method = MethodRef(className, methodName),
-          accessType = accessType,
-          resourceType = resourceType,
-          scanner = "manual",
-          target = target,
-          evidence = evidence,
-          group = group,
-        )
-        Builder.this
-      }
+      def reads: IntegrationBuilder = new IntegrationBuilder(className, Some(methodName), DataAccessType.Read)
+      def writes: IntegrationBuilder = new IntegrationBuilder(className, Some(methodName), DataAccessType.Write)
     }
 
     class ClassBuilder(className: String) {
-      def reads: ClassIntegrationBuilder = new ClassIntegrationBuilder(className, DataAccessType.Read)
-      def writes: ClassIntegrationBuilder = new ClassIntegrationBuilder(className, DataAccessType.Write)
+      def reads: IntegrationBuilder = new IntegrationBuilder(className, None, DataAccessType.Read)
+      def writes: IntegrationBuilder = new IntegrationBuilder(className, None, DataAccessType.Write)
     }
 
-    class ClassIntegrationBuilder(className: String, accessType: DataAccessType) {
+    class IntegrationBuilder(className: String, methodName: Option[String], accessType: DataAccessType) {
+      private val startIdx = _entries.length
 
-      def kafka(topics: String*): Builder =
-        custom("kafka", Some("Kafka"), topics*)
+      def kafka(topic: String): IntegrationBuilder = {
+        _entries += ManualEntry(className, methodName, accessType, "kafka", topic, Some("Kafka"))
+        this
+      }
 
-      def custom(resourceType: String, targets: String*): Builder =
-        custom(resourceType, None, targets*)
+      def custom(resourceType: String, target: String, group: Option[String] = None): IntegrationBuilder = {
+        _entries += ManualEntry(className, methodName, accessType, resourceType, target, group)
+        this
+      }
 
-      def custom(resourceType: String, group: Option[String], targets: String*): Builder = {
-        classOverrides += ManualClassOverride(
-          className = className,
-          resourceType = resourceType,
-          targets = targets.toList.map(t => ManualClassTarget(t, accessType, group)),
-        )
+      def lenient: Builder = {
+        for (i <- startIdx until _entries.length) {
+          _entries.update(i, _entries(i).copy(strict = false))
+        }
         Builder.this
       }
+
+      inline def method[T](inline selector: T => Any): MethodBuilder = Builder.this.method[T](selector)
+      def cls[T: ClassTag]: ClassBuilder = Builder.this.cls[T]
+      def build: ManualDeclarations = Builder.this.build
     }
   }
 }
 
-case class ManualClassTarget(
-    target: String,
-    accessType: DataAccessType,
-    group: Option[String],
-)
-
-case class ManualClassOverride(
+case class ManualEntry(
     className: String,
+    methodName: Option[String],
+    accessType: DataAccessType,
     resourceType: String,
-    targets: List[ManualClassTarget],
+    target: String,
+    group: Option[String],
+    strict: Boolean = true,
 )
 
 case class ManualDeclarations(
-    methodEntries: List[DiscoveredIntegration] = Nil,
-    classOverrides: List[ManualClassOverride] = Nil,
-    strict: Boolean = true,
+    entries: List[ManualEntry] = Nil,
 ) {
 
   def apply(autoDetected: List[DiscoveredIntegration]): List[DiscoveredIntegration] = {
-    // Step 1: Class-level overrides
-    val afterClassOverrides = applyClassOverrides(autoDetected)
+    val grouped = entries.groupBy(e => (e.className, e.methodName, e.resourceType))
 
-    // Step 2: Method-level upserts
-    applyMethodUpserts(afterClassOverrides)
-  }
-
-  private def applyClassOverrides(autoDetected: List[DiscoveredIntegration]): List[DiscoveredIntegration] = {
     var result = autoDetected
+    val unmatched = ListBuffer.empty[ManualEntry]
 
-    val unmatched = ListBuffer.empty[ManualClassOverride]
+    for ((key, group) <- grouped) {
+      val (className, methodName, resourceType) = key
 
-    for (co <- classOverrides) {
       val (matching, remaining) = result.partition { di =>
-        di.method.className == co.className && di.resourceType == co.resourceType
+        di.method.className == className &&
+        methodName.forall(_ == di.method.methodName) &&
+        di.resourceType == resourceType
       }
 
       if (matching.isEmpty) {
-        unmatched += co
+        val strictEntries = group.filter(_.strict)
+        if (strictEntries.nonEmpty) {
+          unmatched ++= strictEntries
+        } else {
+          // All lenient — method-level: add as new; class-level: skip silently
+          methodName.foreach { mn =>
+            result = result ++ group.map { e =>
+              DiscoveredIntegration(
+                method = MethodRef(className, mn),
+                accessType = e.accessType,
+                resourceType = resourceType,
+                scanner = "manual",
+                target = e.target,
+                evidence = "manual declaration",
+                group = e.group,
+              )
+            }
+          }
+        }
       } else {
         val detectedMethods = matching.map(_.method).distinct
         val replacements = for {
           method <- detectedMethods
-          target <- co.targets
+          entry <- group
         } yield DiscoveredIntegration(
           method = method,
-          accessType = target.accessType,
-          resourceType = co.resourceType,
+          accessType = entry.accessType,
+          resourceType = resourceType,
           scanner = "manual",
-          target = target.target,
-          evidence = "class-level declaration",
-          group = target.group,
+          target = entry.target,
+          evidence = "manual override",
+          group = entry.group,
         )
         result = remaining ++ replacements
       }
     }
 
-    if (strict && unmatched.nonEmpty) {
+    if (unmatched.nonEmpty) {
       throw ManualOverrideError(unmatched.toList)
-    }
-
-    result
-  }
-
-  private def applyMethodUpserts(current: List[DiscoveredIntegration]): List[DiscoveredIntegration] = {
-    var result = current
-
-    for (entry <- methodEntries) {
-      val matchIdx = result.indexWhere { di =>
-        di.method.className == entry.method.className &&
-        di.method.methodName == entry.method.methodName &&
-        di.resourceType == entry.resourceType
-      }
-
-      if (matchIdx >= 0) {
-        result = result.updated(matchIdx, entry)
-      } else {
-        result = result :+ entry
-      }
     }
 
     result
@@ -200,9 +161,14 @@ object ManualDeclarations {
   val empty: ManualDeclarations = ManualDeclarations()
 }
 
-case class ManualOverrideError(unmatched: List[ManualClassOverride])
+case class ManualOverrideError(unmatched: List[ManualEntry])
     extends RuntimeException(
-      "Class-level overrides with no matching auto-detected integration:\n" +
-        unmatched.map(co => s"  - ${co.className} (${co.resourceType})").mkString("\n") +
+      "Manual overrides with no matching auto-detected integration:\n" +
+        unmatched
+          .map { e =>
+            val scope = e.methodName.map(m => s"${e.className}.$m").getOrElse(e.className)
+            s"  - $scope (${e.resourceType})"
+          }
+          .mkString("\n") +
         "\nDid you forget to add the corresponding scanner? Use .lenient to suppress."
     )
