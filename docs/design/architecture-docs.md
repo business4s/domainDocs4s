@@ -763,14 +763,18 @@ trait IntegrationScanner {
 
 Implemented and planned scanners (see §15.5 for the full revised table including Pekko ecosystem scanners):
 
-| Scanner                | Detects                      | Status      |
-|------------------------|------------------------------|-------------|
-| `DoobieScanner`        | Doobie SQL table references  | Implemented |
-| `Fs2GrpcScanner`       | gRPC server + client         | Implemented |
-| `ManualScanner`        | Kafka, custom integrations   | Implemented |
-| `PekkoJournalScanner`  | Persistent actor writes + journal reads | Implemented |
-| `SlickScanner`         | Slick DBIO table operations  | Implemented |
-| `SttpClientScanner`    | HTTP client calls            | Planned     |
+| Scanner                    | Detects                                                      | Status      |
+|----------------------------|--------------------------------------------------------------|-------------|
+| `DoobieScanner`            | Doobie SQL table references                                  | Implemented |
+| `Fs2GrpcScanner`           | gRPC server + client                                         | Implemented |
+| `ManualScanner`            | Kafka, custom integrations                                   | Implemented |
+| `PekkoJournalScanner`      | Persistent actor writes + journal reads + projection sources | Implemented |
+| `SlickScanner`             | Slick DBIO table operations                                  | Implemented |
+| `PekkoKafkaScanner`        | Pekko Kafka producer/consumer patterns                       | Implemented |
+| `FlywayMigrationScanner`   | SQL DDL: tables, views, joins (resource)                     | Implemented |
+| `S3Scanner`                | AWS SDK S3 put/get operations                                | Planned     |
+| `SttpClientScanner`        | HTTP client calls                                            | Planned     |
+| `HoconKafkaTopicScanner`   | Kafka topic names from config (resource)                     | Planned     |
 
 ### 7.4 Resource Scanners
 
@@ -1116,76 +1120,22 @@ Based on concrete investigation of the reference service, here is what the scann
 
 |           | Manual diagram | Auto-detected | After remaining improvements |
 |-----------|----------------|---------------|------------------------------|
-| Nodes     | 38             | ~29 (76%)     | ~36 (95%)                    |
-| Edges     | 47             | ~33 (70%)     | ~44 (94%)                    |
+| Nodes     | 38             | ~31 (82%)     | ~36 (95%)                    |
+| Edges     | 47             | ~35 (74%)     | ~44 (94%)                    |
 | Subgraphs | 8              | package-based | ~7 (88%)                     |
 
 #### Remaining gaps
 
 | Gap                             | Nodes                | Edges      | Solution                                |
 |---------------------------------|----------------------|------------|-----------------------------------------|
-| **Pekko Kafka producers**       | 2 topics             | 2 edges    | Pekko Kafka scanner (§15.3.1)           |
-| **S3 uploads**                  | 1 node               | 2 edges    | S3/AWS scanner (§15.3.3)                |
-| **Manual/external nodes**       | 1 (data warehouse)   | 1 edge     | Manual node injection (§15.3.4)         |
+| **S3 uploads**                  | 1 node               | 2 edges    | S3/AWS scanner (§15.3.1)                |
+| **Manual/external nodes**       | 1 (data warehouse)   | 1 edge     | Manual node injection (§15.3.2)         |
 
-The remaining gaps are downstream infrastructure (data warehouses), Pekko Kafka producers, and S3 uploads.
+The remaining gaps are downstream infrastructure (data warehouses) and S3 uploads.
 
 ### 15.3 Planned Improvements
 
-#### 15.3.1 Pekko Kafka Scanner (MEDIUM — unlocks Kafka edges)
-
-**What it detects:**
-
-Kafka producers using Pekko Kafka (Alpakka Kafka), not fs2-kafka. In the reference service, Kafka handler
-classes produce `ProducerRecord` instances via Pekko Kafka's `flexiFlow`. These handlers are often embedded
-within Pekko Projection pipelines (e.g., as `SlickHandler` or `Handler` subclasses that export events to
-Kafka as a side effect of projection processing).
-
-**Example pattern:**
-
-```scala
-class MyKafkaHandler(...) extends Handler[Seq[EventEnvelope[Event]]] {
-  // Uses flexiFlow(producerSettings.withProducer(...))
-  // Creates ProducerRecord[String, MyEnvelope]
-}
-```
-
-**Detection approach:** TASTy-based. Match on:
-
-- Classes importing / using `ProducerRecord` or `ProducerMessage`
-- Method calls to `flexiFlow`, `plainSink`, `Producer.flexiFlow`
-- Could also detect `KafkaProducer.resource` / `KafkaConsumer.resource` for fs2-kafka in the same scanner
-
-Topic names are typically in config (HOCON), not in code. The `HoconKafkaTopicScanner` (already planned
-in §7.4) would complement this by extracting topic names from `application.conf`.
-
-**Impact:** Adds 2 Kafka topic nodes and 2 write edges. Combined with HOCON scanner, provides topic names.
-
-#### 15.3.2 Flyway Migration Scanner (MEDIUM — unlocks views and schema-level info)
-
-**What it detects:**
-
-SQL migration files following Flyway naming convention (`V{version}__{description}.sql`):
-
-- `CREATE TABLE` → dataset nodes
-- `CREATE VIEW` → dataset nodes with join relationships
-- `ALTER TABLE` → schema evolution tracking
-- `CREATE INDEX` → performance metadata
-
-The reference service has 25+ migration files across two migration directories (one for the core
-service schema, one for projections). This is typical for Pekko-based services with separate
-internal and operational databases.
-
-**Detection approach:** Resource scanner (§7.4). Parse SQL DDL statements to extract:
-
-- Table/view names from `CREATE TABLE/VIEW`
-- View dependencies from `SELECT ... FROM table1 JOIN table2` in view definitions
-- This is the `FlywayMigrationScanner` already planned in §7.4
-
-**Impact:** Adds DB view nodes with join edges. Also provides ground-truth table names to cross-reference
-with Slick/doobie scanner output, improving accuracy.
-
-#### 15.3.3 S3 / AWS SDK Scanner (LOW — 3 edges)
+#### 15.3.1 S3 / AWS SDK Scanner (LOW — 3 edges)
 
 **What it detects:**
 
@@ -1209,7 +1159,7 @@ target = "S3" (generic) unless combined with a config scanner.
 
 **Impact:** Adds 1 S3 node and 2 upload edges.
 
-#### 15.3.4 Manual Node Injection into Lineage Results (LOW — 2 nodes)
+#### 15.3.2 Manual Node Injection into Lineage Results (LOW — 2 nodes)
 
 **What it enables:**
 
@@ -1236,7 +1186,7 @@ val enrichedResult = result.withExtra(extraNodes, extraEdges)
 
 **Impact:** Adds the last ~2 nodes that can't be scanned from code.
 
-#### 15.3.5 Subgraph Grouping Enhancements (LOW — visual parity)
+#### 15.3.3 Subgraph Grouping Enhancements (LOW — visual parity)
 
 **Current state:** `ClassGrouping.ByPackage` groups classes by their package prefix. `ClassGrouping.Custom`
 allows arbitrary grouping functions.
@@ -1257,34 +1207,9 @@ This is a rendering enhancement, not a scanner improvement.
 ### 15.4 Implementation Priority
 
 ```
-Phase 1 — Coverage (fills in remaining integration types):
   ┌─────────────────────────────────────┐
-  │ 15.3.1  Pekko Kafka Scanner         │──→ 2 topics, 2 edges
-  │ 15.3.2  Flyway Migration Scanner    │──→ views, schema cross-ref
-  └─────────────────────────────────────┘
-
-Phase 2 — Polish (visual and completeness):
-  ┌─────────────────────────────────────┐
-  │ 15.3.3  S3/AWS Scanner              │──→ 1 node, 2 edges
-  │ 15.3.4  Manual Node Injection       │──→ data warehouses etc.
-  │ 15.3.5  Subgraph Grouping           │──→ semantic grouping of targets
+  │ 15.3.1  S3/AWS Scanner              │──→ 1 node, 2 edges
+  │ 15.3.2  Manual Node Injection       │──→ data warehouses etc.
+  │ 15.3.3  Subgraph Grouping           │──→ semantic grouping of targets
   └─────────────────────────────────────┘
 ```
-
-### 15.5 Revised Scanner Table
-
-Updated version of the table from §7.3 with newly identified scanners:
-
-| Scanner                     | Detects                                  | Status      |
-|-----------------------------|------------------------------------------|-------------|
-| `DoobieScanner`             | Doobie SQL table references               | Implemented |
-| `Fs2GrpcClientScanner`      | gRPC client usages                        | Implemented |
-| `Fs2GrpcServerScanner`      | gRPC service implementations              | Implemented |
-| `ManualScanner`             | Kafka, custom integrations                | Implemented |
-| `PekkoJournalScanner`       | Persistent actor writes + journal reads + projection sources | Implemented |
-| `SlickScanner`              | Slick DBIO table operations               | Implemented |
-| `PekkoKafkaScanner`         | Pekko Kafka producer/consumer patterns    | Planned     |
-| `S3Scanner`                 | AWS SDK S3 put/get operations             | Planned     |
-| `SttpClientScanner`         | HTTP client calls                         | Planned     |
-| `FlywayMigrationScanner`    | SQL DDL: tables, views, joins (resource)  | Implemented |
-| `HoconKafkaTopicScanner`    | Kafka topic names from config (resource)  | Planned     |
