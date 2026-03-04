@@ -6,7 +6,7 @@ This document describes the design for architecture documentation capabilities i
 
 1. **Automatic data lineage** — scan compiled code to discover database access patterns and gRPC integrations,
    then trace them from API entry points through service layers to the actual queries/endpoints. Working prototype
-   with doobie and fs2-grpc scanners.
+   with doobie, fs2-grpc, Slick, and Pekko journal scanners.
 2. **Service-level documentation** — each service defines its internal architecture, referencing real code symbols to
    keep docs in sync.
 3. **External specification** — each service exports a JSON spec describing what it produces and consumes.
@@ -36,12 +36,15 @@ interactive views.
 | Class-level Mermaid rendering        | Implemented | `core: lineage/MermaidRenderer.scala`                         |
 | Class-level config (fold+hide+group) | Implemented | `core: lineage/model.scala` (ClassLevelConfig, ClassGrouping) |
 | Pekko journal scanner                | Implemented | `core: lineage/TastyPekkoJournalScanner.scala`                |
+| Slick scanner (TASTy-based)          | Implemented | `core: lineage/TastySlickScanner.scala`                       |
+| IntegrationScanner trait             | Implemented | `core: lineage/model.scala`                                   |
+| LineageScanner (top-level API)       | Implemented | `core: lineage/LineageScanner.scala`                          |
 | TASTy debug utility                  | Implemented | `core: lineage/TastyDebug.scala`                              |
-| Tests (45 tests passing)             | Implemented | `examples: TastyLineageScannerTest.scala`                     |
+| Tests (47 tests passing)             | Implemented | `examples: TastyLineageScannerTest.scala`                     |
 | Service flow DSL                     | Design only | Section 6 below                                               |
 | External spec / system view          | Design only | Sections 8-9 below                                            |
 | Cytoscape.js renderer                | Design only | Section 10.3 below                                            |
-| Other TASTy scanners (Slick etc.)    | Design only | Section 7 below                                               |
+| Other TASTy scanners (Kafka etc.)    | Design only | Section 7 below                                               |
 | Backstage integration                | Research    | Section 13 below                                              |
 | Parity roadmap (real-world coverage) | Planned     | Section 15 below                                              |
 
@@ -58,22 +61,31 @@ The lineage system has three independent phases, each with its own output type. 
 scanners (kafka, gRPC, etc.) without changing the lineage builder.
 
 ```
-Phase 0: Call Graph Extraction          Phase 1: Integration Scanning
-┌──────────────────────────┐            ┌───────────────────────────┐
-│  TastyCallGraphExtractor │            │  TASTy-based (automatic): │
-│                          │            │    TastyDoobieScanner     │
-│  TASTy ──→ List[         │            │    TastyFs2GrpcScanner    │
-│    ExtractedMethod       │            │                           │
-│  ]                       │            │  Manual declaration:      │
-│                          │            │    ManualScanner          │
-│  Generic: any package    │            │    (Kafka, custom, ...)   │
-│  field.method() calls    │            │                           │
-└────────────┬─────────────┘            │  All ──→ List[            │
-             │                          │    DiscoveredIntegration   │
-             │                          │  ]                        │
-             │                          └─────────────┬─────────────┘
-             │                                        │
-             └──────────────┬─────────────────────────┘
+                         LineageScanner (top-level API)
+                    ┌─────────────────────────────────────┐
+                    │  packages + scanners + enrichment    │
+                    │  → scan() → ScanResult              │
+                    └──────────────┬──────────────────────┘
+                                   │ orchestrates
+                    ┌──────────────┴──────────────────────┐
+                    │                                      │
+Phase 0: Call Graph Extraction       Phase 1: Integration Scanning
+┌──────────────────────────┐         ┌───────────────────────────────┐
+│  TastyCallGraphExtractor │         │  All implement                │
+│                          │         │  IntegrationScanner trait:    │
+│  TASTy ──→ List[         │         │                               │
+│    ExtractedMethod       │         │    TastyDoobieScanner         │
+│  ]                       │         │    TastyFs2GrpcScanner        │
+│                          │         │    TastyPekkoJournalScanner   │
+│  Generic: any package    │         │    TastySlickScanner          │
+│  field.method() calls    │         │    ManualScanner              │
+└────────────┬─────────────┘         │                               │
+             │                       │  All ──→ List[                │
+             │                       │    DiscoveredIntegration       │
+             │                       │  ]                            │
+             │                       └─────────────┬─────────────────┘
+             │                                     │
+             └──────────────┬──────────────────────┘
                             ▼
                   Phase 2: Lineage Building
                   ┌─────────────────────────┐
@@ -164,6 +176,28 @@ case class LineageChain(
                        )
 ```
 
+All scanners implement a common trait (`model.scala`):
+
+```scala
+trait IntegrationScanner {
+  def scan(packages: List[String]): List[DiscoveredIntegration]
+}
+```
+
+TASTy-based scanners iterate over the package list internally. `ManualScanner.builder...build` returns
+an `IntegrationScanner` that ignores the package list (its integrations are declared, not discovered).
+
+`LineageScanner` (`LineageScanner.scala`) is the top-level orchestrator — takes packages, scanners,
+and enrichment config, runs everything, and returns a `ScanResult`:
+
+```scala
+val result = new LineageScanner(
+  packages = List("com.example.app", "com.example.app.persistence"),
+  scanners = List(new TastyDoobieScanner(), new TastySlickScanner(), manualScanner),
+  enrichment = IntegrationGroupConfig.builder.group[UserRepo]("user-db").build,
+).scan()
+```
+
 Key design decisions:
 
 - `DiscoveredIntegration` is the contract any scanner must produce. Adding a Kafka scanner means
@@ -237,18 +271,17 @@ The builder uses a compile-time macro (`MethodRefMacro` in `domainDocs4s-core`) 
 method names from `_.methodName` lambdas, providing type-safe references instead of raw strings:
 
 ```scala
-val manualIntegrations = ManualScanner.builder
+val manualScanner = ManualScanner.builder
   .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
   .method[EventConsumer](_.consume).reads.kafka("input.events", cluster = "Analytics")
-  .method[S3Exporter](_.
-export).writes.custom("s3", "my-bucket/exports", group = Some("S3"))
-  .build
+  .method[S3Exporter](_.export).writes.custom("s3", "my-bucket/exports", group = Some("S3"))
+  .build  // returns IntegrationScanner
 ```
 
 Key design decisions:
 
-- **Same output type**: Produces `List[DiscoveredIntegration]`, identical to automatic scanners.
-  Composable via simple concatenation before passing to `LineageBuilder`.
+- **Same interface**: `build` returns an `IntegrationScanner`, composable with TASTy-based scanners
+  in the same `scanners` list — no special handling needed.
 - **Kafka cluster grouping**: `.kafka(topic, cluster)` sets `group = Some(cluster)`, defaulting to
   `"Kafka"`. Topics render grouped by cluster in diagrams.
 - **Generic escape hatch**: `.custom(integrationType, target)` supports any integration type not
@@ -261,7 +294,40 @@ The manual scanner integrates with the call graph: if `UserGrpcApi.deposit` call
 the lineage builder produces the chain:
 `UserGrpcApi.deposit → EventPublisher.publishDeposit → kafka:user.deposit-events`.
 
-### 3.6 Call Graph Extractor
+### 3.6 Slick Scanner
+
+`TastySlickScanner` detects Slick database operations — both lifted embedding and plain SQL interpolation.
+It targets services that use Pekko Projections with `SlickHandler`/`DBIO` (common in event-sourced services).
+
+**Two-pass approach:**
+
+1. **Pre-scan** — builds lookup maps from the package's classes and module objects:
+   - Table class → table name: extracts string literal from `Table[T](tag, "table_name")` parent constructor
+   - TableQuery field → table name: resolves `TableQuery[T]` type args to find the Table class, then looks
+     up the table name from the first map
+
+2. **Main scan** — finds methods returning `DBIO`/`DBIOAction`, walks bodies to detect operations:
+
+| Code pattern                    | Classification | Table name source                |
+|---------------------------------|----------------|----------------------------------|
+| `tableQuery.result`             | Read           | TableQuery field → table map     |
+| `tableQuery.insertOrUpdate(x)`  | Write          | TableQuery field → table map     |
+| `tableQuery ++= rows`           | Write          | TableQuery field → table map     |
+| `tableQuery.delete`             | Write          | TableQuery field → table map     |
+| `sql"SELECT ...".as[T]`         | Read           | SQL regex via `SqlUtils`         |
+| `sqlu"UPDATE ..."`              | Write          | SQL regex via `SqlUtils`         |
+
+SQL extraction reuses the shared `SqlUtils.sqlFrom` (also used by the doobie scanner) which collects
+string literal parts from `StringContext.apply(...)` in the TASTy tree.
+
+**Output:** `DiscoveredIntegration` with `integrationType = "slick"`.
+
+**tasty-query workaround:** `cls.parents` crashes for Slick `Table` subclasses (can't resolve
+`java.lang.Object/T` in the parent chain). The scanner uses `cls.tree` to access parent constructor
+args from the syntax tree instead of resolving parent types. The gRPC and Pekko scanners wrap
+`cls.parents` calls in try-catch for resilience when scanning packages with Slick classes.
+
+### 3.7 Call Graph Extractor
 
 `TastyCallGraphExtractor` is generic (not scanner-specific). It:
 
@@ -277,7 +343,7 @@ Note: The call graph extractor currently only resolves simple `TypeRef` field ty
 `AppliedType` (e.g., `RateServiceFs2Grpc[IO, Metadata]`) are not resolved — those external calls
 are detected by the gRPC scanner instead, keeping concerns separated.
 
-### 3.7 Lineage Builder
+### 3.8 Lineage Builder
 
 `LineageBuilder.build(callGraph, integrations)` combines both phases:
 
@@ -287,7 +353,7 @@ are detected by the gRPC scanner instead, keeping concerns separated.
 3. Finds entry points (methods with no callers) and walks the call graph to discover all paths
    from entry point to integration, producing `LineageChain` values
 
-### 3.8 Mermaid Visualization
+### 3.9 Mermaid Visualization
 
 `MermaidRenderer` converts `ScanResult` to a mermaid flowchart. There are two levels of detail, each
 with two arrow modes:
@@ -352,7 +418,7 @@ Run with:
 sbt "examples / runMain domaindocs4s.architecture.lineage.example.RenderLineage"
 ```
 
-### 3.9 Example Output
+### 3.10 Example Output
 
 Given four example classes using real doobie, fs2-grpc, and manual Kafka declarations
 (`UserGrpcApi → UserService → UserRepo`, `UserGrpcApi → RateServiceFs2Grpc`,
@@ -421,7 +487,7 @@ Kafka:
   EventPublisher ==>|Write| user.deposit-events  (stadium)
 ```
 
-### 3.10 Learnings and Limitations
+### 3.11 Learnings and Limitations
 
 **What worked well:**
 
@@ -450,7 +516,8 @@ Kafka:
   not tracked in the call graph — they are handled by integration scanners instead.
 - The scanners match specific AST shapes. Different library usage patterns (e.g., `HC.stream`, `Fragment.const`,
   streaming gRPC) would need additional patterns.
-- Package scanning is flat (one level). Nested packages or cross-package references need recursive scanning.
+- Package scanning requires explicit package lists (no recursive scanning). `LineageScanner` accepts
+  a list of packages, and all scanners + call graph extractor scan every package in the list.
 - The gRPC scanner uses naming convention (`*Fs2Grpc` suffix) for detection. This is stable for `sbt-fs2-grpc`
   but wouldn't detect other gRPC libraries.
 
@@ -629,8 +696,14 @@ reliable detection signal for the scanner.
 **Method names in TASTy are `SignedName`s, not plain strings.** A `Select(qualifier, name)` node's `name`
 field is a `TermName` which may be a `SignedName` wrapping the actual simple name with a type signature.
 For example, `readJournalFor` appears as `readJournalFor[with sig (1,java.lang.String):java.lang.Object @readJournalFor]`.
-Use `TastyUtils.simpleName(name)` (which pattern-matches on `SignedName` to extract `underlying`) instead of
-`name.toString`. The old workaround `name.toString.takeWhile(_ != '[')` was brittle and has been replaced.
+Use `TastyUtils.matchesName(name, target)` or `TastyUtils.simpleName(name)` (which pattern-matches on
+`SignedName` to extract `underlying`) instead of `name.toString`.
+
+**`cls.parents` crashes for some class hierarchies.** Slick `Table` subclasses cause
+`MemberNotFoundException: Member Object/T not found in PackageRef(java.lang)` when `cls.parents` is called.
+Workaround: use `cls.tree` (the syntax tree) to access parent constructor args directly. For scanners
+that need `cls.parents` (gRPC, Pekko), wrap the call in try-catch so they can safely scan packages
+containing problematic classes.
 
 ### 7.2.1 Developing a New Scanner — Workflow
 
@@ -680,13 +753,11 @@ produced `DiscoveredIntegration` list.
 
 ### 7.3 Code Scanner Trait
 
-> Design only — not yet implemented as a generic trait. The scanners are standalone classes.
+All scanners implement `IntegrationScanner` (`model.scala`):
 
 ```scala
-trait CodeScanner {
-  def name: String
-
-  def inspect(symbol: Symbol): List[DiscoveredArtifact]
+trait IntegrationScanner {
+  def scan(packages: List[String]): List[DiscoveredIntegration]
 }
 ```
 
@@ -695,11 +766,10 @@ Implemented and planned scanners (see §15.5 for the full revised table includin
 | Scanner                | Detects                      | Status      |
 |------------------------|------------------------------|-------------|
 | `DoobieScanner`        | Doobie SQL table references  | Implemented |
-| `Fs2GrpcClientScanner` | gRPC client usages           | Implemented |
-| `Fs2GrpcServerScanner` | gRPC service implementations | Implemented |
+| `Fs2GrpcScanner`       | gRPC server + client         | Implemented |
 | `ManualScanner`        | Kafka, custom integrations   | Implemented |
 | `PekkoJournalScanner`  | Persistent actor writes + journal reads | Implemented |
-| `SlickTableScanner`    | Slick table definitions      | Planned     |
+| `SlickScanner`         | Slick DBIO table operations  | Implemented |
 | `SttpClientScanner`    | HTTP client calls            | Planned     |
 
 ### 7.4 Resource Scanners
@@ -827,9 +897,12 @@ domainDocs4s-core/
 │   ├── macros/
 │   │   └── MethodRefMacro.scala           ← Compile-time _.method name extraction
 │   └── architecture/lineage/
-│       ├── model.scala                    ← Core types + TastyUtils
+│       ├── model.scala                    ← Core types, IntegrationScanner trait, TastyUtils
+│       ├── LineageScanner.scala           ← Top-level API: packages + scanners → ScanResult
 │       ├── TastyDoobieScanner.scala       ← Doobie scanner + SqlUtils
 │       ├── TastyFs2GrpcScanner.scala      ← fs2-grpc server + client scanner
+│       ├── TastyPekkoJournalScanner.scala ← Pekko persistence + projection scanner
+│       ├── TastySlickScanner.scala        ← Slick lifted embedding + plain SQL scanner
 │       ├── ManualScanner.scala            ← Manual integration declarations (Kafka, custom)
 │       ├── TastyCallGraphExtractor.scala  ← Generic call graph extractor
 │       ├── LineageBuilder.scala           ← Generic lineage builder
@@ -843,6 +916,8 @@ domainDocs4s-examples/
 │   └── lineage/example/
 │       ├── ExampleClasses.scala       ← UserGrpcApi → UserService → UserRepo → DB
 │       │                                 UserGrpcApi → EventPublisher → Kafka
+│       ├── pekko/PekkoExamples.scala  ← Pekko persistence + projection examples
+│       ├── slick/SlickExamples.scala  ← Slick Table + TableQuery + DBIO examples
 │       └── RenderLineage.scala        ← Main entry point for rendering
 ```
 
@@ -864,8 +939,10 @@ without importing doobie or gRPC libraries. This is why all lineage infrastructu
 The examples module (`domainDocs4s-examples`) depends on core and adds:
 
 - `"org.tpolecat" %% "doobie-core"` for real doobie types in the example classes
+- `"com.typesafe.slick" %% "slick"` for real Slick types (Table, TableQuery, DBIO)
 - `sbt-fs2-grpc` plugin for proto compilation and fs2-grpc code generation (brings in `fs2-grpc-runtime`,
   `scalapb-runtime`, `grpc-api` transitively)
+- Pekko persistence and projection dependencies for Pekko examples
 - `-Wconf:src=target/scala-.*:s` to suppress warnings from generated protobuf/scalapb code
 
 ---
@@ -877,10 +954,7 @@ The examples module (`domainDocs4s-examples`) depends on core and adds:
    matching sufficient? (Experience with two scanners suggests hand-written is manageable, but they share
    significant structural patterns that could be extracted.)
 
-2. **Cross-package scanning**: The current prototype scans a single package. Real services have classes spread
-   across multiple packages. Need recursive package scanning or explicit package lists.
-
-3. **Lineage ↔ Service Flow convergence**: The lineage model (`DiscoveredIntegration`, `ScanResult`) and the
+2. **Lineage ↔ Service Flow convergence**: The lineage model (`DiscoveredIntegration`, `ScanResult`) and the
    service flow model (`Artifact`, `FlowChart`) are separate. They should converge — lineage scanner output
    could feed into the service flow model, with `DiscoveredIntegration` mapping to `Artifact` instances.
 
@@ -1014,7 +1088,7 @@ direction and data flow modes):
 sbt "examples / runMain domaindocs4s.architecture.lineage.example.RenderLineage"
 ```
 
-Run tests (37 tests):
+Run tests (47 tests):
 
 ```
 sbt "examples / Test / testOnly domaindocs4s.lineage.TastyLineageScannerTest"
@@ -1038,87 +1112,30 @@ diagram without requiring manual declaration. This section tracks what's missing
 
 Based on concrete investigation of the reference service, here is what the scanner can and cannot currently detect:
 
-#### What works today
+#### Current coverage
 
-| Diagram element                                                     | Count              | Detection mechanism       |
-|---------------------------------------------------------------------|--------------------|---------------------------|
-| gRPC server endpoints                                               | 1 node             | fs2-grpc server scanner   |
-| gRPC client calls (injected fs2-grpc fields)                        | 1 node, 1 edge     | fs2-grpc client scanner   |
-| Doobie DB reads/writes (FS2-based projections + their repositories) | ~6 nodes, ~6 edges | Doobie scanner            |
-| Pekko persistent actors (classic + typed) + journal reads           | 1 node, 2 edges    | Pekko journal scanner     |
-| Pekko projection sources (EventSourcedProvider + readJournalFor)    | 0 (node exists), 11 edges | Pekko journal scanner |
-| Class-to-class call graph (API → actors → core logic)               | ~5 edges           | Call graph extractor      |
-| Class discovery (all scanned classes appear as nodes)               | ~20 nodes          | Call graph extractor      |
+|           | Manual diagram | Auto-detected | After remaining improvements |
+|-----------|----------------|---------------|------------------------------|
+| Nodes     | 38             | ~29 (76%)     | ~36 (95%)                    |
+| Edges     | 47             | ~33 (70%)     | ~44 (94%)                    |
+| Subgraphs | 8              | package-based | ~7 (88%)                     |
 
-#### What's missing
+#### Remaining gaps
 
-| Gap                             | Nodes                | Edges      | Root cause                                                                                                                         | Solution                                                     |
-|---------------------------------|----------------------|------------|------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------|
-| **Slick projections**           | ~6 tables            | ~8 edges   | External projection actors use `SlickProjection.groupedWithin()` with `SlickHandler` — not doobie                                  | Slick scanner (§15.3.3)                                      |
-| **Pekko Kafka producers**       | 2 topics             | 2 edges    | Kafka handler classes use Pekko Kafka `flexiFlow` + `ProducerRecord` — not fs2-kafka                                               | Pekko Kafka scanner (§15.3.4)                                |
-| **Flyway-managed views/tables** | 1 view + schema info | 2 edges    | DB views defined in SQL migrations, not in Scala code                                                                              | Flyway migration scanner (§15.3.5)                           |
-| **S3 uploads**                  | 1 node               | 2 edges    | Batch jobs use AWS SDK v2 `S3Client.putObject()` to upload CSV reports                                                             | S3/AWS scanner (§15.3.6)                                     |
-| **Manual/external nodes**       | 1 (data warehouse)   | 1 edge     | Downstream infra not in code — e.g. a data warehouse consuming from Kafka/S3                                                       | Manual node injection (§15.3.7)                              |
-| **Subgraph organization**       | 8 groups             | —          | Manual diagram has semantic groups (Service, Projections, Jobs, Internal DB, Operational DB, Kafka, External Services, Downstream) | Class grouping enhancements (§15.3.8)                        |
-
-#### Coverage estimate
-
-|           | Manual diagram | Currently auto-detected | After all improvements |
-|-----------|----------------|-------------------------|------------------------|
-| Nodes     | 38             | ~23 (61%)               | ~36 (95%)              |
-| Edges     | 47             | ~25 (53%)               | ~44 (94%)              |
-| Subgraphs | 8              | 0 (package-based only)  | ~7 (88%)               |
+| Gap                             | Nodes                | Edges      | Solution                                |
+|---------------------------------|----------------------|------------|-----------------------------------------|
+| **Pekko Kafka producers**       | 2 topics             | 2 edges    | Pekko Kafka scanner (§15.3.1)           |
+| **Flyway-managed views/tables** | 1 view + schema info | 2 edges    | Flyway migration scanner (§15.3.2)      |
+| **S3 uploads**                  | 1 node               | 2 edges    | S3/AWS scanner (§15.3.3)                |
+| **Manual/external nodes**       | 1 (data warehouse)   | 1 edge     | Manual node injection (§15.3.4)         |
+| **Subgraph organization**       | 8 groups             | —          | Class grouping enhancements (§15.3.5)   |
 
 The remaining ~5% gap is downstream infrastructure (data warehouses) and DB view joins — addressable via
 manual node injection and the flyway scanner respectively.
 
 ### 15.3 Planned Improvements
 
-#### 15.3.1 Pekko Persistence Scanner — IMPLEMENTED
-
-See `core: lineage/TastyPekkoJournalScanner.scala`.
-
-**What it detects:**
-
-- **Classic persistent actors** (Write): classes extending `PersistentActor` or `AbstractPersistentActor`
-- **Typed event-sourced behaviors** (Write): method bodies referencing `EventSourcedBehavior` factory
-- **Journal query consumers** (Read): val fields whose type inherits `ReadJournal` (base trait for all
-  Pekko Persistence Query types) — calls to those fields are detected as reads
-
-**Output:** `DiscoveredIntegration` with `integrationType = "pekko-journal"`, `target = "journal"`,
-`group = Some("Journal")`.
-
-#### 15.3.2 Pekko Projection Source Scanner — IMPLEMENTED
-
-Integrated into `TastyPekkoJournalScanner` (projection source detection).
-
-**What it detects:**
-
-- Any method referencing `EventSourcedProvider` (e.g., `.eventsByTag`, `.eventsBySlices`) → Read from journal
-- Any method calling `readJournalFor` (the `PersistenceQuery` pattern) → Read from journal
-
-These patterns are detected by symbol name in TASTy trees. The call graph extractor propagates the
-journal-read transitively — so a shared `SourceProvider` factory method gets detected once, and all
-projection actors calling it inherit the read edge automatically.
-
-#### 15.3.3 Slick Scanner (MEDIUM — unlocks external projection DB writes)
-
-**What it detects:**
-
-Services that use Pekko Projections often write to the operational database via Slick rather than doobie.
-In the reference service, 6 of 8 external projection actors use `SlickProjection.groupedWithin()` with
-`SlickHandler`, writing to various tables (movements, account balances, account assets, etc.).
-
-**Detection approach:** TASTy-based. Match methods returning `DBIO[_]` or `DBIOAction[_, _, _]`.
-Extract table names from `TableQuery` type parameters (which reference Slick `Table[_]` subclasses
-with `tableName` fields) or from `sqlu"..."` / `sql"..."` Slick interpolators.
-
-**Note:** Already listed as planned (`SlickTableScanner`) in section 7.3. The reference service confirms
-this is a common, real-world need for any Pekko-based service.
-
-**Impact:** Adds ~6 table nodes and ~8 write edges.
-
-#### 15.3.4 Pekko Kafka Scanner (MEDIUM — unlocks Kafka edges)
+#### 15.3.1 Pekko Kafka Scanner (MEDIUM — unlocks Kafka edges)
 
 **What it detects:**
 
@@ -1147,7 +1164,7 @@ in §7.4) would complement this by extracting topic names from `application.conf
 
 **Impact:** Adds 2 Kafka topic nodes and 2 write edges. Combined with HOCON scanner, provides topic names.
 
-#### 15.3.5 Flyway Migration Scanner (MEDIUM — unlocks views and schema-level info)
+#### 15.3.2 Flyway Migration Scanner (MEDIUM — unlocks views and schema-level info)
 
 **What it detects:**
 
@@ -1171,7 +1188,7 @@ internal and operational databases.
 **Impact:** Adds DB view nodes with join edges. Also provides ground-truth table names to cross-reference
 with Slick/doobie scanner output, improving accuracy.
 
-#### 15.3.6 S3 / AWS SDK Scanner (LOW — 3 edges)
+#### 15.3.3 S3 / AWS SDK Scanner (LOW — 3 edges)
 
 **What it detects:**
 
@@ -1195,7 +1212,7 @@ target = "S3" (generic) unless combined with a config scanner.
 
 **Impact:** Adds 1 S3 node and 2 upload edges.
 
-#### 15.3.7 Manual Node Injection into Lineage Results (LOW — 2 nodes)
+#### 15.3.4 Manual Node Injection into Lineage Results (LOW — 2 nodes)
 
 **What it enables:**
 
@@ -1222,7 +1239,7 @@ val enrichedResult = result.withExtra(extraNodes, extraEdges)
 
 **Impact:** Adds the last ~2 nodes that can't be scanned from code.
 
-#### 15.3.8 Subgraph Grouping Enhancements (LOW — visual parity)
+#### 15.3.5 Subgraph Grouping Enhancements (LOW — visual parity)
 
 **Current state:** `ClassGrouping.ByPackage` groups classes by their package prefix. `ClassGrouping.Custom`
 allows arbitrary grouping functions.
@@ -1243,24 +1260,17 @@ This is a rendering enhancement, not a scanner improvement.
 ### 15.4 Implementation Priority
 
 ```
-Done:
-  ┌─────────────────────────────────────┐
-  │ 15.3.1  Pekko Persistence Scanner   │──→ journal node + write/read edges  ✓
-  │ 15.3.2  Pekko Projection Sources    │──→ 11 journal→projection edges      ✓
-  └─────────────────────────────────────┘
-
 Phase 1 — Coverage (fills in remaining integration types):
   ┌─────────────────────────────────────┐
-  │ 15.3.3  Slick Scanner               │──→ 6 tables, 8 edges
-  │ 15.3.4  Pekko Kafka Scanner         │──→ 2 topics, 2 edges
-  │ 15.3.5  Flyway Migration Scanner    │──→ views, schema cross-ref
+  │ 15.3.1  Pekko Kafka Scanner         │──→ 2 topics, 2 edges
+  │ 15.3.2  Flyway Migration Scanner    │──→ views, schema cross-ref
   └─────────────────────────────────────┘
 
-Phase 3 — Polish (visual and completeness):
+Phase 2 — Polish (visual and completeness):
   ┌─────────────────────────────────────┐
-  │ 15.3.6  S3/AWS Scanner              │──→ 1 node, 2 edges
-  │ 15.3.7  Manual Node Injection       │──→ data warehouses etc.
-  │ 15.3.8  Subgraph Grouping           │──→ semantic grouping of targets
+  │ 15.3.3  S3/AWS Scanner              │──→ 1 node, 2 edges
+  │ 15.3.4  Manual Node Injection       │──→ data warehouses etc.
+  │ 15.3.5  Subgraph Grouping           │──→ semantic grouping of targets
   └─────────────────────────────────────┘
 ```
 
@@ -1275,7 +1285,7 @@ Updated version of the table from §7.3 with newly identified scanners:
 | `Fs2GrpcServerScanner`      | gRPC service implementations              | Implemented |
 | `ManualScanner`             | Kafka, custom integrations                | Implemented |
 | `PekkoJournalScanner`       | Persistent actor writes + journal reads + projection sources | Implemented |
-| `SlickTableScanner`         | Slick DBIO table writes                   | Planned     |
+| `SlickScanner`              | Slick DBIO table operations               | Implemented |
 | `PekkoKafkaScanner`         | Pekko Kafka producer/consumer patterns    | Planned     |
 | `S3Scanner`                 | AWS SDK S3 put/get operations             | Planned     |
 | `SttpClientScanner`         | HTTP client calls                         | Planned     |

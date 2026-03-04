@@ -32,7 +32,7 @@ import scala.collection.mutable.ListBuffer
 //   → Read from journal
 // ============================================================================
 
-class TastyPekkoJournalScanner(using ctx: Context) {
+class TastyPekkoJournalScanner(using ctx: Context) extends IntegrationScanner {
 
   private val PersistentActorNames = Set("PersistentActor", "AbstractPersistentActor")
   private val EventSourcedBehaviorName = "EventSourcedBehavior"
@@ -40,7 +40,10 @@ class TastyPekkoJournalScanner(using ctx: Context) {
   private val EventSourcedProviderName = "EventSourcedProvider"
   private val ReadJournalForMethod = "readJournalFor"
 
-  def scan(packageName: String): List[DiscoveredIntegration] = {
+  def scan(packages: List[String]): List[DiscoveredIntegration] =
+    packages.flatMap(scanPackage)
+
+  private def scanPackage(packageName: String): List[DiscoveredIntegration] = {
     val pkg = ctx.findPackage(packageName)
     val classes = TastyUtils.userClasses(pkg)
     val objects = TastyUtils.moduleClasses(pkg)
@@ -56,9 +59,9 @@ class TastyPekkoJournalScanner(using ctx: Context) {
   /** Classic: class extends PersistentActor → Write to journal. */
   private def scanClassicPersistentActor(cls: ClassSymbol): List[DiscoveredIntegration] = {
     val className = cls.name.toString
-    val isPersistent = cls.parents.exists { parentType =>
+    val isPersistent = try cls.parents.exists { parentType =>
       TastyUtils.extractTypeName(parentType).exists(PersistentActorNames.contains)
-    }
+    } catch { case _: Exception => false }
     if (!isPersistent) return Nil
 
     List(DiscoveredIntegration(
@@ -155,9 +158,9 @@ class TastyPekkoJournalScanner(using ctx: Context) {
     }
     sym match {
       case Some(cs: ClassSymbol) if !visited.contains(cs) =>
-        cs.parents.exists { p =>
+        try cs.parents.exists { p =>
           TastyUtils.extractTypeName(p).contains(ReadJournalName) || hasReadJournalAncestor(p, visited + cs)
-        }
+        } catch { case _: Exception => false }
       case _ => false
     }
   }

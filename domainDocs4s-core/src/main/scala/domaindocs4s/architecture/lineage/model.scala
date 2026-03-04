@@ -38,6 +38,10 @@ private[lineage] object TastyUtils {
     case other                        => other.toString
   }
 
+  /** Check if a TASTy Name matches a target string, unwrapping SignedName if needed. */
+  def matchesName(name: Name, target: String): Boolean =
+    simpleName(name) == target
+
   /** Extract the underlying TypeRef from a Type, unwrapping AppliedType if needed. */
   def extractTypeRef(tpe: TypeOrMethodic): Option[TypeRef] = tpe match {
     case tr: TypeRef                                       => Some(tr)
@@ -106,6 +110,11 @@ case class ExtractedMethod(
 }
 
 // ── Phase 1: Scanner output ──────────────────────────────────────────────────
+
+/** Common interface for integration scanners. */
+trait IntegrationScanner {
+  def scan(packages: List[String]): List[DiscoveredIntegration]
+}
 
 /** A discovered external integration — output of any scanner.
   *

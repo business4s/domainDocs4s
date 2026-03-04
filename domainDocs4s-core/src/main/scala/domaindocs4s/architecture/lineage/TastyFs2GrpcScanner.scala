@@ -21,11 +21,14 @@ import scala.collection.mutable.ListBuffer
 //   → each call to field.rpcMethod(...) is a gRPC client consumption
 // ============================================================================
 
-class TastyFs2GrpcScanner(using ctx: Context) {
+class TastyFs2GrpcScanner(using ctx: Context) extends IntegrationScanner {
 
   private val Suffix = "Fs2Grpc"
 
-  def scan(packageName: String): List[DiscoveredIntegration] = {
+  def scan(packages: List[String]): List[DiscoveredIntegration] =
+    packages.flatMap(scanPackage)
+
+  private def scanPackage(packageName: String): List[DiscoveredIntegration] = {
     val classes = TastyUtils.userClasses(ctx.findPackage(packageName))
     classes.flatMap { cls =>
       scanServer(cls) ++ scanClient(cls)
@@ -37,12 +40,12 @@ class TastyFs2GrpcScanner(using ctx: Context) {
     val className = cls.name.toString
     // Use cls.parents (types) instead of cls.parentClasses (symbols) because
     // parentClasses throws when it can't resolve java.lang.Object in the classpath.
-    val grpcParentSymbols = cls.parents.flatMap { parentType =>
+    val grpcParentSymbols = try cls.parents.flatMap { parentType =>
       extractTypeRef(parentType)
         .filter(_.name.toString.endsWith(Suffix))
         .flatMap(tr => try tr.optSymbol catch { case _: Exception => None })
         .collect { case cs: ClassSymbol => cs }
-    }
+    } catch { case _: Exception => Nil }
 
     grpcParentSymbols.flatMap { parent =>
       val parentName = parent.name.toString

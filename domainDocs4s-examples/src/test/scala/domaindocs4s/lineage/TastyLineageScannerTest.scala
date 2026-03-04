@@ -17,8 +17,8 @@ class TastyLineageScannerTest extends AnyFreeSpec {
   private val callGraph = new TastyCallGraphExtractor().extract(pkg)
 
   // Phase 1: scan integrations
-  private val doobieIntegrations = new TastyDoobieScanner().scan(pkg)
-  private val grpcIntegrations = new TastyFs2GrpcScanner().scan(pkg)
+  private val doobieIntegrations = new TastyDoobieScanner().scan(List(pkg))
+  private val grpcIntegrations = new TastyFs2GrpcScanner().scan(List(pkg))
 
   // Enrichment: assign groups
   private val enrichment = IntegrationGroupConfig.builder
@@ -120,7 +120,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
     "produces kafka integrations with correct fields" in {
       val manual = ManualScanner.builder
         .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
-        .build
+        .build.scan(Nil)
 
       manual should have size 1
       val di = manual.head
@@ -135,7 +135,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
     "uses default Kafka cluster as group" in {
       val manual = ManualScanner.builder
         .method[UserRepo](_.getBalance).reads.kafka("some.topic")
-        .build
+        .build.scan(Nil)
 
       manual.head.group shouldBe Some("Kafka")
     }
@@ -143,7 +143,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
     "supports custom cluster name" in {
       val manual = ManualScanner.builder
         .method[UserRepo](_.getBalance).reads.kafka("analytics.events", cluster = "Analytics")
-        .build
+        .build.scan(Nil)
 
       manual.head.group shouldBe Some("Analytics")
     }
@@ -151,7 +151,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
     "supports generic custom integration type" in {
       val manual = ManualScanner.builder
         .method[UserRepo](_.getBalance).writes.custom("s3", "my-bucket/exports", group = Some("S3"))
-        .build
+        .build.scan(Nil)
 
       val di = manual.head
       di.integrationType shouldBe "s3"
@@ -162,7 +162,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
     "composes with automatic scanner results in LineageBuilder" in {
       val manualIntegrations = ManualScanner.builder
         .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
-        .build
+        .build.scan(Nil)
 
       val allIntegrations = enrichment.enrich(doobieIntegrations ++ grpcIntegrations ++ manualIntegrations)
       val resultWithManual = LineageBuilder.build(callGraph, allIntegrations)
@@ -180,7 +180,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
         .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
         .method[UserGrpcApi](_.getHistory).reads.kafka("user.history-events", cluster = "Analytics")
         .method[UserService](_.deposit).writes.custom("audit", "audit-log", group = Some("Audit"))
-        .build
+        .build.scan(Nil)
 
       manual should have size 3
       manual.count(_.integrationType == "kafka") shouldBe 2
@@ -191,7 +191,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
   "TastyPekkoJournalScanner" - {
 
     val pekkoPkg = "domaindocs4s.architecture.lineage.example.pekko"
-    val pekkoIntegrations = new TastyPekkoJournalScanner().scan(pekkoPkg)
+    val pekkoIntegrations = new TastyPekkoJournalScanner().scan(List(pekkoPkg))
 
     "detects classic PersistentActor as Write to journal" in {
       val classicWrites = pekkoIntegrations.filter { di =>
@@ -257,12 +257,70 @@ class TastyLineageScannerTest extends AnyFreeSpec {
     }
   }
 
+  "TastySlickScanner" - {
+
+    val slickPkg = "domaindocs4s.architecture.lineage.example.slick"
+    val slickIntegrations = new TastySlickScanner().scan(List(slickPkg))
+
+    "outputs DiscoveredIntegration with integrationType slick" in {
+      slickIntegrations should not be empty
+      slickIntegrations.foreach { di =>
+        di.integrationType shouldBe "slick"
+        di.method.className should not be empty
+        di.method.methodName should not be empty
+        di.target should not be "unknown"
+      }
+    }
+
+    "detects table names from lifted embedding operations" in {
+      val tables = slickIntegrations.map(_.target).toSet
+      tables should contain("account_balances")
+      tables should contain("slick_transactions")
+    }
+
+    "classifies reads and writes correctly" in {
+      val reads = slickIntegrations.filter(_.accessType == DataAccessType.Read)
+      val writes = slickIntegrations.filter(_.accessType == DataAccessType.Write)
+
+      reads.map(_.method.methodName).toSet should contain allOf ("getBalance", "listTransactions")
+      writes.map(_.method.methodName).toSet should contain allOf ("upsertBalance", "insertTransactions", "deleteTransaction")
+    }
+
+    "detects sql interpolation as Read" in {
+      val sqlReads = slickIntegrations.filter { di =>
+        di.method.methodName == "getBalancePlainSql" && di.accessType == DataAccessType.Read
+      }
+      sqlReads should have size 1
+      sqlReads.head.target shouldBe "account_balances"
+      sqlReads.head.evidence should include("SELECT")
+    }
+
+    "detects sqlu interpolation as Write" in {
+      val sqlWrites = slickIntegrations.filter { di =>
+        di.method.methodName == "updateBalancePlainSql" && di.accessType == DataAccessType.Write
+      }
+      sqlWrites should have size 1
+      sqlWrites.head.target shouldBe "account_balances"
+      sqlWrites.head.evidence should include("UPDATE")
+    }
+
+    "composes with LineageBuilder" in {
+      val slickCallGraph = new TastyCallGraphExtractor().extract(slickPkg)
+      val slickResult = LineageBuilder.build(slickCallGraph, slickIntegrations)
+
+      slickResult.integrations should have size slickIntegrations.size
+      val output = slickResult.prettyPrint
+      println(output)
+      output should include("slick")
+    }
+  }
+
   "MermaidRenderer class-level" - {
 
     // Build a result that includes kafka (manual) integrations, matching RenderLineage
     val manualIntegrations = ManualScanner.builder
       .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
-      .build
+      .build.scan(Nil)
     val allIntegrations = enrichment.enrich(doobieIntegrations ++ grpcIntegrations ++ manualIntegrations)
     val resultWithManual = LineageBuilder.build(callGraph, allIntegrations)
 

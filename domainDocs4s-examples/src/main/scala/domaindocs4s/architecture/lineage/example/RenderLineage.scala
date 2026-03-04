@@ -14,26 +14,25 @@ object RenderLineage {
   def main(args: Array[String]): Unit = {
     given ctx: Context = TastyContext.fromCurrentProcess()
 
-    val pkg = "domaindocs4s.architecture.lineage.example"
-
-    val callGraph         = new TastyCallGraphExtractor().extract(pkg)
-    val doobieIntegrations = new TastyDoobieScanner().scan(pkg)
-    val grpcIntegrations   = new TastyFs2GrpcScanner().scan(pkg)
-
-    val pekkoPkg = "domaindocs4s.architecture.lineage.example.pekko"
-    val pekkoIntegrations  = new TastyPekkoJournalScanner().scan(pekkoPkg)
-
-    val manualIntegrations = ManualScanner.builder
-      .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
-      .build
-
-    val enrichment = IntegrationGroupConfig.builder
-      .group[UserRepo]("user-db")
-      .build
-    val allIntegrations = enrichment.enrich(
-      doobieIntegrations ++ grpcIntegrations ++ manualIntegrations ++ pekkoIntegrations,
-    )
-    val result = LineageBuilder.build(callGraph, allIntegrations)
+    val result = new LineageScanner(
+      packages = List(
+        "domaindocs4s.architecture.lineage.example",
+        "domaindocs4s.architecture.lineage.example.pekko",
+        "domaindocs4s.architecture.lineage.example.slick",
+      ),
+      scanners = List(
+        new TastyDoobieScanner(),
+        new TastyFs2GrpcScanner(),
+        new TastyPekkoJournalScanner(),
+        new TastySlickScanner(),
+        ManualScanner.builder
+          .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
+          .build,
+      ),
+      enrichment = IntegrationGroupConfig.builder
+        .group[UserRepo]("user-db")
+        .build,
+    ).scan()
 
     println("=== Access direction ===")
     println(MermaidRenderer.toViewUrl(MermaidRenderer.render(result)))
@@ -43,7 +42,7 @@ object RenderLineage {
 
     val classLevelConfig = ClassLevelConfig.builder
       .hide[UserRepo]
-      .groupByPackage(pkg)
+      .groupByPackage("domaindocs4s.architecture.lineage.example")
       .build
 
     println("=== Class-level access direction ===")

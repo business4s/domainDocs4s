@@ -30,7 +30,12 @@ object ManualScanner {
       new MethodBuilder(className, methodName)
     }
 
-    def build: List[DiscoveredIntegration] = integrations.toList
+    def build: IntegrationScanner = {
+      val result = integrations.toList
+      new IntegrationScanner {
+        def scan(packages: List[String]): List[DiscoveredIntegration] = result
+      }
+    }
 
     class MethodBuilder(className: String, methodName: String) {
       def reads: IntegrationBuilder = new IntegrationBuilder(className, methodName, DataAccessType.Read)
