@@ -34,26 +34,25 @@ object MermaidRenderer {
     sb.append("\n")
 
     // Integration target nodes — grouped by subgraph when group is set
-    val integrationsByGroup = result.integrations
-      .map(i => (i.target, i.integrationType, i.group))
-      .distinct
+    val resourcesByGroup = result.resources
+      .map(r => (r.target, r.resourceType, r.group))
       .groupBy(_._3)
 
     // Grouped targets in subgraphs
-    for (case (Some(groupName), entries) <- integrationsByGroup) {
+    for (case (Some(groupName), entries) <- resourcesByGroup) {
       // Disambiguate from class subgraphs that share the same name
       val safeId = extGroupNodeId(groupName)
       val label = if (classNames.contains(groupName)) s"$groupName (ext)" else groupName
       sb.append(s"""  subgraph $safeId ["$label"]\n""")
-      for ((target, itype, _) <- entries) {
-        renderTargetNode(sb, targetNodeId(target), target.split("/").last, itype, indent = "    ")
+      for ((target, rtype, _) <- entries) {
+        renderTargetNode(sb, targetNodeId(target), target.split("/").last, rtype, indent = "    ")
       }
       sb.append("  end\n")
     }
 
     // Ungrouped targets as standalone nodes
-    for ((target, itype, _) <- integrationsByGroup.getOrElse(None, Nil)) {
-      renderTargetNode(sb, targetNodeId(target), target, itype, indent = "  ")
+    for ((target, rtype, _) <- resourcesByGroup.getOrElse(None, Nil)) {
+      renderTargetNode(sb, targetNodeId(target), target, rtype, indent = "  ")
     }
 
     sb.append("\n")
@@ -99,8 +98,8 @@ object MermaidRenderer {
       if (cls.nonEmpty) sb.append(s"  class ${nodeId(m.ref)} $cls\n")
     }
 
-    for ((_, entries) <- integrationsByGroup; (target, itype, _) <- entries) {
-      sb.append(s"  class ${targetNodeId(target)} ${integrationStyle(itype)}\n")
+    for ((_, entries) <- resourcesByGroup; (target, rtype, _) <- entries) {
+      sb.append(s"  class ${targetNodeId(target)} ${integrationStyle(rtype)}\n")
     }
 
     sb.toString()
@@ -160,13 +159,12 @@ object MermaidRenderer {
 
     sb.append("\n")
 
-    // Split integrations into folded vs non-folded
-    val allTargets = result.integrations
-      .map(i => (i.target, i.integrationType, i.group))
-      .distinct
+    // Split resources into folded vs non-folded
+    val allTargets = result.resources
+      .map(r => (r.target, r.resourceType, r.group))
 
-    val (foldedRaw, nonFoldedRaw) = allTargets.partition { case (_, itype, group) =>
-      foldByGroup.contains(itype) && group.isDefined
+    val (foldedRaw, nonFoldedRaw) = allTargets.partition { case (_, rtype, group) =>
+      foldByGroup.contains(rtype) && group.isDefined
     }
 
     // Folded integration nodes — one standalone node per group
@@ -221,7 +219,7 @@ object MermaidRenderer {
 
     // Integration edges — folded types: one edge per (className, group)
     val foldedEdges = effectiveIntegrations
-      .filter(i => foldByGroup.contains(i.integrationType) && i.group.isDefined)
+      .filter(i => foldByGroup.contains(i.resourceType) && i.group.isDefined)
       .groupBy(i => (i.method.className, i.group.get))
       .map { case ((className, groupName), integrations) =>
         val combined = DataAccessType.combineAll(integrations.map(_.accessType).toList)
@@ -234,7 +232,7 @@ object MermaidRenderer {
 
     // Integration edges — non-folded types: one edge per (className, target)
     val nonFoldedEdges = effectiveIntegrations
-      .filterNot(i => foldByGroup.contains(i.integrationType) && i.group.isDefined)
+      .filterNot(i => foldByGroup.contains(i.resourceType) && i.group.isDefined)
       .groupBy(i => (i.method.className, i.target))
       .map { case ((className, target), integrations) =>
         val combined = DataAccessType.combineAll(integrations.map(_.accessType).toList)
@@ -265,13 +263,13 @@ object MermaidRenderer {
       if (style.nonEmpty) sb.append(s"  class ${classNodeId(cls.name)} $style\n")
     }
 
-    for ((groupName, itype) <- foldedGroups) {
-      val style = integrationStyle(itype)
+    for ((groupName, rtype) <- foldedGroups) {
+      val style = integrationStyle(rtype)
       sb.append(s"  class ${foldedGroupNodeId(groupName)} $style\n")
     }
 
-    for ((_, entries) <- nonFoldedByGroup; (target, itype, _) <- entries) {
-      val style = integrationStyle(itype)
+    for ((_, entries) <- nonFoldedByGroup; (target, rtype, _) <- entries) {
+      val style = integrationStyle(rtype)
       sb.append(s"  class ${targetNodeId(target)} $style\n")
     }
 
@@ -314,12 +312,12 @@ object MermaidRenderer {
   }
 
   /** Render a single integration target node into the StringBuilder. */
-  private def renderTargetNode(sb: StringBuilder, id: String, label: String, itype: String, indent: String): Unit =
-    itype match {
-      case "grpc"          => sb.append(s"""$indent$id{{"${label}\n[$itype]"}}\n""")
-      case "kafka"         => sb.append(s"""$indent$id(["${label}\n[$itype]"])\n""")
-      case "pekko-journal" => sb.append(s"""$indent$id[["${label}\n[$itype]"]]\n""")
-      case _               => sb.append(s"""$indent$id[("${label}\n[$itype]")]\n""")
+  private def renderTargetNode(sb: StringBuilder, id: String, label: String, rtype: String, indent: String): Unit =
+    rtype match {
+      case "grpc"    => sb.append(s"""$indent$id{{"${label}\n[$rtype]"}}\n""")
+      case "kafka"   => sb.append(s"""$indent$id(["${label}\n[$rtype]"])\n""")
+      case "journal" => sb.append(s"""$indent$id[["${label}\n[$rtype]"]]\n""")
+      case _         => sb.append(s"""$indent$id[("${label}\n[$rtype]")]\n""")
     }
 
   private def renderEdge(sb: StringBuilder, from: String, to: String, accessType: DataAccessType, dataFlow: Boolean): Unit =
@@ -331,11 +329,11 @@ object MermaidRenderer {
       case _                            => sb.append(s"""  $from -->|$accessType| $to\n""")
     }
 
-  private def integrationStyle(itype: String): String = itype match {
-    case "grpc"          => "grpcNode"
-    case "kafka"         => "kafkaNode"
-    case "pekko-journal" => "journalNode"
-    case _               => "dbNode"
+  private def integrationStyle(rtype: String): String = rtype match {
+    case "grpc"    => "grpcNode"
+    case "kafka"   => "kafkaNode"
+    case "journal" => "journalNode"
+    case _         => "dbNode"
   }
 
   def toViewUrl(mermaidCode: String): String = {

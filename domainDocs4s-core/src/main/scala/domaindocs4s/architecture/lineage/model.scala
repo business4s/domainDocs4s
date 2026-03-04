@@ -111,9 +111,14 @@ case class ExtractedMethod(
 
 // ── Phase 1: Scanner output ──────────────────────────────────────────────────
 
-/** Common interface for integration scanners. */
+/** Common interface for integration scanners that require TASTy packages. */
 trait IntegrationScanner {
   def scan(packages: List[String]): List[DiscoveredIntegration]
+}
+
+/** Common interface for resource scanners (no TASTy needed). */
+trait ResourceScanner {
+  def scan(): List[DiscoveredIntegration]
 }
 
 /** A discovered external integration — output of any scanner.
@@ -124,11 +129,46 @@ trait IntegrationScanner {
 case class DiscoveredIntegration(
     method: MethodRef,
     accessType: DataAccessType,
-    integrationType: String, // scanner name: "doobie", "kafka", "grpc", ...
-    target: String,          // what was accessed: table name, topic, endpoint, ...
-    evidence: String,        // source evidence: SQL query, config key, ...
+    resourceType: String,         // "database", "kafka", "grpc", "journal", ...
+    scanner: String,              // "doobie", "slick", "flyway", "grpc", "pekko-journal", "manual"
+    target: String,               // what was accessed: table name, topic, endpoint, ...
+    evidence: String,             // source evidence: SQL query, config key, ...
     group: Option[String] = None, // logical group: service name, database, ...
 )
+
+/** Metadata about one way a resource was found/accessed. */
+case class Discovery(
+    method: MethodRef,
+    accessType: DataAccessType,
+    scanner: String,
+    evidence: String,
+)
+
+/** Merged physical resource — one per unique (target, resourceType, group). */
+case class DiscoveredResource(
+    target: String,
+    resourceType: String,
+    group: Option[String] = None,
+    discoveries: List[Discovery] = Nil,
+)
+
+object DiscoveredResource {
+
+  /** Merge flat integrations into deduplicated resources. */
+  def merge(integrations: List[DiscoveredIntegration]): List[DiscoveredResource] =
+    integrations
+      .groupBy(i => (i.target, i.resourceType, i.group))
+      .map { case ((target, resourceType, group), dis) =>
+        DiscoveredResource(
+          target = target,
+          resourceType = resourceType,
+          group = group,
+          discoveries = dis.map(i => Discovery(i.method, i.accessType, i.scanner, i.evidence)),
+        )
+      }
+      .toList
+      .sortBy(r => (r.resourceType, r.target))
+}
 
 case class IntegrationGroupConfig(
     classToGroup: Map[String, String] = Map.empty,
@@ -221,6 +261,7 @@ case class ScanResult(
     lineageChains: List[LineageChain],
 ) {
   lazy val allMethods: List[ScannedMethod] = classes.flatMap(_.methods)
+  lazy val resources: List[DiscoveredResource] = DiscoveredResource.merge(integrations)
 
   def findClass(name: String): Option[ScannedClass] =
     classes.find(_.name == name)
@@ -244,7 +285,7 @@ case class ScanResult(
         val directStr = if (m.directAccess != DataAccessType.Pure) s" (direct: ${m.directAccess})" else ""
         sb.append(s"    - ${m.ref.methodName}: ${m.effectiveAccess}$directStr\n")
         for (i <- m.integrations)
-          sb.append(s"        ${i.integrationType}: ${i.accessType} ${i.target} [${i.evidence}]\n")
+          sb.append(s"        ${i.scanner}(${i.resourceType}): ${i.accessType} ${i.target} [${i.evidence}]\n")
         for (call <- m.calls)
           sb.append(s"        -> calls ${call.display}\n")
       }
@@ -253,7 +294,7 @@ case class ScanResult(
     sb.append("\n=== Data Lineage Chains ===\n")
     for (chain <- lineageChains) {
       val pathStr = chain.path.map(_.display).mkString(" -> ")
-      sb.append(s"\n  ${chain.integration.integrationType}: ${chain.integration.accessType} ${chain.integration.target}\n")
+      sb.append(s"\n  ${chain.integration.scanner}(${chain.integration.resourceType}): ${chain.integration.accessType} ${chain.integration.target}\n")
       sb.append(s"    $pathStr\n")
       sb.append(s"    evidence: ${chain.integration.evidence}\n")
     }

@@ -7,6 +7,8 @@ import org.scalatest.freespec.AnyFreeSpec
 import org.scalatest.matchers.should.Matchers.*
 import tastyquery.Contexts.Context
 
+import java.nio.file.Paths
+
 class TastyLineageScannerTest extends AnyFreeSpec {
 
   given ctx: Context = TastyContext.fromCurrentProcess()
@@ -34,7 +36,8 @@ class TastyLineageScannerTest extends AnyFreeSpec {
     "outputs DiscoveredIntegration with classA.methodB reads/writes tableC" in {
       doobieIntegrations should not be empty
       doobieIntegrations.foreach { di =>
-        di.integrationType shouldBe "doobie"
+        di.resourceType shouldBe "database"
+        di.scanner shouldBe "doobie"
         di.method.className should not be empty
         di.method.methodName should not be empty
         di.target should not be "unknown"
@@ -42,7 +45,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
     }
 
     "detects doobie integrations in UserRepo" in {
-      doobieIntegrations.foreach(_.integrationType shouldBe "doobie")
+      doobieIntegrations.foreach(_.scanner shouldBe "doobie")
 
       val tables = doobieIntegrations.map(_.target).toSet
       tables should contain("users")
@@ -58,7 +61,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
     }
 
     "enriched doobie integrations have group user-db" in {
-      val enrichedDoobie = integrations.filter(_.integrationType == "doobie")
+      val enrichedDoobie = integrations.filter(_.scanner == "doobie")
       enrichedDoobie should not be empty
       enrichedDoobie.foreach(_.group shouldBe Some("user-db"))
     }
@@ -92,8 +95,11 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       client.foreach(_.accessType shouldBe DataAccessType.Read)
     }
 
-    "all grpc integrations have integrationType grpc" in {
-      grpcIntegrations.foreach(_.integrationType shouldBe "grpc")
+    "all grpc integrations have resourceType grpc and scanner grpc" in {
+      grpcIntegrations.foreach { di =>
+        di.resourceType shouldBe "grpc"
+        di.scanner shouldBe "grpc"
+      }
     }
 
     "client usage is attributed to the correct method" in {
@@ -126,7 +132,8 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       val di = manual.head
       di.method shouldBe MethodRef("EventPublisher", "publishDeposit")
       di.accessType shouldBe DataAccessType.Write
-      di.integrationType shouldBe "kafka"
+      di.resourceType shouldBe "kafka"
+      di.scanner shouldBe "manual"
       di.target shouldBe "user.deposit-events"
       di.evidence shouldBe "manual declaration"
       di.group shouldBe Some("Kafka")
@@ -148,13 +155,14 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       manual.head.group shouldBe Some("Analytics")
     }
 
-    "supports generic custom integration type" in {
+    "supports generic custom resource type" in {
       val manual = ManualScanner.builder
         .method[UserRepo](_.getBalance).writes.custom("s3", "my-bucket/exports", group = Some("S3"))
         .build.scan(Nil)
 
       val di = manual.head
-      di.integrationType shouldBe "s3"
+      di.resourceType shouldBe "s3"
+      di.scanner shouldBe "manual"
       di.target shouldBe "my-bucket/exports"
       di.group shouldBe Some("S3")
     }
@@ -168,7 +176,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       val resultWithManual = LineageBuilder.build(callGraph, allIntegrations)
 
       val depositChains = resultWithManual.lineageFrom(MethodRef("UserGrpcApi", "deposit"))
-      val kafkaChains = depositChains.filter(_.integration.integrationType == "kafka")
+      val kafkaChains = depositChains.filter(_.integration.resourceType == "kafka")
       kafkaChains should have size 1
       kafkaChains.head.integration.target shouldBe "user.deposit-events"
       kafkaChains.head.integration.accessType shouldBe DataAccessType.Write
@@ -183,8 +191,8 @@ class TastyLineageScannerTest extends AnyFreeSpec {
         .build.scan(Nil)
 
       manual should have size 3
-      manual.count(_.integrationType == "kafka") shouldBe 2
-      manual.count(_.integrationType == "audit") shouldBe 1
+      manual.count(_.resourceType == "kafka") shouldBe 2
+      manual.count(_.resourceType == "audit") shouldBe 1
     }
   }
 
@@ -238,8 +246,11 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       pqReads.head.evidence should include("readJournalFor")
     }
 
-    "all pekko integrations have integrationType pekko-journal" in {
-      pekkoIntegrations.foreach(_.integrationType shouldBe "pekko-journal")
+    "all pekko integrations have resourceType journal and scanner pekko-journal" in {
+      pekkoIntegrations.foreach { di =>
+        di.resourceType shouldBe "journal"
+        di.scanner shouldBe "pekko-journal"
+      }
     }
 
     "all pekko integrations have group Journal" in {
@@ -262,10 +273,11 @@ class TastyLineageScannerTest extends AnyFreeSpec {
     val slickPkg = "domaindocs4s.architecture.lineage.example.slick"
     val slickIntegrations = new TastySlickScanner().scan(List(slickPkg))
 
-    "outputs DiscoveredIntegration with integrationType slick" in {
+    "outputs DiscoveredIntegration with resourceType database and scanner slick" in {
       slickIntegrations should not be empty
       slickIntegrations.foreach { di =>
-        di.integrationType shouldBe "slick"
+        di.resourceType shouldBe "database"
+        di.scanner shouldBe "slick"
         di.method.className should not be empty
         di.method.methodName should not be empty
         di.target should not be "unknown"
@@ -312,6 +324,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       val output = slickResult.prettyPrint
       println(output)
       output should include("slick")
+      output should include("database")
     }
   }
 
@@ -481,6 +494,81 @@ class TastyLineageScannerTest extends AnyFreeSpec {
     }
   }
 
+  "FlywayMigrationScanner" - {
+
+    val flywayDir = Paths.get(getClass.getClassLoader.getResource("flyway").toURI)
+    val flywayScanner = new FlywayMigrationScanner(flywayDir, group = Some("core-db"))
+    val flywayIntegrations = flywayScanner.scan()
+
+    "discovers CREATE TABLE statements as Write" in {
+      val creates = flywayIntegrations.filter { di =>
+        di.accessType == DataAccessType.Write && di.evidence == "V001__create_tables.sql"
+      }
+      creates.map(_.target).toSet should contain allOf ("users", "transactions")
+    }
+
+    "discovers ALTER TABLE as Write" in {
+      val alters = flywayIntegrations.filter(_.evidence == "V003__alter_tables.sql")
+      alters should have size 1
+      alters.head.target shouldBe "users"
+      alters.head.accessType shouldBe DataAccessType.Write
+    }
+
+    "discovers CREATE VIEW as Write to view and Read from source tables" in {
+      val viewIntegrations = flywayIntegrations.filter(_.evidence == "V002__create_views.sql")
+
+      val viewWrite = viewIntegrations.filter(di => di.accessType == DataAccessType.Write)
+      viewWrite should have size 1
+      viewWrite.head.target shouldBe "user_transaction_summary"
+
+      val sourceReads = viewIntegrations.filter(di => di.accessType == DataAccessType.Read)
+      sourceReads.map(_.target).toSet should contain allOf ("users", "transactions")
+    }
+
+    "all flyway integrations have resourceType database and scanner flyway" in {
+      flywayIntegrations should not be empty
+      flywayIntegrations.foreach { di =>
+        di.resourceType shouldBe "database"
+        di.scanner shouldBe "flyway"
+      }
+    }
+
+    "all flyway integrations have group core-db" in {
+      flywayIntegrations.foreach(_.group shouldBe Some("core-db"))
+    }
+
+    "evidence includes filename" in {
+      flywayIntegrations.foreach { di =>
+        di.evidence should endWith(".sql")
+      }
+    }
+
+    "method refs use flyway class and version" in {
+      flywayIntegrations.foreach { di =>
+        di.method.className shouldBe "flyway"
+        di.method.methodName should startWith("V")
+      }
+    }
+
+    "merges with doobie integrations into resources" in {
+      val allIntegrations = doobieIntegrations ++ flywayIntegrations
+      val resources = DiscoveredResource.merge(allIntegrations)
+
+      // "users" table from doobie (group=None) and flyway (group=Some("core-db")) stay separate
+      // because group differs
+      val usersResources = resources.filter(_.target == "users")
+      usersResources should not be empty
+
+      // But if groups matched, they would merge
+      val ungroupedFlyway = new FlywayMigrationScanner(flywayDir).scan()
+      val doobieAndFlyway = doobieIntegrations ++ ungroupedFlyway
+      val merged = DiscoveredResource.merge(doobieAndFlyway)
+      val usersResource = merged.filter(r => r.target == "users" && r.group.isEmpty)
+      usersResource should have size 1
+      usersResource.head.discoveries.map(_.scanner).toSet should contain allOf ("doobie", "flyway")
+    }
+  }
+
   "LineageBuilder" - {
 
     "propagates effective access types" in {
@@ -500,21 +588,21 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       val balanceChains = result.lineageFrom(MethodRef("UserGrpcApi", "getBalance"))
       balanceChains should have size 2
 
-      val balanceDoobieChains = balanceChains.filter(_.integration.integrationType == "doobie")
+      val balanceDoobieChains = balanceChains.filter(_.integration.scanner == "doobie")
       balanceDoobieChains should have size 1
       balanceDoobieChains.head.integration.target shouldBe "users"
       balanceDoobieChains.head.integration.accessType shouldBe DataAccessType.Read
       balanceDoobieChains.head.path.map(_.className) shouldBe List("UserGrpcApi", "UserService", "UserRepo")
 
-      val balanceGrpcChains = balanceChains.filter(_.integration.integrationType == "grpc")
+      val balanceGrpcChains = balanceChains.filter(_.integration.scanner == "grpc")
       balanceGrpcChains should have size 1
       balanceGrpcChains.head.integration.target shouldBe "UserService/getBalance"
 
       // deposit chains: 2 doobie + 1 grpc server + 1 grpc client = 4
       val depositChains = result.lineageFrom(MethodRef("UserGrpcApi", "deposit"))
       depositChains should have size 4
-      depositChains.filter(_.integration.integrationType == "doobie").map(_.integration.target).toSet shouldBe Set("users", "transactions")
-      depositChains.filter(_.integration.integrationType == "grpc").map(_.integration.target).toSet shouldBe Set("UserService/deposit", "RateService/getRate")
+      depositChains.filter(_.integration.scanner == "doobie").map(_.integration.target).toSet shouldBe Set("users", "transactions")
+      depositChains.filter(_.integration.scanner == "grpc").map(_.integration.target).toSet shouldBe Set("UserService/deposit", "RateService/getRate")
     }
 
     "pretty prints the full result" in {

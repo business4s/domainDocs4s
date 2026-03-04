@@ -67,7 +67,8 @@ class TastyPekkoJournalScanner(using ctx: Context) extends IntegrationScanner {
     List(DiscoveredIntegration(
       method = MethodRef(className, "receiveCommand"),
       accessType = DataAccessType.Write,
-      integrationType = "pekko-journal",
+      resourceType = "journal",
+      scanner = "pekko-journal",
       target = "journal",
       evidence = "extends PersistentActor",
       group = Some("Journal"),
@@ -90,7 +91,8 @@ class TastyPekkoJournalScanner(using ctx: Context) extends IntegrationScanner {
               if (detector.found) List(DiscoveredIntegration(
                 method = MethodRef(className, methodName),
                 accessType = DataAccessType.Write,
-                integrationType = "pekko-journal",
+                resourceType = "journal",
+                scanner = "pekko-journal",
                 target = "journal",
                 evidence = "calls EventSourcedBehavior",
                 group = Some("Journal"),
@@ -122,7 +124,8 @@ class TastyPekkoJournalScanner(using ctx: Context) extends IntegrationScanner {
                 DiscoveredIntegration(
                   method = MethodRef(className, methodName),
                   accessType = DataAccessType.Read,
-                  integrationType = "pekko-journal",
+                  resourceType = "journal",
+                  scanner = "pekko-journal",
                   target = "journal",
                   evidence = s"calls $fieldName (ReadJournal)",
                   group = Some("Journal"),
@@ -181,7 +184,8 @@ class TastyPekkoJournalScanner(using ctx: Context) extends IntegrationScanner {
               if (detector.found) List(DiscoveredIntegration(
                 method = MethodRef(className, methodName),
                 accessType = DataAccessType.Read,
-                integrationType = "pekko-journal",
+                resourceType = "journal",
+                scanner = "pekko-journal",
                 target = "journal",
                 evidence = detector.evidence,
                 group = Some("Journal"),

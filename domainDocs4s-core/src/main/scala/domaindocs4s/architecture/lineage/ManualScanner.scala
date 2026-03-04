@@ -45,10 +45,10 @@ object ManualScanner {
     class IntegrationBuilder(className: String, methodName: String, accessType: DataAccessType) {
 
       def kafka(topic: String, cluster: String = "Kafka"): Builder =
-        custom(integrationType = "kafka", target = topic, group = Some(cluster))
+        custom(resourceType = "kafka", target = topic, group = Some(cluster))
 
       def custom(
-          integrationType: String,
+          resourceType: String,
           target: String,
           group: Option[String] = None,
           evidence: String = "manual declaration",
@@ -56,7 +56,8 @@ object ManualScanner {
         integrations += DiscoveredIntegration(
           method = MethodRef(className, methodName),
           accessType = accessType,
-          integrationType = integrationType,
+          resourceType = resourceType,
+          scanner = "manual",
           target = target,
           evidence = evidence,
           group = group,

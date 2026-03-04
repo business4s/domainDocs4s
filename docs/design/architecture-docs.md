@@ -786,7 +786,7 @@ trait ResourceScanner {
 }
 ```
 
-Planned: `FlywayMigrationScanner`, `HoconKafkaTopicScanner`. See §15.3.5 for detailed Flyway scanner design.
+Implemented: `FlywayMigrationScanner`. Planned: `HoconKafkaTopicScanner`. See §15.3.5 for detailed Flyway scanner design.
 
 ---
 
@@ -1289,5 +1289,5 @@ Updated version of the table from §7.3 with newly identified scanners:
 | `PekkoKafkaScanner`         | Pekko Kafka producer/consumer patterns    | Planned     |
 | `S3Scanner`                 | AWS SDK S3 put/get operations             | Planned     |
 | `SttpClientScanner`         | HTTP client calls                         | Planned     |
-| `FlywayMigrationScanner`    | SQL DDL: tables, views, joins (resource)  | Planned     |
+| `FlywayMigrationScanner`    | SQL DDL: tables, views, joins (resource)  | Implemented |
 | `HoconKafkaTopicScanner`    | Kafka topic names from config (resource)  | Planned     |
