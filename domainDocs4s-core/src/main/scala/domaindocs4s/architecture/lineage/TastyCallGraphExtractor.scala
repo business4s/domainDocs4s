@@ -34,16 +34,18 @@ class TastyCallGraphExtractor(using ctx: Context) {
     }
   }
 
-  private def resolveFieldTypes(cls: ClassSymbol): Map[String, String] =
+  private def resolveFieldTypes(cls: ClassSymbol): Map[String, (String, String)] =
     cls.declarations.collect {
       case ts: TermSymbol if !isUserMethod(ts) && !ts.name.toString.startsWith("<") =>
         ts.declaredType match {
-          case tr: TypeRef => Some(ts.name.toString -> tr.name.toString)
-          case _           => None
+          case tr: TypeRef =>
+            val pkg = TastyUtils.typeRefPackage(tr)
+            Some(ts.name.toString -> (pkg, tr.name.toString))
+          case _ => None
         }
     }.flatten.toMap
 
-  private def extractCalls(ts: TermSymbol, fieldTypes: Map[String, String]): List[MethodRef] =
+  private def extractCalls(ts: TermSymbol, fieldTypes: Map[String, (String, String)]): List[MethodRef] =
     ts.tree match {
       case Some(defDef: DefDef) =>
         defDef.rhs.toList.flatMap { rhs =>
@@ -69,7 +71,7 @@ class TastyCallGraphExtractor(using ctx: Context) {
     !ts.isSynthetic
   }
 
-  private class MethodCallCollector(fieldTypes: Map[String, String]) extends TreeTraverser {
+  private class MethodCallCollector(fieldTypes: Map[String, (String, String)]) extends TreeTraverser {
     val calls: ListBuffer[MethodRef] = ListBuffer.empty
 
     override def traverse(tree: Tree): Unit = {
@@ -84,8 +86,8 @@ class TastyCallGraphExtractor(using ctx: Context) {
     }
 
     private def addIfKnown(fieldName: String, methodName: String): Unit =
-      fieldTypes.get(fieldName).foreach { className =>
-        calls += MethodRef(className, methodName)
+      fieldTypes.get(fieldName).foreach { case (pkg, className) =>
+        calls += MethodRef(pkg, className, methodName)
       }
   }
 }

@@ -38,7 +38,7 @@ class TastyDoobieScanner(
       val className = cls.name.toString
       cls.declarations.collect {
         case ts: TermSymbol if returnsConnectionIO(ts.declaredType) =>
-          val ref = MethodRef(className, ts.name.toString)
+          val ref = MethodRef(packageName, className, ts.name.toString)
           ts.tree.toList.flatMap {
             case defDef: DefDef => defDef.rhs.toList.flatMap(rhs => findDoobieOps(ref, rhs))
             case _              => Nil

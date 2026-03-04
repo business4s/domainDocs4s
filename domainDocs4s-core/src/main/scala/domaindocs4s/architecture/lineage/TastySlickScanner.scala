@@ -50,7 +50,7 @@ class TastySlickScanner(
       val className = cls.name.toString.stripSuffix("$")
       cls.declarations.collect {
         case ts: TermSymbol if returnsDBIO(ts.declaredType) =>
-          val ref = MethodRef(className, ts.name.toString)
+          val ref = MethodRef(packageName, className, ts.name.toString)
           ts.tree.toList.flatMap {
             case defDef: DefDef => defDef.rhs.toList.flatMap(rhs => findSlickOps(ref, rhs, fieldToTableName))
             case _              => Nil

@@ -29,10 +29,10 @@ class TastyPekkoKafkaScanner(using ctx: Context) extends IntegrationScanner {
     val pkg = ctx.findPackage(packageName)
     val classes = TastyUtils.userClasses(pkg)
     val objects = TastyUtils.moduleClasses(pkg)
-    (classes ++ objects).flatMap(scanClass)
+    (classes ++ objects).flatMap(scanClass(packageName, _))
   }
 
-  private def scanClass(cls: ClassSymbol): List[DiscoveredIntegration] = {
+  private def scanClass(packageName: String, cls: ClassSymbol): List[DiscoveredIntegration] = {
     val className = cls.name.toString.stripSuffix("$")
     cls.declarations.collect {
       case ts: TermSymbol if ts.tree.exists(_.isInstanceOf[DefDef]) =>
@@ -43,7 +43,7 @@ class TastyPekkoKafkaScanner(using ctx: Context) extends IntegrationScanner {
               val detector = new ProducerUsageDetector
               detector.traverse(rhs)
               if (detector.found) List(DiscoveredIntegration(
-                method = MethodRef(className, methodName),
+                method = MethodRef(packageName, className, methodName),
                 accessType = DataAccessType.Write,
                 resourceType = "kafka",
                 scanner = "pekko-kafka",

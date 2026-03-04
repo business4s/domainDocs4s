@@ -55,14 +55,14 @@ object LineageBuilder {
       )
     }
 
-    val scannedMethodsByClass = scannedMethods.groupBy(_.ref.className)
+    val scannedMethodsByClass = scannedMethods.groupBy(m => (m.ref.packageName, m.ref.className))
     val scannedClasses = methods
-      .groupBy(m => (m.className, m.packageName))
-      .map { case ((className, pkg), _) =>
+      .groupBy(m => (m.packageName, m.className))
+      .map { case ((pkg, className), _) =>
         ScannedClass(
           name = className,
           packageName = pkg,
-          methods = scannedMethodsByClass.getOrElse(className, Nil),
+          methods = scannedMethodsByClass.getOrElse((pkg, className), Nil),
         )
       }
       .toList

@@ -31,12 +31,12 @@ class TastyFs2GrpcScanner(using ctx: Context) extends IntegrationScanner {
   private def scanPackage(packageName: String): List[DiscoveredIntegration] = {
     val classes = TastyUtils.userClasses(ctx.findPackage(packageName))
     classes.flatMap { cls =>
-      scanServer(cls) ++ scanClient(cls)
+      scanServer(packageName, cls) ++ scanClient(packageName, cls)
     }
   }
 
   /** Server: class extends *Fs2Grpc trait → Write integrations for each implemented RPC method. */
-  private def scanServer(cls: ClassSymbol): List[DiscoveredIntegration] = {
+  private def scanServer(packageName: String, cls: ClassSymbol): List[DiscoveredIntegration] = {
     val className = cls.name.toString
     // Use cls.parents (types) instead of cls.parentClasses (symbols) because
     // parentClasses throws when it can't resolve java.lang.Object in the classpath.
@@ -58,7 +58,7 @@ class TastyFs2GrpcScanner(using ctx: Context) extends IntegrationScanner {
         case ts: TermSymbol if parentMethodNames.contains(ts.name.toString) =>
           val methodName = ts.name.toString
           DiscoveredIntegration(
-            method = MethodRef(className, methodName),
+            method = MethodRef(packageName, className, methodName),
             accessType = DataAccessType.Write,
             resourceType = "grpc",
             scanner = "grpc",
@@ -74,7 +74,7 @@ class TastyFs2GrpcScanner(using ctx: Context) extends IntegrationScanner {
     TastyUtils.extractTypeRef(tpe)
 
   /** Client: val fields of type *Fs2Grpc → Read integrations for each call to those fields. */
-  private def scanClient(cls: ClassSymbol): List[DiscoveredIntegration] = {
+  private def scanClient(packageName: String, cls: ClassSymbol): List[DiscoveredIntegration] = {
     val className = cls.name.toString
     val grpcFields = resolveGrpcFieldTypes(cls)
     if (grpcFields.isEmpty) return Nil
@@ -89,7 +89,7 @@ class TastyFs2GrpcScanner(using ctx: Context) extends IntegrationScanner {
               collector.traverse(rhs)
               collector.calls.distinct.map { call =>
                 DiscoveredIntegration(
-                  method = MethodRef(className, methodName),
+                  method = MethodRef(packageName, className, methodName),
                   accessType = DataAccessType.Read,
                   resourceType = "grpc",
                   scanner = "grpc",

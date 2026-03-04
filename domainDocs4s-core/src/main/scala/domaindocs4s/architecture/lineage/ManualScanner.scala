@@ -34,37 +34,37 @@ object ManualScanner {
     private val _entries = ListBuffer.empty[ManualEntry]
 
     inline def method[T](inline selector: T => Any): MethodBuilder = {
-      val (className, methodName) = MethodRefMacro.extract[T](selector)
-      new MethodBuilder(className, methodName)
+      val (packageName, className, methodName) = MethodRefMacro.extract[T](selector)
+      new MethodBuilder(packageName, className, methodName)
     }
 
     def cls[T: ClassTag]: ClassBuilder = {
-      val className = summon[ClassTag[T]].runtimeClass.getSimpleName.stripSuffix("$")
-      new ClassBuilder(className)
+      val (packageName, className) = splitClassTag(summon[ClassTag[T]])
+      new ClassBuilder(packageName, className)
     }
 
     def build: ManualDeclarations = ManualDeclarations(_entries.toList)
 
-    class MethodBuilder(className: String, methodName: String) {
-      def reads: IntegrationBuilder = new IntegrationBuilder(className, Some(methodName), DataAccessType.Read)
-      def writes: IntegrationBuilder = new IntegrationBuilder(className, Some(methodName), DataAccessType.Write)
+    class MethodBuilder(packageName: String, className: String, methodName: String) {
+      def reads: IntegrationBuilder = new IntegrationBuilder(packageName, className, Some(methodName), DataAccessType.Read)
+      def writes: IntegrationBuilder = new IntegrationBuilder(packageName, className, Some(methodName), DataAccessType.Write)
     }
 
-    class ClassBuilder(className: String) {
-      def reads: IntegrationBuilder = new IntegrationBuilder(className, None, DataAccessType.Read)
-      def writes: IntegrationBuilder = new IntegrationBuilder(className, None, DataAccessType.Write)
+    class ClassBuilder(packageName: String, className: String) {
+      def reads: IntegrationBuilder = new IntegrationBuilder(packageName, className, None, DataAccessType.Read)
+      def writes: IntegrationBuilder = new IntegrationBuilder(packageName, className, None, DataAccessType.Write)
     }
 
-    class IntegrationBuilder(className: String, methodName: Option[String], accessType: DataAccessType) {
+    class IntegrationBuilder(packageName: String, className: String, methodName: Option[String], accessType: DataAccessType) {
       private val startIdx = _entries.length
 
       def kafka(topic: String): IntegrationBuilder = {
-        _entries += ManualEntry(className, methodName, accessType, "kafka", topic, Some("Kafka"))
+        _entries += ManualEntry(packageName, className, methodName, accessType, "kafka", topic, Some("Kafka"))
         this
       }
 
       def custom(resourceType: String, target: String, group: Option[String] = None): IntegrationBuilder = {
-        _entries += ManualEntry(className, methodName, accessType, resourceType, target, group)
+        _entries += ManualEntry(packageName, className, methodName, accessType, resourceType, target, group)
         this
       }
 
@@ -83,6 +83,7 @@ object ManualScanner {
 }
 
 case class ManualEntry(
+    packageName: String,
     className: String,
     methodName: Option[String],
     accessType: DataAccessType,
@@ -97,15 +98,16 @@ case class ManualDeclarations(
 ) {
 
   def apply(autoDetected: List[DiscoveredIntegration]): List[DiscoveredIntegration] = {
-    val grouped = entries.groupBy(e => (e.className, e.methodName, e.resourceType))
+    val grouped = entries.groupBy(e => (e.packageName, e.className, e.methodName, e.resourceType))
 
     var result = autoDetected
     val unmatched = ListBuffer.empty[ManualEntry]
 
     for ((key, group) <- grouped) {
-      val (className, methodName, resourceType) = key
+      val (packageName, className, methodName, resourceType) = key
 
       val (matching, remaining) = result.partition { di =>
+        di.method.packageName == packageName &&
         di.method.className == className &&
         methodName.forall(_ == di.method.methodName) &&
         di.resourceType == resourceType
@@ -120,7 +122,7 @@ case class ManualDeclarations(
           methodName.foreach { mn =>
             result = result ++ group.map { e =>
               DiscoveredIntegration(
-                method = MethodRef(className, mn),
+                method = MethodRef(packageName, className, mn),
                 accessType = e.accessType,
                 resourceType = resourceType,
                 scanner = "manual",

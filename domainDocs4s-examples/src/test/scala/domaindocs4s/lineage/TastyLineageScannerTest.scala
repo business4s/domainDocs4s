@@ -176,7 +176,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       val allIntegrations = enrichment.enrich(doobieIntegrations ++ grpcIntegrations ++ manualIntegrations)
       val resultWithManual = LineageBuilder.build(callGraph, allIntegrations)
 
-      val depositChains = resultWithManual.lineageFrom(MethodRef("UserGrpcApi", "deposit"))
+      val depositChains = resultWithManual.lineageFrom(MethodRef(pkg, "UserGrpcApi", "deposit"))
       val kafkaChains = depositChains.filter(_.integration.resourceType == "kafka")
       kafkaChains should have size 1
       kafkaChains.head.integration.target shouldBe "user.deposit-events"
@@ -654,7 +654,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
     "method-level override replaces target when match exists" in {
       val autoDetected = List(
         DiscoveredIntegration(
-          method = MethodRef("MyProducer", "send"),
+          method = MethodRef("", "MyProducer", "send"),
           accessType = DataAccessType.Write,
           resourceType = "kafka",
           scanner = "pekko-kafka",
@@ -666,7 +666,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
 
       val manual = ManualDeclarations(
         entries = List(
-          ManualEntry("MyProducer", Some("send"), DataAccessType.Write, "kafka", "my-actual-topic", Some("Kafka")),
+          ManualEntry("", "MyProducer", Some("send"), DataAccessType.Write, "kafka", "my-actual-topic", Some("Kafka")),
         ),
       )
 
@@ -680,7 +680,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
     "lenient method-level adds when no match exists" in {
       val autoDetected = List(
         DiscoveredIntegration(
-          method = MethodRef("MyProducer", "send"),
+          method = MethodRef("", "MyProducer", "send"),
           accessType = DataAccessType.Write,
           resourceType = "kafka",
           scanner = "pekko-kafka",
@@ -692,7 +692,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
 
       val manual = ManualDeclarations(
         entries = List(
-          ManualEntry("OtherClass", Some("publish"), DataAccessType.Write, "kafka", "other-topic", Some("Kafka"), strict = false),
+          ManualEntry("", "OtherClass", Some("publish"), DataAccessType.Write, "kafka", "other-topic", Some("Kafka"), strict = false),
         ),
       )
 
@@ -704,7 +704,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
     "strict method-level throws when no match exists" in {
       val autoDetected = List(
         DiscoveredIntegration(
-          method = MethodRef("MyProducer", "send"),
+          method = MethodRef("", "MyProducer", "send"),
           accessType = DataAccessType.Write,
           resourceType = "kafka",
           scanner = "pekko-kafka",
@@ -716,7 +716,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
 
       val manual = ManualDeclarations(
         entries = List(
-          ManualEntry("NonExistent", Some("publish"), DataAccessType.Write, "kafka", "topic", Some("Kafka")),
+          ManualEntry("", "NonExistent", Some("publish"), DataAccessType.Write, "kafka", "topic", Some("Kafka")),
         ),
       )
 
@@ -730,7 +730,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
     "class-level override replaces all of resourceType with cross-product" in {
       val autoDetected = List(
         DiscoveredIntegration(
-          method = MethodRef("Handler", "methodA"),
+          method = MethodRef("", "Handler", "methodA"),
           accessType = DataAccessType.Write,
           resourceType = "kafka",
           scanner = "pekko-kafka",
@@ -739,7 +739,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
           group = Some("Kafka"),
         ),
         DiscoveredIntegration(
-          method = MethodRef("Handler", "methodB"),
+          method = MethodRef("", "Handler", "methodB"),
           accessType = DataAccessType.Write,
           resourceType = "kafka",
           scanner = "pekko-kafka",
@@ -748,7 +748,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
           group = Some("Kafka"),
         ),
         DiscoveredIntegration(
-          method = MethodRef("Handler", "query"),
+          method = MethodRef("", "Handler", "query"),
           accessType = DataAccessType.Read,
           resourceType = "database",
           scanner = "doobie",
@@ -759,8 +759,8 @@ class TastyLineageScannerTest extends AnyFreeSpec {
 
       val manual = ManualDeclarations(
         entries = List(
-          ManualEntry("Handler", None, DataAccessType.Write, "kafka", "topic.a", Some("Kafka")),
-          ManualEntry("Handler", None, DataAccessType.Write, "kafka", "topic.b", Some("Kafka")),
+          ManualEntry("", "Handler", None, DataAccessType.Write, "kafka", "topic.a", Some("Kafka")),
+          ManualEntry("", "Handler", None, DataAccessType.Write, "kafka", "topic.b", Some("Kafka")),
         ),
       )
 
@@ -783,7 +783,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
     "strict class-level throws on unmatched override" in {
       val autoDetected = List(
         DiscoveredIntegration(
-          method = MethodRef("Other", "m"),
+          method = MethodRef("", "Other", "m"),
           accessType = DataAccessType.Write,
           resourceType = "database",
           scanner = "doobie",
@@ -794,7 +794,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
 
       val manual = ManualDeclarations(
         entries = List(
-          ManualEntry("NonExistent", None, DataAccessType.Write, "kafka", "topic", Some("Kafka")),
+          ManualEntry("", "NonExistent", None, DataAccessType.Write, "kafka", "topic", Some("Kafka")),
         ),
       )
 
@@ -808,7 +808,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
     "lenient class-level ignores unmatched override" in {
       val autoDetected = List(
         DiscoveredIntegration(
-          method = MethodRef("Other", "m"),
+          method = MethodRef("", "Other", "m"),
           accessType = DataAccessType.Write,
           resourceType = "database",
           scanner = "doobie",
@@ -819,7 +819,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
 
       val manual = ManualDeclarations(
         entries = List(
-          ManualEntry("NonExistent", None, DataAccessType.Write, "kafka", "topic", Some("Kafka"), strict = false),
+          ManualEntry("", "NonExistent", None, DataAccessType.Write, "kafka", "topic", Some("Kafka"), strict = false),
         ),
       )
 
@@ -831,7 +831,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
     "per-entry strictness: strict entry throws while lenient entry passes" in {
       val autoDetected = List(
         DiscoveredIntegration(
-          method = MethodRef("MyProducer", "send"),
+          method = MethodRef("", "MyProducer", "send"),
           accessType = DataAccessType.Write,
           resourceType = "kafka",
           scanner = "pekko-kafka",
@@ -844,9 +844,9 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       // First entry matches, second is lenient (no match but OK), third is strict (no match → error)
       val manual = ManualDeclarations(
         entries = List(
-          ManualEntry("MyProducer", Some("send"), DataAccessType.Write, "kafka", "real-topic", Some("Kafka")),
-          ManualEntry("OtherClass", Some("publish"), DataAccessType.Write, "kafka", "other-topic", Some("Kafka"), strict = false),
-          ManualEntry("Missing", None, DataAccessType.Write, "kafka", "fail-topic", Some("Kafka")),
+          ManualEntry("", "MyProducer", Some("send"), DataAccessType.Write, "kafka", "real-topic", Some("Kafka")),
+          ManualEntry("", "OtherClass", Some("publish"), DataAccessType.Write, "kafka", "other-topic", Some("Kafka"), strict = false),
+          ManualEntry("", "Missing", None, DataAccessType.Write, "kafka", "fail-topic", Some("Kafka")),
         ),
       )
 
@@ -860,7 +860,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
     "empty ManualDeclarations passes through unchanged" in {
       val autoDetected = List(
         DiscoveredIntegration(
-          method = MethodRef("A", "b"),
+          method = MethodRef("", "A", "b"),
           accessType = DataAccessType.Read,
           resourceType = "database",
           scanner = "doobie",
@@ -899,11 +899,11 @@ class TastyLineageScannerTest extends AnyFreeSpec {
 
     "propagates effective access types" in {
       // UserGrpcApi.getBalance: grpc Write (server) + doobie Read (transitive) → ReadWrite
-      val apiGetBalance = result.findMethod(MethodRef("UserGrpcApi", "getBalance"))
+      val apiGetBalance = result.findMethod(MethodRef(pkg, "UserGrpcApi", "getBalance"))
       apiGetBalance.map(_.effectiveAccess) shouldBe Some(DataAccessType.ReadWrite)
 
       // UserGrpcApi.deposit: grpc Write (server) + grpc Read (client) + doobie Write (transitive) → ReadWrite
-      val apiDeposit = result.findMethod(MethodRef("UserGrpcApi", "deposit"))
+      val apiDeposit = result.findMethod(MethodRef(pkg, "UserGrpcApi", "deposit"))
       apiDeposit.map(_.effectiveAccess) shouldBe Some(DataAccessType.ReadWrite)
     }
 
@@ -911,7 +911,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       result.lineageChains should not be empty
 
       // getBalance chains: 1 doobie + 1 grpc server = 2
-      val balanceChains = result.lineageFrom(MethodRef("UserGrpcApi", "getBalance"))
+      val balanceChains = result.lineageFrom(MethodRef(pkg, "UserGrpcApi", "getBalance"))
       balanceChains should have size 2
 
       val balanceDoobieChains = balanceChains.filter(_.integration.scanner == "doobie")
@@ -925,7 +925,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       balanceGrpcChains.head.integration.target shouldBe "UserService/getBalance"
 
       // deposit chains: 2 doobie + 1 grpc server + 1 grpc client = 4
-      val depositChains = result.lineageFrom(MethodRef("UserGrpcApi", "deposit"))
+      val depositChains = result.lineageFrom(MethodRef(pkg, "UserGrpcApi", "deposit"))
       depositChains should have size 4
       depositChains.filter(_.integration.scanner == "doobie").map(_.integration.target).toSet shouldBe Set("users", "transactions")
       depositChains.filter(_.integration.scanner == "grpc").map(_.integration.target).toSet shouldBe Set("UserService/deposit", "RateService/getRate")

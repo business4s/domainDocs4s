@@ -48,16 +48,16 @@ class TastyPekkoJournalScanner(using ctx: Context) extends IntegrationScanner {
     val classes = TastyUtils.userClasses(pkg)
     val objects = TastyUtils.moduleClasses(pkg)
     classes.flatMap { cls =>
-      scanClassicPersistentActor(cls) ++ scanEventSourcedBehavior(cls) ++ scanJournalReader(cls) ++ scanProjectionSource(cls)
+      scanClassicPersistentActor(packageName, cls) ++ scanEventSourcedBehavior(packageName, cls) ++ scanJournalReader(packageName, cls) ++ scanProjectionSource(packageName, cls)
     } ++ objects.flatMap { cls =>
-      scanEventSourcedBehavior(cls) ++ scanJournalReader(cls) ++ scanProjectionSource(cls)
+      scanEventSourcedBehavior(packageName, cls) ++ scanJournalReader(packageName, cls) ++ scanProjectionSource(packageName, cls)
     }
   }
 
   // ── Write side: Classic PersistentActor ──────────────────────────────────
 
   /** Classic: class extends PersistentActor → Write to journal. */
-  private def scanClassicPersistentActor(cls: ClassSymbol): List[DiscoveredIntegration] = {
+  private def scanClassicPersistentActor(packageName: String, cls: ClassSymbol): List[DiscoveredIntegration] = {
     val className = cls.name.toString
     val isPersistent = try cls.parents.exists { parentType =>
       TastyUtils.extractTypeName(parentType).exists(PersistentActorNames.contains)
@@ -65,7 +65,7 @@ class TastyPekkoJournalScanner(using ctx: Context) extends IntegrationScanner {
     if (!isPersistent) return Nil
 
     List(DiscoveredIntegration(
-      method = MethodRef(className, "receiveCommand"),
+      method = MethodRef(packageName, className, "receiveCommand"),
       accessType = DataAccessType.Write,
       resourceType = "journal",
       scanner = "pekko-journal",
@@ -78,7 +78,7 @@ class TastyPekkoJournalScanner(using ctx: Context) extends IntegrationScanner {
   // ── Write side: Typed EventSourcedBehavior ───────────────────────────────
 
   /** Typed: method body references EventSourcedBehavior → Write to journal. */
-  private def scanEventSourcedBehavior(cls: ClassSymbol): List[DiscoveredIntegration] = {
+  private def scanEventSourcedBehavior(packageName: String, cls: ClassSymbol): List[DiscoveredIntegration] = {
     val className = cls.name.toString.stripSuffix("$")
     cls.declarations.collect {
       case ts: TermSymbol if ts.tree.exists(_.isInstanceOf[DefDef]) =>
@@ -89,7 +89,7 @@ class TastyPekkoJournalScanner(using ctx: Context) extends IntegrationScanner {
               val detector = new EventSourcedBehaviorDetector
               detector.traverse(rhs)
               if (detector.found) List(DiscoveredIntegration(
-                method = MethodRef(className, methodName),
+                method = MethodRef(packageName, className, methodName),
                 accessType = DataAccessType.Write,
                 resourceType = "journal",
                 scanner = "pekko-journal",
@@ -107,7 +107,7 @@ class TastyPekkoJournalScanner(using ctx: Context) extends IntegrationScanner {
   // ── Read side: Journal query consumers ───────────────────────────────────
 
   /** Read: val fields whose type inherits ReadJournal → calls to those fields are Read from journal. */
-  private def scanJournalReader(cls: ClassSymbol): List[DiscoveredIntegration] = {
+  private def scanJournalReader(packageName: String, cls: ClassSymbol): List[DiscoveredIntegration] = {
     val className = cls.name.toString.stripSuffix("$")
     val journalFields = resolveJournalFieldTypes(cls)
     if (journalFields.isEmpty) return Nil
@@ -122,7 +122,7 @@ class TastyPekkoJournalScanner(using ctx: Context) extends IntegrationScanner {
               collector.traverse(rhs)
               collector.calls.distinct.map { fieldName =>
                 DiscoveredIntegration(
-                  method = MethodRef(className, methodName),
+                  method = MethodRef(packageName, className, methodName),
                   accessType = DataAccessType.Read,
                   resourceType = "journal",
                   scanner = "pekko-journal",
@@ -171,7 +171,7 @@ class TastyPekkoJournalScanner(using ctx: Context) extends IntegrationScanner {
   // ── Read side: Projection source providers ──────────────────────────────
 
   /** Projection sources: method body references EventSourcedProvider or calls readJournalFor → Read from journal. */
-  private def scanProjectionSource(cls: ClassSymbol): List[DiscoveredIntegration] = {
+  private def scanProjectionSource(packageName: String, cls: ClassSymbol): List[DiscoveredIntegration] = {
     val className = cls.name.toString.stripSuffix("$")
     cls.declarations.collect {
       case ts: TermSymbol if ts.tree.exists(_.isInstanceOf[DefDef]) =>
@@ -182,7 +182,7 @@ class TastyPekkoJournalScanner(using ctx: Context) extends IntegrationScanner {
               val detector = new ProjectionSourceDetector
               detector.traverse(rhs)
               if (detector.found) List(DiscoveredIntegration(
-                method = MethodRef(className, methodName),
+                method = MethodRef(packageName, className, methodName),
                 accessType = DataAccessType.Read,
                 resourceType = "journal",
                 scanner = "pekko-journal",

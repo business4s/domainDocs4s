@@ -4,17 +4,19 @@ import scala.quoted.*
 
 object MethodRefMacro {
 
-  /** Extract (className, methodName) from a `_.methodName` lambda at compile time. */
-  inline def extract[T](inline selector: T => Any): (String, String) =
+  /** Extract (packageName, className, methodName) from a `_.methodName` lambda at compile time. */
+  inline def extract[T](inline selector: T => Any): (String, String, String) =
     ${ extractImpl[T]('selector) }
 
-  private def extractImpl[T: Type](selector: Expr[T => Any])(using Quotes): Expr[(String, String)] = {
+  private def extractImpl[T: Type](selector: Expr[T => Any])(using Quotes): Expr[(String, String, String)] = {
     import quotes.reflect.*
 
-    val className = TypeRepr.of[T].typeSymbol.name
+    val sym = TypeRepr.of[T].typeSymbol
+    val className = sym.name
+    val packageName = sym.owner.fullName
     val methodName = extractMethodName(selector.asTerm)
 
-    Expr((className, methodName))
+    Expr((packageName, className, methodName))
   }
 
   private def extractMethodName(using Quotes)(tree: quotes.reflect.Tree): String = {

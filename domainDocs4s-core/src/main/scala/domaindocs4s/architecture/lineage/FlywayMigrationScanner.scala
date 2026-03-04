@@ -49,7 +49,7 @@ class FlywayMigrationScanner(
   }
 
   private def parseStatement(stmt: String, version: String, filename: String): List[DiscoveredIntegration] = {
-    val method = MethodRef("flyway", version)
+    val method = MethodRef("", "flyway", version)
 
     CreateViewPattern.findFirstMatchIn(stmt) match {
       case Some(m) =>

@@ -56,6 +56,23 @@ private[lineage] object TastyUtils {
     case at: AndType     => extractTypeName(at.first).orElse(extractTypeName(at.second))
     case _               => None
   }
+
+  /** Extract the package name from a TypeRef's prefix. */
+  def typeRefPackage(tr: TypeRef): String =
+    try {
+      tr.prefix match {
+        case pr: PackageRef => pr.symbol.fullName.toString
+        case _              => ""
+      }
+    } catch { case _: Exception => "" }
+}
+
+/** Extract (packageName, className) from a ClassTag's runtime class. */
+private[lineage] def splitClassTag(ct: reflect.ClassTag[?]): (String, String) = {
+  val fqn = ct.runtimeClass.getName.stripSuffix("$")
+  val lastDot = fqn.lastIndexOf('.')
+  if (lastDot >= 0) (fqn.substring(0, lastDot), fqn.substring(lastDot + 1))
+  else ("", fqn)
 }
 
 // ============================================================================
@@ -95,7 +112,7 @@ object DataAccessType {
 // ── Phase 0: TASTy extraction ────────────────────────────────────────────────
 
 /** Reference to a specific method in a class. */
-case class MethodRef(className: String, methodName: String) {
+case class MethodRef(packageName: String, className: String, methodName: String) {
   def display: String = s"$className.$methodName"
 }
 
@@ -106,7 +123,7 @@ case class ExtractedMethod(
     methodName: String,
     calls: List[MethodRef],
 ) {
-  def ref: MethodRef = MethodRef(className, methodName)
+  def ref: MethodRef = MethodRef(packageName, className, methodName)
 }
 
 // ── Phase 1: Scanner output ──────────────────────────────────────────────────
@@ -184,7 +201,7 @@ object IntegrationGroupConfig {
   class Builder {
     private val entries = scala.collection.mutable.Map.empty[String, String]
     def group[T: reflect.ClassTag](groupName: String): Builder = {
-      entries += (reflect.classTag[T].runtimeClass.getSimpleName.stripSuffix("$") -> groupName)
+      entries += (splitClassTag(reflect.classTag[T])._2 -> groupName)
       this
     }
     def build: IntegrationGroupConfig = IntegrationGroupConfig(entries.toMap)
@@ -215,7 +232,7 @@ object ClassLevelConfig {
 
     def foldByGroup(types: Set[String]): Builder = { _foldByGroup = types; this }
     def hide[T: reflect.ClassTag]: Builder = {
-      _hidden += reflect.classTag[T].runtimeClass.getSimpleName.stripSuffix("$")
+      _hidden += splitClassTag(reflect.classTag[T])._2
       this
     }
     def groupByPackage(scanBase: String): Builder = { _classGrouping = ClassGrouping.ByPackage(scanBase); this }
