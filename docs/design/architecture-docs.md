@@ -1125,13 +1125,10 @@ Based on concrete investigation of the reference service, here is what the scann
 | Gap                             | Nodes                | Edges      | Solution                                |
 |---------------------------------|----------------------|------------|-----------------------------------------|
 | **Pekko Kafka producers**       | 2 topics             | 2 edges    | Pekko Kafka scanner (§15.3.1)           |
-| **Flyway-managed views/tables** | 1 view + schema info | 2 edges    | Flyway migration scanner (§15.3.2)      |
 | **S3 uploads**                  | 1 node               | 2 edges    | S3/AWS scanner (§15.3.3)                |
 | **Manual/external nodes**       | 1 (data warehouse)   | 1 edge     | Manual node injection (§15.3.4)         |
-| **Subgraph organization**       | 8 groups             | —          | Class grouping enhancements (§15.3.5)   |
 
-The remaining ~5% gap is downstream infrastructure (data warehouses) and DB view joins — addressable via
-manual node injection and the flyway scanner respectively.
+The remaining gaps are downstream infrastructure (data warehouses), Pekko Kafka producers, and S3 uploads.
 
 ### 15.3 Planned Improvements
 

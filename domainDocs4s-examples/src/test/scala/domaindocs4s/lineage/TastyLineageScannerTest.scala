@@ -2,6 +2,7 @@ package domaindocs4s.lineage
 
 import domaindocs4s.architecture.lineage.*
 import domaindocs4s.architecture.lineage.example.{EventPublisher, UserGrpcApi, UserRepo, UserService}
+import domaindocs4s.architecture.lineage.example.pekko.{KafkaFlexiFlowProducer, KafkaPlainSinkProducer}
 import domaindocs4s.collector.TastyContext
 import org.scalatest.freespec.AnyFreeSpec
 import org.scalatest.matchers.should.Matchers.*
@@ -126,7 +127,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
     "produces kafka integrations with correct fields" in {
       val manual = ManualScanner.builder
         .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
-        .build.scan(Nil)
+        .build.methodEntries
 
       manual should have size 1
       val di = manual.head
@@ -142,7 +143,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
     "uses default Kafka cluster as group" in {
       val manual = ManualScanner.builder
         .method[UserRepo](_.getBalance).reads.kafka("some.topic")
-        .build.scan(Nil)
+        .build.methodEntries
 
       manual.head.group shouldBe Some("Kafka")
     }
@@ -150,7 +151,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
     "supports custom cluster name" in {
       val manual = ManualScanner.builder
         .method[UserRepo](_.getBalance).reads.kafka("analytics.events", cluster = "Analytics")
-        .build.scan(Nil)
+        .build.methodEntries
 
       manual.head.group shouldBe Some("Analytics")
     }
@@ -158,7 +159,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
     "supports generic custom resource type" in {
       val manual = ManualScanner.builder
         .method[UserRepo](_.getBalance).writes.custom("s3", "my-bucket/exports", group = Some("S3"))
-        .build.scan(Nil)
+        .build.methodEntries
 
       val di = manual.head
       di.resourceType shouldBe "s3"
@@ -170,7 +171,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
     "composes with automatic scanner results in LineageBuilder" in {
       val manualIntegrations = ManualScanner.builder
         .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
-        .build.scan(Nil)
+        .build.methodEntries
 
       val allIntegrations = enrichment.enrich(doobieIntegrations ++ grpcIntegrations ++ manualIntegrations)
       val resultWithManual = LineageBuilder.build(callGraph, allIntegrations)
@@ -188,7 +189,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
         .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
         .method[UserGrpcApi](_.getHistory).reads.kafka("user.history-events", cluster = "Analytics")
         .method[UserService](_.deposit).writes.custom("audit", "audit-log", group = Some("Audit"))
-        .build.scan(Nil)
+        .build.methodEntries
 
       manual should have size 3
       manual.count(_.resourceType == "kafka") shouldBe 2
@@ -237,13 +238,13 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       espReads.head.evidence should include("EventSourcedProvider")
     }
 
-    "detects PersistenceQuery.readJournalFor as Read from journal" in {
+    "detects PersistenceQuery usage as Read from journal" in {
       val pqReads = pekkoIntegrations.filter { di =>
         di.method.className == "QueryBasedProjection" && di.accessType == DataAccessType.Read
       }
       pqReads should have size 1
       pqReads.head.method.methodName shouldBe "createReader"
-      pqReads.head.evidence should include("readJournalFor")
+      pqReads.head.evidence should include("PersistenceQuery")
     }
 
     "all pekko integrations have resourceType journal and scanner pekko-journal" in {
@@ -333,7 +334,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
     // Build a result that includes kafka (manual) integrations, matching RenderLineage
     val manualIntegrations = ManualScanner.builder
       .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
-      .build.scan(Nil)
+      .build.methodEntries
     val allIntegrations = enrichment.enrich(doobieIntegrations ++ grpcIntegrations ++ manualIntegrations)
     val resultWithManual = LineageBuilder.build(callGraph, allIntegrations)
 
@@ -566,6 +567,267 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       val usersResource = merged.filter(r => r.target == "users" && r.group.isEmpty)
       usersResource should have size 1
       usersResource.head.discoveries.map(_.scanner).toSet should contain allOf ("doobie", "flyway")
+    }
+  }
+
+  "TastyPekkoKafkaScanner" - {
+
+    val pekkoPkg = "domaindocs4s.architecture.lineage.example.pekko"
+    val kafkaIntegrations = new TastyPekkoKafkaScanner().scan(List(pekkoPkg))
+
+    "detects Producer usage (flexiFlow) as Write to kafka" in {
+      val flexiFlowWrites = kafkaIntegrations.filter { di =>
+        di.method.className == "KafkaFlexiFlowProducer" && di.accessType == DataAccessType.Write
+      }
+      flexiFlowWrites should have size 1
+      flexiFlowWrites.head.resourceType shouldBe "kafka"
+      flexiFlowWrites.head.evidence should include("Producer")
+    }
+
+    "detects Producer usage (plainSink) as Write to kafka" in {
+      val plainSinkWrites = kafkaIntegrations.filter { di =>
+        di.method.className == "KafkaPlainSinkProducer" && di.accessType == DataAccessType.Write
+      }
+      plainSinkWrites should have size 1
+      plainSinkWrites.head.resourceType shouldBe "kafka"
+      plainSinkWrites.head.evidence should include("Producer")
+    }
+
+    "all pekko-kafka integrations have scanner pekko-kafka and group Kafka" in {
+      val kafkaOnly = kafkaIntegrations.filter(_.scanner == "pekko-kafka")
+      kafkaOnly should not be empty
+      kafkaOnly.foreach { di =>
+        di.resourceType shouldBe "kafka"
+        di.group shouldBe Some("Kafka")
+      }
+    }
+
+    "target includes class and method name as placeholder" in {
+      val flexiFlow = kafkaIntegrations.find(_.method.className == "KafkaFlexiFlowProducer")
+      flexiFlow.get.target should include("KafkaFlexiFlowProducer")
+      flexiFlow.get.target should include("createFlow")
+    }
+  }
+
+  "ManualDeclarations" - {
+
+    "method-level upsert replaces target when match exists" in {
+      val autoDetected = List(
+        DiscoveredIntegration(
+          method = MethodRef("MyProducer", "send"),
+          accessType = DataAccessType.Write,
+          resourceType = "kafka",
+          scanner = "pekko-kafka",
+          target = "unknown topic from MyProducer.send",
+          evidence = "calls Producer.plainSink",
+          group = Some("Kafka"),
+        ),
+      )
+
+      val manual = ManualDeclarations(
+        methodEntries = List(
+          DiscoveredIntegration(
+            method = MethodRef("MyProducer", "send"),
+            accessType = DataAccessType.Write,
+            resourceType = "kafka",
+            scanner = "manual",
+            target = "my-actual-topic",
+            evidence = "manual declaration",
+            group = Some("Kafka"),
+          ),
+        ),
+      )
+
+      val result = manual.apply(autoDetected)
+      result should have size 1
+      result.head.target shouldBe "my-actual-topic"
+      result.head.scanner shouldBe "manual"
+    }
+
+    "method-level upsert adds when no match exists" in {
+      val autoDetected = List(
+        DiscoveredIntegration(
+          method = MethodRef("MyProducer", "send"),
+          accessType = DataAccessType.Write,
+          resourceType = "kafka",
+          scanner = "pekko-kafka",
+          target = "unknown topic from MyProducer.send",
+          evidence = "calls Producer.plainSink",
+          group = Some("Kafka"),
+        ),
+      )
+
+      val manual = ManualDeclarations(
+        methodEntries = List(
+          DiscoveredIntegration(
+            method = MethodRef("OtherClass", "publish"),
+            accessType = DataAccessType.Write,
+            resourceType = "kafka",
+            scanner = "manual",
+            target = "other-topic",
+            evidence = "manual declaration",
+            group = Some("Kafka"),
+          ),
+        ),
+      )
+
+      val result = manual.apply(autoDetected)
+      result should have size 2
+      result.map(_.target).toSet shouldBe Set("unknown topic from MyProducer.send", "other-topic")
+    }
+
+    "class-level override replaces all of resourceType with cross-product" in {
+      val autoDetected = List(
+        DiscoveredIntegration(
+          method = MethodRef("Handler", "methodA"),
+          accessType = DataAccessType.Write,
+          resourceType = "kafka",
+          scanner = "pekko-kafka",
+          target = "unknown topic from Handler.methodA",
+          evidence = "calls Producer.flexiFlow",
+          group = Some("Kafka"),
+        ),
+        DiscoveredIntegration(
+          method = MethodRef("Handler", "methodB"),
+          accessType = DataAccessType.Write,
+          resourceType = "kafka",
+          scanner = "pekko-kafka",
+          target = "unknown topic from Handler.methodB",
+          evidence = "calls Producer.plainSink",
+          group = Some("Kafka"),
+        ),
+        DiscoveredIntegration(
+          method = MethodRef("Handler", "query"),
+          accessType = DataAccessType.Read,
+          resourceType = "database",
+          scanner = "doobie",
+          target = "users",
+          evidence = "SELECT * FROM users",
+        ),
+      )
+
+      val manual = ManualDeclarations(
+        classOverrides = List(
+          ManualClassOverride(
+            className = "Handler",
+            resourceType = "kafka",
+            targets = List(
+              ManualClassTarget("topic.a", DataAccessType.Write, Some("Kafka")),
+              ManualClassTarget("topic.b", DataAccessType.Write, Some("Kafka")),
+            ),
+          ),
+        ),
+      )
+
+      val result = manual.apply(autoDetected)
+      // 2 methods x 2 topics = 4 kafka + 1 database = 5
+      result should have size 5
+      val kafkaResults = result.filter(_.resourceType == "kafka")
+      kafkaResults should have size 4
+      kafkaResults.map(_.target).toSet shouldBe Set("topic.a", "topic.b")
+      kafkaResults.foreach { di =>
+        di.scanner shouldBe "manual"
+        di.evidence shouldBe "class-level declaration"
+      }
+      // database integration untouched
+      val dbResults = result.filter(_.resourceType == "database")
+      dbResults should have size 1
+      dbResults.head.target shouldBe "users"
+    }
+
+    "strict mode throws on unmatched class-level override" in {
+      val autoDetected = List(
+        DiscoveredIntegration(
+          method = MethodRef("Other", "m"),
+          accessType = DataAccessType.Write,
+          resourceType = "database",
+          scanner = "doobie",
+          target = "users",
+          evidence = "INSERT INTO users",
+        ),
+      )
+
+      val manual = ManualDeclarations(
+        classOverrides = List(
+          ManualClassOverride(
+            className = "NonExistent",
+            resourceType = "kafka",
+            targets = List(ManualClassTarget("topic", DataAccessType.Write, Some("Kafka"))),
+          ),
+        ),
+        strict = true,
+      )
+
+      val error = intercept[ManualOverrideError] {
+        manual.apply(autoDetected)
+      }
+      error.unmatched should have size 1
+      error.unmatched.head.className shouldBe "NonExistent"
+    }
+
+    "lenient mode ignores unmatched class-level override" in {
+      val autoDetected = List(
+        DiscoveredIntegration(
+          method = MethodRef("Other", "m"),
+          accessType = DataAccessType.Write,
+          resourceType = "database",
+          scanner = "doobie",
+          target = "users",
+          evidence = "INSERT INTO users",
+        ),
+      )
+
+      val manual = ManualDeclarations(
+        classOverrides = List(
+          ManualClassOverride(
+            className = "NonExistent",
+            resourceType = "kafka",
+            targets = List(ManualClassTarget("topic", DataAccessType.Write, Some("Kafka"))),
+          ),
+        ),
+        strict = false,
+      )
+
+      val result = manual.apply(autoDetected)
+      result should have size 1
+      result.head.target shouldBe "users"
+    }
+
+    "empty ManualDeclarations passes through unchanged" in {
+      val autoDetected = List(
+        DiscoveredIntegration(
+          method = MethodRef("A", "b"),
+          accessType = DataAccessType.Read,
+          resourceType = "database",
+          scanner = "doobie",
+          target = "users",
+          evidence = "SELECT",
+        ),
+      )
+
+      val result = ManualDeclarations.empty.apply(autoDetected)
+      result shouldBe autoDetected
+    }
+
+    "PekkoKafkaScanner + ManualScanner override integration" in {
+      val pekkoPkg = "domaindocs4s.architecture.lineage.example.pekko"
+      val kafkaDetected = new TastyPekkoKafkaScanner().scan(List(pekkoPkg))
+
+      val manual = ManualScanner.builder
+        .cls[KafkaFlexiFlowProducer].writes.kafka("events.flexiflow-topic")
+        .cls[KafkaPlainSinkProducer].writes.kafka("events.plainsink-topic")
+        .build
+
+      val result = manual.apply(kafkaDetected)
+      val flexiFlowResults = result.filter(_.method.className == "KafkaFlexiFlowProducer")
+      flexiFlowResults should have size 1
+      flexiFlowResults.head.target shouldBe "events.flexiflow-topic"
+      flexiFlowResults.head.scanner shouldBe "manual"
+
+      val plainSinkResults = result.filter(_.method.className == "KafkaPlainSinkProducer")
+      plainSinkResults should have size 1
+      plainSinkResults.head.target shouldBe "events.plainsink-topic"
+      plainSinkResults.head.scanner shouldBe "manual"
     }
   }
 

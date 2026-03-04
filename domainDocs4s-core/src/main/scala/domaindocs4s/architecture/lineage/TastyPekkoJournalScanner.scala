@@ -28,7 +28,7 @@ import scala.collection.mutable.ListBuffer
 //
 // Read side — Projection source providers:
 //   method body references EventSourcedProvider (any method)
-//   method body calls readJournalFor (PersistenceQuery pattern)
+//   method body references PersistenceQuery (any method, e.g. readJournalFor, getReadJournalFor)
 //   → Read from journal
 // ============================================================================
 
@@ -38,7 +38,7 @@ class TastyPekkoJournalScanner(using ctx: Context) extends IntegrationScanner {
   private val EventSourcedBehaviorName = "EventSourcedBehavior"
   private val ReadJournalName = "ReadJournal"
   private val EventSourcedProviderName = "EventSourcedProvider"
-  private val ReadJournalForMethod = "readJournalFor"
+  private val PersistenceQueryName = "PersistenceQuery"
 
   def scan(packages: List[String]): List[DiscoveredIntegration] =
     packages.flatMap(scanPackage)
@@ -234,26 +234,27 @@ class TastyPekkoJournalScanner(using ctx: Context) extends IntegrationScanner {
       if (journalFields.contains(fieldName)) calls += fieldName
   }
 
-  /** TreeTraverser that detects EventSourcedProvider references or readJournalFor calls. */
+  /** TreeTraverser that detects EventSourcedProvider or PersistenceQuery references. */
   private class ProjectionSourceDetector extends TreeTraverser {
     var foundEventSourcedProvider: Boolean = false
-    var foundReadJournalFor: Boolean = false
+    var foundPersistenceQuery: Boolean = false
 
-    def found: Boolean = foundEventSourcedProvider || foundReadJournalFor
+    def found: Boolean = foundEventSourcedProvider || foundPersistenceQuery
 
-    def evidence: String = (foundEventSourcedProvider, foundReadJournalFor) match {
-      case (true, true)   => "calls EventSourcedProvider, readJournalFor"
+    def evidence: String = (foundEventSourcedProvider, foundPersistenceQuery) match {
+      case (true, true)   => "calls EventSourcedProvider, PersistenceQuery"
       case (true, false)  => "calls EventSourcedProvider"
-      case (false, true)  => "calls readJournalFor"
+      case (false, true)  => "calls PersistenceQuery"
       case (false, false) => ""
     }
 
     override def traverse(tree: Tree): Unit = {
-      if (!(foundEventSourcedProvider && foundReadJournalFor)) {
+      if (!(foundEventSourcedProvider && foundPersistenceQuery)) {
         tree match {
           case Ident(name) if TastyUtils.simpleName(name) == EventSourcedProviderName     => foundEventSourcedProvider = true
           case Select(_, name) if TastyUtils.simpleName(name) == EventSourcedProviderName => foundEventSourcedProvider = true
-          case Select(_, name) if TastyUtils.simpleName(name) == ReadJournalForMethod     => foundReadJournalFor = true
+          case Ident(name) if TastyUtils.simpleName(name) == PersistenceQueryName         => foundPersistenceQuery = true
+          case Select(_, name) if TastyUtils.simpleName(name) == PersistenceQueryName     => foundPersistenceQuery = true
           case _ =>
         }
         super.traverse(tree)

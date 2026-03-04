@@ -16,6 +16,10 @@ import scala.util.Using
 //   ALTER TABLE [schema.]name           → Write
 //
 // Migration files must follow Flyway naming: V<version>__<description>.sql
+//
+// SQL parsing is regex-based. For more robust handling (especially views with
+// subqueries, CTEs, or complex JOINs), consider replacing with JSqlParser
+// (com.github.jsqlparser:jsqlparser) which provides a full DDL/DML AST.
 // ============================================================================
 
 class FlywayMigrationScanner(

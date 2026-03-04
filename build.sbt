@@ -56,6 +56,7 @@ lazy val examples = (project in file("domainDocs4s-examples"))
       "org.apache.pekko" %% "pekko-persistence-typed"          % "1.4.0",
       "org.apache.pekko" %% "pekko-persistence-query"          % "1.4.0",
       "org.apache.pekko" %% "pekko-projection-eventsourced"    % "1.1.0",
+      "org.apache.pekko" %% "pekko-connectors-kafka"           % "1.1.0",
     ),
     semanticdbEnabled := true,
     // suppress warnings from protobuf/scalapb generated code

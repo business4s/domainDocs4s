@@ -25,10 +25,11 @@ object RenderLineage {
         new TastyFs2GrpcScanner(),
         new TastyPekkoJournalScanner(),
         new TastySlickScanner(),
-        ManualScanner.builder
-          .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
-          .build,
+        new TastyPekkoKafkaScanner(),
       ),
+      manual = ManualScanner.builder
+        .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
+        .build,
       enrichment = IntegrationGroupConfig.builder
         .group[UserRepo]("user-db")
         .build,
