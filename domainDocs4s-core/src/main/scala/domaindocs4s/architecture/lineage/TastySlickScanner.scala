@@ -111,7 +111,7 @@ class TastySlickScanner(
 
   /** Produce an obviously unresolved placeholder when the table name is a runtime variable. */
   private def unresolvedTableName(className: String): String =
-    s"<unresolved:$className>"
+    TastySlickScanner.unresolvedTableName(className)
 
   /** Check if a tree is a Table constructor call — Select(New(TypeTree), <init>) where TypeTree resolves to a Table type. */
   private def isTableInit(tree: Tree): Boolean = tree match {
@@ -425,4 +425,21 @@ class TastySlickScanner(
       target = table,
       evidence = evidence,
     )
+}
+
+object TastySlickScanner {
+
+  /** Construct the placeholder name used when a Slick Table class has a runtime (non-literal) table name.
+    * Use this in [[LineageAdjustments]] resource renames to stay in sync with the scanner output.
+    *
+    * Prefer the `ClassTag` overload when the Table class is accessible as a type.
+    * The string overload is needed when the Table class is an inner class of an anonymous class
+    * (common with the `Repository.apply()` factory pattern).
+    */
+  def unresolvedTableName(className: String): String =
+    s"<unresolved:$className>"
+
+  /** Type-safe variant — extracts the simple class name from the ClassTag. */
+  def unresolvedTableName[T: reflect.ClassTag]: String =
+    unresolvedTableName(reflect.classTag[T].runtimeClass.getSimpleName)
 }
