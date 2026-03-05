@@ -24,15 +24,15 @@ class TastyFs2GrpcScanner(using ctx: Context) extends DeclarativeScanner(
       parentType = TypeMatcher.fqnEndsWith("Fs2Grpc"),
       accessType = DataAccessType.Write,
       emitPerMethod = true,
-      targetNaming = TargetNaming.FromTypeName(stripSuffix = "Fs2Grpc", includeMethod = true),
-      groupNaming = GroupNaming.FromTypeName(stripSuffix = "Fs2Grpc"),
+      target = Some(m => s"${m.typeName.getOrElse("").stripSuffix("Fs2Grpc")}/${m.calledMethod.getOrElse("")}"),
+      group = Some(m => m.typeName.map(_.stripSuffix("Fs2Grpc"))),
     ),
     // Client: field type *Fs2Grpc → Read, emit per call
     DetectionRule.FieldMethodCall(
       fieldType = TypeMatcher.fqnEndsWith("Fs2Grpc"),
       methods = MethodMapping.AnyMethod(DataAccessType.Read),
-      targetNaming = TargetNaming.FromTypeName(stripSuffix = "Fs2Grpc", includeMethod = true),
-      groupNaming = GroupNaming.FromTypeName(stripSuffix = "Fs2Grpc"),
+      target = Some(m => s"${m.typeName.getOrElse("").stripSuffix("Fs2Grpc")}/${m.calledMethod.getOrElse("")}"),
+      group = Some(m => m.typeName.map(_.stripSuffix("Fs2Grpc"))),
     ),
   ),
 )

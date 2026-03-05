@@ -35,38 +35,14 @@ object MethodMapping {
   case class AnyMethod(accessType: DataAccessType) extends MethodMapping
 }
 
-/** How to derive the integration target name. */
-sealed trait TargetNaming
-
-object TargetNaming {
-
-  /** Use the scanner's defaultTarget. */
-  case object ScannerDefault extends TargetNaming
-
-  /** Fixed target name. */
-  case class Fixed(name: String) extends TargetNaming
-
-  /** Target derived from the matched type's simple name, with optional suffix stripping and method inclusion. */
-  case class FromTypeName(stripSuffix: String = "", includeMethod: Boolean = false) extends TargetNaming
-
-  /** Placeholder target: "unknown <resourceType> from ClassName.methodName". */
-  case object MethodPlaceholder extends TargetNaming
-}
-
-/** How to derive the integration group name. */
-sealed trait GroupNaming
-
-object GroupNaming {
-
-  /** Use the scanner's default group. */
-  case object ScannerDefault extends GroupNaming
-
-  /** Fixed group name. */
-  case class Fixed(name: Option[String]) extends GroupNaming
-
-  /** Group derived from the matched type's simple name with suffix stripped. */
-  case class FromTypeName(stripSuffix: String = "") extends GroupNaming
-}
+/** Context provided to target/group naming lambdas in detection rules.
+  *
+  * @param typeName      simple name of the matched type (field type, parent type, or referenced type)
+  * @param className     name of the class being scanned
+  * @param methodName    name of the method being scanned
+  * @param calledMethod  the specific method called on a field or implemented from a parent
+  */
+type MatchContext = (typeName: Option[String], className: String, methodName: String, calledMethod: Option[String])
 
 /** A detection rule that defines how to identify an integration pattern. */
 sealed trait DetectionRule
@@ -85,14 +61,18 @@ object DetectionRule {
     *     writeMethods = Set("putObject", "copyObject"),
     *     readMethods = Set("getObject", "headObject"),
     *   ),
+    *   target = m => s"${m.typeName.getOrElse("unknown")}/${m.calledMethod.getOrElse("")}",
     * )
     * }}}
+    *
+    * @param target when None, uses the scanner's `defaultTarget`
+    * @param group  when None, uses the scanner's `group`
     */
   case class FieldMethodCall(
       fieldType: TypeMatcher,
       methods: MethodMapping,
-      targetNaming: TargetNaming = TargetNaming.ScannerDefault,
-      groupNaming: GroupNaming = GroupNaming.ScannerDefault,
+      target: Option[MatchContext => String] = None,
+      group: Option[MatchContext => Option[String]] = None,
   ) extends DetectionRule
 
   /** Detects when a class extends/implements a matching type.
@@ -106,16 +86,21 @@ object DetectionRule {
     *   parentType = TypeMatcher.fqnEndsWith("Fs2Grpc"),
     *   accessType = DataAccessType.Write,
     *   emitPerMethod = true,
+    *   target = m => s"${m.typeName.getOrElse("").stripSuffix("Fs2Grpc")}/${m.calledMethod.getOrElse("")}",
+    *   group = m => m.typeName.map(_.stripSuffix("Fs2Grpc")),
     * )
     * }}}
+    *
+    * @param target when None, uses the scanner's `defaultTarget`
+    * @param group  when None, uses the scanner's `group`
     */
   case class ClassExtends(
       parentType: TypeMatcher,
       accessType: DataAccessType,
       emitPerMethod: Boolean = false,
       methodName: String = "<class>",
-      targetNaming: TargetNaming = TargetNaming.ScannerDefault,
-      groupNaming: GroupNaming = GroupNaming.ScannerDefault,
+      target: Option[MatchContext => String] = None,
+      group: Option[MatchContext => Option[String]] = None,
   ) extends DetectionRule
 
   /** Detects when a matching type is referenced anywhere in a method body.
@@ -124,14 +109,18 @@ object DetectionRule {
     * DetectionRule.TypeReference(
     *   targetType = TypeMatcher("org.apache.pekko.kafka.scaladsl.Producer"),
     *   accessType = DataAccessType.Write,
+    *   target = m => s"unknown kafka from ${m.className}.${m.methodName}",
     * )
     * }}}
+    *
+    * @param target when None, uses the scanner's `defaultTarget`
+    * @param group  when None, uses the scanner's `group`
     */
   case class TypeReference(
       targetType: TypeMatcher,
       accessType: DataAccessType,
-      targetNaming: TargetNaming = TargetNaming.ScannerDefault,
-      groupNaming: GroupNaming = GroupNaming.ScannerDefault,
+      target: Option[MatchContext => String] = None,
+      group: Option[MatchContext => Option[String]] = None,
   ) extends DetectionRule
 }
 
@@ -148,6 +137,7 @@ object DetectionRule {
   *     DetectionRule.FieldMethodCall(
   *       fieldType = TypeMatcher("com.example.MyClient"),
   *       methods = MethodMapping.Named(writeMethods = Set("send")),
+  *       target = m => s"${m.typeName.getOrElse("unknown")}/${m.calledMethod.getOrElse("")}",
   *     ),
   *   ),
   * )
@@ -216,14 +206,15 @@ class DeclarativeScanner(
       collector.traverse(rhs)
       collector.calls.distinct.toList.map { case (fieldName, calledMethod, accessType) =>
         val typeName = matchingFields(fieldName)
+        val ctx: MatchContext = (typeName = typeName, className = className, methodName = methodName, calledMethod = Some(calledMethod))
         DiscoveredIntegration(
           method = MethodRef(packageName, className, methodName),
           accessType = accessType,
           resourceType = resourceType,
           scanner = name,
-          target = resolveTarget(rule.targetNaming, typeName, className, methodName, Some(calledMethod)),
+          target = rule.target.map(_(ctx)).getOrElse(defaultTarget),
           evidence = s"calls $fieldName.$calledMethod",
-          group = resolveGroup(rule.groupNaming, typeName),
+          group = rule.group.map(_(ctx)).getOrElse(group),
         )
       }
     }
@@ -251,25 +242,27 @@ class DeclarativeScanner(
         cls.declarations.collect {
           case ts: TermSymbol if parentMethods.contains(ts.name.toString) =>
             val methodName = ts.name.toString
+            val ctx: MatchContext = (typeName = parentTypeName, className = className, methodName = methodName, calledMethod = Some(methodName))
             DiscoveredIntegration(
               method = MethodRef(packageName, className, methodName),
               accessType = rule.accessType,
               resourceType = resourceType,
               scanner = name,
-              target = resolveTarget(rule.targetNaming, parentTypeName, className, methodName, Some(methodName)),
+              target = rule.target.map(_(ctx)).getOrElse(defaultTarget),
               evidence = s"implements ${parentTypeName.getOrElse("?")}",
-              group = resolveGroup(rule.groupNaming, parentTypeName),
+              group = rule.group.map(_(ctx)).getOrElse(group),
             )
         }
       } else {
+        val ctx: MatchContext = (typeName = parentTypeName, className = className, methodName = rule.methodName, calledMethod = None)
         List(DiscoveredIntegration(
           method = MethodRef(packageName, className, rule.methodName),
           accessType = rule.accessType,
           resourceType = resourceType,
           scanner = name,
-          target = resolveTarget(rule.targetNaming, parentTypeName, className, rule.methodName, None),
+          target = rule.target.map(_(ctx)).getOrElse(defaultTarget),
           evidence = s"extends ${parentTypeName.getOrElse("?")}",
-          group = resolveGroup(rule.groupNaming, parentTypeName),
+          group = rule.group.map(_(ctx)).getOrElse(group),
         ))
       }
     }
@@ -301,41 +294,19 @@ class DeclarativeScanner(
     forEachMethodBody(cls) { (methodName, rhs) =>
       val detector = new TypeReferenceDetector(rule.targetType)
       detector.traverse(rhs)
-      if (detector.found) List(DiscoveredIntegration(
-        method = MethodRef(packageName, className, methodName),
-        accessType = rule.accessType,
-        resourceType = resourceType,
-        scanner = name,
-        target = resolveTarget(rule.targetNaming, None, className, methodName, None),
-        evidence = detector.evidence,
-        group = resolveGroup(rule.groupNaming, None),
-      ))
-      else Nil
+      if (detector.found) {
+        val ctx: MatchContext = (typeName = detector.matchedName, className = className, methodName = methodName, calledMethod = None)
+        List(DiscoveredIntegration(
+          method = MethodRef(packageName, className, methodName),
+          accessType = rule.accessType,
+          resourceType = resourceType,
+          scanner = name,
+          target = rule.target.map(_(ctx)).getOrElse(defaultTarget),
+          evidence = detector.evidence,
+          group = rule.group.map(_(ctx)).getOrElse(group),
+        ))
+      } else Nil
     }
-
-  // ── Target / group resolution ────────────────────────────────────────
-
-  private def resolveTarget(
-      naming: TargetNaming,
-      matchedTypeName: Option[String],
-      className: String,
-      methodName: String,
-      calledMethod: Option[String],
-  ): String = naming match {
-    case TargetNaming.ScannerDefault    => defaultTarget
-    case TargetNaming.Fixed(name)       => name
-    case TargetNaming.MethodPlaceholder => s"unknown ${resourceType.value} from $className.$methodName"
-    case TargetNaming.FromTypeName(stripSuffix, includeMethod) =>
-      val base = matchedTypeName.map(_.stripSuffix(stripSuffix)).getOrElse(defaultTarget)
-      if (includeMethod) calledMethod.map(m => s"$base/$m").getOrElse(base)
-      else base
-  }
-
-  private def resolveGroup(naming: GroupNaming, matchedTypeName: Option[String]): Option[String] = naming match {
-    case GroupNaming.ScannerDefault          => group
-    case GroupNaming.Fixed(name)             => name
-    case GroupNaming.FromTypeName(stripSuffix) => matchedTypeName.map(_.stripSuffix(stripSuffix))
-  }
 
   // ── Tree traversers ──────────────────────────────────────────────────
 
@@ -375,6 +346,7 @@ class DeclarativeScanner(
     private var matchedRef: Option[String] = None
 
     def found: Boolean = matchedRef.isDefined
+    def matchedName: Option[String] = matchedRef
 
     def evidence: String = matchedRef match {
       case Some(ref) => s"references $ref"

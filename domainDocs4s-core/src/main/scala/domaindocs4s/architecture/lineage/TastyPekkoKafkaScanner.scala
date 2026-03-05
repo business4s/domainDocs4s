@@ -22,7 +22,7 @@ class TastyPekkoKafkaScanner(using ctx: Context) extends DeclarativeScanner(
     DetectionRule.TypeReference(
       targetType = TypeMatcher("org.apache.pekko.kafka.scaladsl.Producer"),
       accessType = DataAccessType.Write,
-      targetNaming = TargetNaming.MethodPlaceholder,
+      target = Some(m => s"unknown topic from ${m.className}.${m.methodName}"),
     ),
   ),
   group = Some("Kafka"),
