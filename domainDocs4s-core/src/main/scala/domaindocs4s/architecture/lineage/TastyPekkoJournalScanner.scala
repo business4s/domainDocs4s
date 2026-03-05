@@ -69,7 +69,7 @@ class TastyPekkoJournalScanner(
     List(DiscoveredIntegration(
       method = MethodRef(packageName, className, "receiveCommand"),
       accessType = DataAccessType.Write,
-      resourceType = "journal",
+      resourceType = ResourceType.Database,
       scanner = "pekko-journal",
       target = "journal",
       evidence = "extends PersistentActor",
@@ -93,7 +93,7 @@ class TastyPekkoJournalScanner(
               if (detector.found) List(DiscoveredIntegration(
                 method = MethodRef(packageName, className, methodName),
                 accessType = DataAccessType.Write,
-                resourceType = "journal",
+                resourceType = ResourceType.Database,
                 scanner = "pekko-journal",
                 target = "journal",
                 evidence = "calls EventSourcedBehavior",
@@ -126,7 +126,7 @@ class TastyPekkoJournalScanner(
                 DiscoveredIntegration(
                   method = MethodRef(packageName, className, methodName),
                   accessType = DataAccessType.Read,
-                  resourceType = "journal",
+                  resourceType = ResourceType.Database,
                   scanner = "pekko-journal",
                   target = "journal",
                   evidence = s"calls $fieldName (ReadJournal)",
@@ -186,7 +186,7 @@ class TastyPekkoJournalScanner(
               if (detector.found) List(DiscoveredIntegration(
                 method = MethodRef(packageName, className, methodName),
                 accessType = DataAccessType.Read,
-                resourceType = "journal",
+                resourceType = ResourceType.Database,
                 scanner = "pekko-journal",
                 target = "journal",
                 evidence = detector.evidence,

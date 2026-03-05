@@ -87,6 +87,27 @@ private[lineage] def splitClassTag(ct: reflect.ClassTag[?]): (String, String) = 
 // The model captures ALL classes found — visualization trims later.
 // ============================================================================
 
+/** Type-safe wrapper for resource type identifiers.
+  *
+  * Zero-overhead opaque type over String. Use predefined constants for
+  * built-in types (Database, Kafka, etc.) or `ResourceType("custom")` for
+  * user-defined types.
+  */
+opaque type ResourceType = String
+
+object ResourceType {
+  val Database: ResourceType = "database"
+  val Kafka: ResourceType    = "kafka"
+  val Grpc: ResourceType     = "grpc"
+  val S3: ResourceType       = "s3"
+
+  def apply(value: String): ResourceType = value
+
+  extension (rt: ResourceType) def value: String = rt
+
+  given Ordering[ResourceType] = Ordering.String
+}
+
 /** How a method accesses external resources. */
 enum DataAccessType {
   case Read
@@ -146,7 +167,7 @@ trait ResourceScanner {
 case class DiscoveredIntegration(
     method: MethodRef,
     accessType: DataAccessType,
-    resourceType: String,         // "database", "kafka", "grpc", "journal", ...
+    resourceType: ResourceType,   // ResourceType.Database, .Kafka, .Grpc, .Journal, .S3, or custom
     scanner: String,              // "doobie", "slick", "flyway", "grpc", "pekko-journal", "manual"
     target: String,               // what was accessed: table name, topic, endpoint, ...
     evidence: String,             // source evidence: SQL query, config key, ...
@@ -164,7 +185,7 @@ case class Discovery(
 /** Merged physical resource — one per unique (target, resourceType, group). */
 case class DiscoveredResource(
     target: String,
-    resourceType: String,
+    resourceType: ResourceType,
     group: Option[String] = None,
     discoveries: List[Discovery] = Nil,
 )
@@ -224,16 +245,16 @@ object ClassGrouping {
   * the data level so it works for all diagram types.
   */
 case class ClassLevelConfig(
-    foldByGroup: Set[String] = Set("grpc"),
+    foldByGroup: Set[ResourceType] = Set(ResourceType.Grpc),
     classGrouping: ClassGrouping = ClassGrouping.NoGrouping,
 )
 
 object ClassLevelConfig {
   class Builder {
-    private var _foldByGroup: Set[String]      = Set("grpc")
-    private var _classGrouping: ClassGrouping   = ClassGrouping.NoGrouping
+    private var _foldByGroup: Set[ResourceType] = Set(ResourceType.Grpc)
+    private var _classGrouping: ClassGrouping    = ClassGrouping.NoGrouping
 
-    def foldByGroup(types: Set[String]): Builder = { _foldByGroup = types; this }
+    def foldByGroup(types: Set[ResourceType]): Builder = { _foldByGroup = types; this }
     def groupByPackage(scanBase: String): Builder = { _classGrouping = ClassGrouping.ByPackage(scanBase); this }
     def groupClassesBy(fn: ScannedClass => Option[String]): Builder = { _classGrouping = ClassGrouping.Custom(fn); this }
     def build: ClassLevelConfig = ClassLevelConfig(_foldByGroup, _classGrouping)

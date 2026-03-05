@@ -239,7 +239,7 @@ class TastySlickScanner(
     DiscoveredIntegration(
       method = method,
       accessType = access,
-      resourceType = "database",
+      resourceType = ResourceType.Database,
       scanner = "slick",
       target = table,
       evidence = evidence,

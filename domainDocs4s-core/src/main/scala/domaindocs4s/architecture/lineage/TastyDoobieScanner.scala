@@ -99,7 +99,7 @@ class TastyDoobieScanner(
     DiscoveredIntegration(
       method = method,
       accessType = access,
-      resourceType = "database",
+      resourceType = ResourceType.Database,
       scanner = "doobie",
       target = SqlUtils.extractTableName(sql),
       evidence = sql,

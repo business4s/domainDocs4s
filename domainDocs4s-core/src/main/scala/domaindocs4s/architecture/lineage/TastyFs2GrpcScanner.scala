@@ -60,7 +60,7 @@ class TastyFs2GrpcScanner(using ctx: Context) extends IntegrationScanner {
           DiscoveredIntegration(
             method = MethodRef(packageName, className, methodName),
             accessType = DataAccessType.Write,
-            resourceType = "grpc",
+            resourceType = ResourceType.Grpc,
             scanner = "grpc",
             target = s"$serviceName/$methodName",
             evidence = s"implements $parentName",
@@ -91,7 +91,7 @@ class TastyFs2GrpcScanner(using ctx: Context) extends IntegrationScanner {
                 DiscoveredIntegration(
                   method = MethodRef(packageName, className, methodName),
                   accessType = DataAccessType.Read,
-                  resourceType = "grpc",
+                  resourceType = ResourceType.Grpc,
                   scanner = "grpc",
                   target = s"${call.serviceName}/${call.rpcMethod}",
                   evidence = s"calls ${call.fieldName}.${call.rpcMethod}",

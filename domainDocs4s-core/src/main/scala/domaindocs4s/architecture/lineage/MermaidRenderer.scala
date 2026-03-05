@@ -271,18 +271,16 @@ object MermaidRenderer {
     sb.append("  classDef dbNode fill:#d1ecf1,stroke:#17a2b8\n")
     sb.append("  classDef grpcNode fill:#e8daef,stroke:#8e44ad\n")
     sb.append("  classDef kafkaNode fill:#d5f5e3,stroke:#27ae60\n")
-    sb.append("  classDef journalNode fill:#fce4ec,stroke:#e91e63\n")
     sb.append("  classDef s3Node fill:#ffe0b2,stroke:#fb8c00\n")
   }
 
   /** Render a single integration target node into the StringBuilder. */
-  private def renderTargetNode(sb: StringBuilder, id: String, label: String, rtype: String, indent: String): Unit =
+  private def renderTargetNode(sb: StringBuilder, id: String, label: String, rtype: ResourceType, indent: String): Unit =
     rtype match {
-      case "grpc"    => sb.append(s"""$indent$id{{"${label}\n[$rtype]"}}\n""")
-      case "kafka"   => sb.append(s"""$indent$id(["${label}\n[$rtype]"])\n""")
-      case "journal" => sb.append(s"""$indent$id[["${label}\n[$rtype]"]]\n""")
-      case "s3"      => sb.append(s"""$indent$id[/"${label}\n[$rtype]"/]\n""")
-      case _         => sb.append(s"""$indent$id[("${label}\n[$rtype]")]\n""")
+      case ResourceType.Grpc    => sb.append(s"""$indent$id{{"${label}\n[$rtype]"}}\n""")
+      case ResourceType.Kafka   => sb.append(s"""$indent$id(["${label}\n[$rtype]"])\n""")
+      case ResourceType.S3      => sb.append(s"""$indent$id[/"${label}\n[$rtype]"/]\n""")
+      case _                    => sb.append(s"""$indent$id[("${label}\n[$rtype]")]\n""")
     }
 
   private def renderEdge(sb: StringBuilder, from: String, to: String, accessType: DataAccessType, dataFlow: Boolean): Unit =
@@ -294,12 +292,11 @@ object MermaidRenderer {
       case _                            => sb.append(s"""  $from -->|$accessType| $to\n""")
     }
 
-  private def integrationStyle(rtype: String): String = rtype match {
-    case "grpc"    => "grpcNode"
-    case "kafka"   => "kafkaNode"
-    case "journal" => "journalNode"
-    case "s3"      => "s3Node"
-    case _         => "dbNode"
+  private def integrationStyle(rtype: ResourceType): String = rtype match {
+    case ResourceType.Grpc    => "grpcNode"
+    case ResourceType.Kafka   => "kafkaNode"
+    case ResourceType.S3      => "s3Node"
+    case _                    => "dbNode"
   }
 
   def toViewUrl(mermaidCode: String): String = {

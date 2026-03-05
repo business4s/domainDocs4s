@@ -55,7 +55,7 @@ object LineageAdjustment {
   case class AddIntegration(
       method: MethodRef,
       accessType: DataAccessType,
-      resourceType: String,
+      resourceType: ResourceType,
       target: String,
       group: Option[String],
   ) extends LineageAdjustment
@@ -75,7 +75,7 @@ object LineageAdjustment {
       packageName: String,
       className: String,
       accessType: DataAccessType,
-      resourceType: String,
+      resourceType: ResourceType,
       target: String,
       group: Option[String],
       expectDetected: Boolean = true,
@@ -86,7 +86,7 @@ object LineageAdjustment {
       packageName: String,
       className: String,
       methodName: Option[String],
-      resourceType: String,
+      resourceType: ResourceType,
       target: String,
   ) extends LineageAdjustment
 
@@ -95,7 +95,7 @@ object LineageAdjustment {
       packageName: String,
       className: String,
       methodName: Option[String],
-      resourceType: String,
+      resourceType: ResourceType,
   ) extends LineageAdjustment
 
   // ── Call graph edges (method → method) ──────────────────────────────────
@@ -135,13 +135,13 @@ object LineageAdjustment {
   // ── External resource modifications ─────────────────────────────────────
 
   /** Rename a resource target across all integrations. */
-  case class RenameResource(resourceType: String, oldTarget: String, newTarget: String) extends LineageAdjustment
+  case class RenameResource(resourceType: ResourceType, oldTarget: String, newTarget: String) extends LineageAdjustment
 
   /** Remove all integrations pointing to a specific resource. */
-  case class RemoveResource(resourceType: String, target: String) extends LineageAdjustment
+  case class RemoveResource(resourceType: ResourceType, target: String) extends LineageAdjustment
 
   /** Change the group of a resource across all integrations. */
-  case class SetResourceGroup(resourceType: String, target: String, group: String) extends LineageAdjustment
+  case class SetResourceGroup(resourceType: ResourceType, target: String, group: String) extends LineageAdjustment
 
   // ── Display modifications ───────────────────────────────────────────
 
@@ -422,13 +422,13 @@ object LineageAdjustments {
 
   class Builder {
     private val _adjustments    = ListBuffer.empty[LineageAdjustment]
-    private val _undetectedTypes = scala.collection.mutable.Set.empty[String]
+    private val _undetectedTypes = scala.collection.mutable.Set.empty[ResourceType]
 
     /** Mark resource types as manual-only — class-level integrations of these types
       * won't require auto-detection validation. By default all class-level
       * integrations expect scanner confirmation.
       */
-    def undetected(resourceTypes: String*): Builder = {
+    def undetected(resourceTypes: ResourceType*): Builder = {
       _undetectedTypes ++= resourceTypes
       this
     }
@@ -460,7 +460,7 @@ object LineageAdjustments {
     // ── Resource selector ─────────────────────────────────────────────────
 
     /** Select an external resource by type and target name. */
-    def resource(resourceType: String, target: String): ResourceActions =
+    def resource(resourceType: ResourceType, target: String): ResourceActions =
       new ResourceActions(resourceType, target)
 
     // ── Build ─────────────────────────────────────────────────────────────
@@ -500,13 +500,13 @@ object LineageAdjustments {
       }
 
       // Remove specific integration
-      def removeIntegration(resourceType: String, target: String): MethodActions = {
+      def removeIntegration(resourceType: ResourceType, target: String): MethodActions = {
         _adjustments += LineageAdjustment.RemoveIntegration(packageName, className, Some(methodName), resourceType, target)
         this
       }
 
       // Remove all integrations of a type
-      def removeIntegrations(resourceType: String): MethodActions = {
+      def removeIntegrations(resourceType: ResourceType): MethodActions = {
         _adjustments += LineageAdjustment.RemoveIntegrationsByType(packageName, className, Some(methodName), resourceType)
         this
       }
@@ -528,7 +528,7 @@ object LineageAdjustments {
       def method(pkg: String, cls: String, method: String): MethodActions = Builder.this.method(pkg, cls, method)
       def cls[T: ClassTag]: ClassActions = Builder.this.cls[T]
       def cls(pkg: String, cls: String): ClassActions = Builder.this.cls(pkg, cls)
-      def resource(resourceType: String, target: String): ResourceActions = Builder.this.resource(resourceType, target)
+      def resource(resourceType: ResourceType, target: String): ResourceActions = Builder.this.resource(resourceType, target)
       def build: LineageAdjustments = Builder.this.build
     }
 
@@ -564,13 +564,13 @@ object LineageAdjustments {
       }
 
       // Remove specific integration from all methods
-      def removeIntegration(resourceType: String, target: String): ClassActions = {
+      def removeIntegration(resourceType: ResourceType, target: String): ClassActions = {
         _adjustments += LineageAdjustment.RemoveIntegration(packageName, className, None, resourceType, target)
         this
       }
 
       // Remove all integrations of a type from all methods
-      def removeIntegrations(resourceType: String): ClassActions = {
+      def removeIntegrations(resourceType: ResourceType): ClassActions = {
         _adjustments += LineageAdjustment.RemoveIntegrationsByType(packageName, className, None, resourceType)
         this
       }
@@ -598,7 +598,7 @@ object LineageAdjustments {
       def method(pkg: String, cls: String, method: String): MethodActions = Builder.this.method(pkg, cls, method)
       def cls[T: ClassTag]: ClassActions = Builder.this.cls[T]
       def cls(pkg: String, cls: String): ClassActions = Builder.this.cls(pkg, cls)
-      def resource(resourceType: String, target: String): ResourceActions = Builder.this.resource(resourceType, target)
+      def resource(resourceType: ResourceType, target: String): ResourceActions = Builder.this.resource(resourceType, target)
       def build: LineageAdjustments = Builder.this.build
     }
 
@@ -611,42 +611,42 @@ object LineageAdjustments {
       }
 
     class IntegrationBuilder(method: MethodRef, accessType: DataAccessType) {
-      private def emit(resourceType: String, target: String, group: Option[String]): IntegrationBuilder = {
+      private def emit(resourceType: ResourceType, target: String, group: Option[String]): IntegrationBuilder = {
         _adjustments += LineageAdjustment.AddIntegration(method, accessType, resourceType, target, group)
         this
       }
 
-      def kafka(topic: String): IntegrationBuilder = emit("kafka", topic, Some("Kafka"))
-      def s3(bucket: String): IntegrationBuilder = emit("s3", bucket, Some("S3"))
-      def database(table: String, group: Option[String] = None): IntegrationBuilder = emit("database", table, group)
-      def grpc(endpoint: String, group: Option[String] = None): IntegrationBuilder = emit("grpc", endpoint, grpcGroup(endpoint, group))
-      def journal(target: String = "journal", group: Option[String] = Some("Journal")): IntegrationBuilder = emit("journal", target, group)
-      def custom(resourceType: String, target: String, group: Option[String] = None): IntegrationBuilder = emit(resourceType, target, group)
+      def kafka(topic: String): IntegrationBuilder = emit(ResourceType.Kafka, topic, Some("Kafka"))
+      def s3(bucket: String): IntegrationBuilder = emit(ResourceType.S3, bucket, Some("S3"))
+      def database(table: String, group: Option[String] = None): IntegrationBuilder = emit(ResourceType.Database, table, group)
+      def grpc(endpoint: String, group: Option[String] = None): IntegrationBuilder = emit(ResourceType.Grpc, endpoint, grpcGroup(endpoint, group))
+      def journal(target: String = "journal", group: Option[String] = Some("Journal")): IntegrationBuilder = emit(ResourceType.Database, target, group)
+      def custom(resourceType: ResourceType, target: String, group: Option[String] = None): IntegrationBuilder = emit(resourceType, target, group)
 
       // Transitions to other selectors
       inline def method[T](inline selector: T => Any): MethodActions = Builder.this.method[T](selector)
       def method(pkg: String, cls: String, method: String): MethodActions = Builder.this.method(pkg, cls, method)
       def cls[T: ClassTag]: ClassActions = Builder.this.cls[T]
       def cls(pkg: String, cls: String): ClassActions = Builder.this.cls(pkg, cls)
-      def resource(resourceType: String, target: String): ResourceActions = Builder.this.resource(resourceType, target)
+      def resource(resourceType: ResourceType, target: String): ResourceActions = Builder.this.resource(resourceType, target)
       def build: LineageAdjustments = Builder.this.build
     }
 
     class ClassIntegrationBuilder(packageName: String, className: String, accessType: DataAccessType) {
       private val startIdx = _adjustments.size
 
-      private def emit(resourceType: String, target: String, group: Option[String]): ClassIntegrationBuilder = {
+      private def emit(resourceType: ResourceType, target: String, group: Option[String]): ClassIntegrationBuilder = {
         val expect = !_undetectedTypes.contains(resourceType)
         _adjustments += LineageAdjustment.AddClassIntegration(packageName, className, accessType, resourceType, target, group, expect)
         this
       }
 
-      def kafka(topic: String): ClassIntegrationBuilder = emit("kafka", topic, Some("Kafka"))
-      def s3(bucket: String): ClassIntegrationBuilder = emit("s3", bucket, Some("S3"))
-      def database(table: String, group: Option[String] = None): ClassIntegrationBuilder = emit("database", table, group)
-      def grpc(endpoint: String, group: Option[String] = None): ClassIntegrationBuilder = emit("grpc", endpoint, grpcGroup(endpoint, group))
-      def journal(target: String = "journal", group: Option[String] = Some("Journal")): ClassIntegrationBuilder = emit("journal", target, group)
-      def custom(resourceType: String, target: String, group: Option[String] = None): ClassIntegrationBuilder = emit(resourceType, target, group)
+      def kafka(topic: String): ClassIntegrationBuilder = emit(ResourceType.Kafka, topic, Some("Kafka"))
+      def s3(bucket: String): ClassIntegrationBuilder = emit(ResourceType.S3, bucket, Some("S3"))
+      def database(table: String, group: Option[String] = None): ClassIntegrationBuilder = emit(ResourceType.Database, table, group)
+      def grpc(endpoint: String, group: Option[String] = None): ClassIntegrationBuilder = emit(ResourceType.Grpc, endpoint, grpcGroup(endpoint, group))
+      def journal(target: String = "journal", group: Option[String] = Some("Journal")): ClassIntegrationBuilder = emit(ResourceType.Database, target, group)
+      def custom(resourceType: ResourceType, target: String, group: Option[String] = None): ClassIntegrationBuilder = emit(resourceType, target, group)
 
       /** Mark entries from this builder as manual-only — no scanner detection expected.
         * Overrides the default (which requires scanners to confirm the resource type).
@@ -677,13 +677,13 @@ object LineageAdjustments {
       def method(pkg: String, cls: String, method: String): MethodActions = Builder.this.method(pkg, cls, method)
       def cls[T: ClassTag]: ClassActions = Builder.this.cls[T]
       def cls(pkg: String, cls: String): ClassActions = Builder.this.cls(pkg, cls)
-      def resource(resourceType: String, target: String): ResourceActions = Builder.this.resource(resourceType, target)
+      def resource(resourceType: ResourceType, target: String): ResourceActions = Builder.this.resource(resourceType, target)
       def build: LineageAdjustments = Builder.this.build
     }
 
     // ── Resource-level actions ────────────────────────────────────────────
 
-    class ResourceActions(resourceType: String, target: String) {
+    class ResourceActions(resourceType: ResourceType, target: String) {
 
       /** Rename the resource target across all integrations. */
       def renameTo(newTarget: String): ResourceActions = {
@@ -708,7 +708,7 @@ object LineageAdjustments {
       def method(pkg: String, cls: String, method: String): MethodActions = Builder.this.method(pkg, cls, method)
       def cls[T: ClassTag]: ClassActions = Builder.this.cls[T]
       def cls(pkg: String, cls: String): ClassActions = Builder.this.cls(pkg, cls)
-      def resource(resourceType: String, target: String): ResourceActions = Builder.this.resource(resourceType, target)
+      def resource(resourceType: ResourceType, target: String): ResourceActions = Builder.this.resource(resourceType, target)
       def build: LineageAdjustments = Builder.this.build
     }
   }

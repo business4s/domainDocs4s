@@ -45,7 +45,7 @@ class TastyPekkoKafkaScanner(using ctx: Context) extends IntegrationScanner {
               if (detector.found) List(DiscoveredIntegration(
                 method = MethodRef(packageName, className, methodName),
                 accessType = DataAccessType.Write,
-                resourceType = "kafka",
+                resourceType = ResourceType.Kafka,
                 scanner = "pekko-kafka",
                 target = s"unknown topic from $className.$methodName",
                 evidence = detector.evidence,

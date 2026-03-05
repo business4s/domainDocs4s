@@ -76,7 +76,7 @@ class FlywayMigrationScanner(
     DiscoveredIntegration(
       method = method,
       accessType = access,
-      resourceType = "database",
+      resourceType = ResourceType.Database,
       scanner = "flyway",
       target = target,
       evidence = filename,

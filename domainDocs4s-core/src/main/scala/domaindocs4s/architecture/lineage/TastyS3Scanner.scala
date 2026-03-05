@@ -64,7 +64,7 @@ class TastyS3Scanner(
                 DiscoveredIntegration(
                   method = MethodRef(packageName, className, methodName),
                   accessType = accessType,
-                  resourceType = "s3",
+                  resourceType = ResourceType.S3,
                   scanner = "s3",
                   target = "S3",
                   evidence = s"calls s3Client.$s3Method",

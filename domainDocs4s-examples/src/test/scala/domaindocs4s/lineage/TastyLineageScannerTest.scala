@@ -39,7 +39,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
     "outputs DiscoveredIntegration with classA.methodB reads/writes tableC" in {
       doobieIntegrations should not be empty
       doobieIntegrations.foreach { di =>
-        di.resourceType shouldBe "database"
+        di.resourceType shouldBe ResourceType.Database
         di.scanner shouldBe "doobie"
         di.method.className should not be empty
         di.method.methodName should not be empty
@@ -100,7 +100,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
 
     "all grpc integrations have resourceType grpc and scanner grpc" in {
       grpcIntegrations.foreach { di =>
-        di.resourceType shouldBe "grpc"
+        di.resourceType shouldBe ResourceType.Grpc
         di.scanner shouldBe "grpc"
       }
     }
@@ -137,7 +137,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       e.method.className shouldBe "EventPublisher"
       e.method.methodName shouldBe "publishDeposit"
       e.accessType shouldBe DataAccessType.Write
-      e.resourceType shouldBe "kafka"
+      e.resourceType shouldBe ResourceType.Kafka
       e.target shouldBe "user.deposit-events"
       e.group shouldBe Some("Kafka")
       e.scanner shouldBe "manual"
@@ -154,7 +154,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
 
     "supports custom group via custom method" in {
       val adj = LineageAdjustments.builder
-        .method[UserRepo](_.getBalance).reads.custom("kafka", "analytics.events", group = Some("Analytics"))
+        .method[UserRepo](_.getBalance).reads.custom(ResourceType.Kafka, "analytics.events", group = Some("Analytics"))
         .build
 
       val (_, result) = adj.apply(Nil, Nil)
@@ -163,12 +163,12 @@ class TastyLineageScannerTest extends AnyFreeSpec {
 
     "supports generic custom resource type" in {
       val adj = LineageAdjustments.builder
-        .method[UserRepo](_.getBalance).writes.custom("s3", "my-bucket/exports", group = Some("S3"))
+        .method[UserRepo](_.getBalance).writes.custom(ResourceType.S3, "my-bucket/exports", group = Some("S3"))
         .build
 
       val (_, result) = adj.apply(Nil, Nil)
       val e = result.head
-      e.resourceType shouldBe "s3"
+      e.resourceType shouldBe ResourceType.S3
       e.target shouldBe "my-bucket/exports"
       e.group shouldBe Some("S3")
     }
@@ -184,7 +184,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       e.method.className shouldBe "S3Exporter"
       e.method.methodName shouldBe "exportData"
       e.accessType shouldBe DataAccessType.Write
-      e.resourceType shouldBe "s3"
+      e.resourceType shouldBe ResourceType.S3
       e.target shouldBe "ledger-exports/assets"
       e.group shouldBe Some("S3")
     }
@@ -199,7 +199,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       val resultWithManual = LineageBuilder.build(adjCallGraph, allIntegrations)
 
       val depositChains = resultWithManual.lineageFrom(MethodRef(pkg, "UserGrpcApi", "deposit"))
-      val kafkaChains = depositChains.filter(_.integration.resourceType == "kafka")
+      val kafkaChains = depositChains.filter(_.integration.resourceType == ResourceType.Kafka)
       kafkaChains should have size 1
       kafkaChains.head.integration.target shouldBe "user.deposit-events"
       kafkaChains.head.integration.accessType shouldBe DataAccessType.Write
@@ -209,14 +209,14 @@ class TastyLineageScannerTest extends AnyFreeSpec {
     "supports multiple adjustments in a single builder" in {
       val adj = LineageAdjustments.builder
         .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
-        .method[UserGrpcApi](_.getHistory).reads.custom("kafka", "user.history-events", group = Some("Analytics"))
-        .method[UserService](_.deposit).writes.custom("audit", "audit-log", group = Some("Audit"))
+        .method[UserGrpcApi](_.getHistory).reads.custom(ResourceType.Kafka, "user.history-events", group = Some("Analytics"))
+        .method[UserService](_.deposit).writes.custom(ResourceType("audit"), "audit-log", group = Some("Audit"))
         .build
 
       val (_, result) = adj.apply(Nil, Nil)
       result should have size 3
-      result.count(_.resourceType == "kafka") shouldBe 2
-      result.count(_.resourceType == "audit") shouldBe 1
+      result.count(_.resourceType == ResourceType.Kafka) shouldBe 2
+      result.count(_.resourceType == ResourceType("audit")) shouldBe 1
     }
 
     "cls builds class-level adjustments via chaining" in {
@@ -306,7 +306,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
         ExtractedMethod("UserRepo", pkg, "getBalance", Nil),
       )
       val existingIntegrations = List(
-        DiscoveredIntegration(MethodRef(pkg, "UserRepo", "getBalance"), DataAccessType.Read, "database", "doobie", "users", "SELECT"),
+        DiscoveredIntegration(MethodRef(pkg, "UserRepo", "getBalance"), DataAccessType.Read, ResourceType.Database, "doobie", "users", "SELECT"),
       )
       val (resultMethods, resultIntegrations) = adj.apply(methods, existingIntegrations)
 
@@ -329,7 +329,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
         ExtractedMethod("UserRepo", pkg, "getBalance", Nil),
       )
       val existingIntegrations = List(
-        DiscoveredIntegration(MethodRef(pkg, "UserRepo", "getBalance"), DataAccessType.Read, "database", "doobie", "users", "SELECT"),
+        DiscoveredIntegration(MethodRef(pkg, "UserRepo", "getBalance"), DataAccessType.Read, ResourceType.Database, "doobie", "users", "SELECT"),
       )
       val (resultMethods, resultIntegrations) = adj.apply(methods, existingIntegrations)
 
@@ -352,8 +352,8 @@ class TastyLineageScannerTest extends AnyFreeSpec {
         ExtractedMethod("UserRepo", pkg, "updateBalance", Nil),
       )
       val existingIntegrations = List(
-        DiscoveredIntegration(MethodRef(pkg, "UserRepo", "getBalance"), DataAccessType.Read, "database", "doobie", "users", "SELECT"),
-        DiscoveredIntegration(MethodRef(pkg, "UserRepo", "updateBalance"), DataAccessType.Write, "database", "doobie", "users", "UPDATE"),
+        DiscoveredIntegration(MethodRef(pkg, "UserRepo", "getBalance"), DataAccessType.Read, ResourceType.Database, "doobie", "users", "SELECT"),
+        DiscoveredIntegration(MethodRef(pkg, "UserRepo", "updateBalance"), DataAccessType.Write, ResourceType.Database, "doobie", "users", "UPDATE"),
       )
       val (resultMethods, resultIntegrations) = adj.apply(methods, existingIntegrations)
 
@@ -375,7 +375,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
         ExtractedMethod("UserRepo", pkg, "getBalance", Nil),
       )
       val existingIntegrations = List(
-        DiscoveredIntegration(MethodRef(pkg, "UserRepo", "getBalance"), DataAccessType.Read, "database", "doobie", "users", "SELECT"),
+        DiscoveredIntegration(MethodRef(pkg, "UserRepo", "getBalance"), DataAccessType.Read, ResourceType.Database, "doobie", "users", "SELECT"),
       )
       val (resultMethods, resultIntegrations) = adj.apply(methods, existingIntegrations)
 
@@ -395,8 +395,8 @@ class TastyLineageScannerTest extends AnyFreeSpec {
         ExtractedMethod("UserRepo", pkg, "updateBalance", Nil),
       )
       val existingIntegrations = List(
-        DiscoveredIntegration(MethodRef(pkg, "UserRepo", "getBalance"), DataAccessType.Read, "database", "doobie", "users", "SELECT"),
-        DiscoveredIntegration(MethodRef(pkg, "UserRepo", "updateBalance"), DataAccessType.Write, "database", "doobie", "users", "UPDATE"),
+        DiscoveredIntegration(MethodRef(pkg, "UserRepo", "getBalance"), DataAccessType.Read, ResourceType.Database, "doobie", "users", "SELECT"),
+        DiscoveredIntegration(MethodRef(pkg, "UserRepo", "updateBalance"), DataAccessType.Write, ResourceType.Database, "doobie", "users", "UPDATE"),
       )
       val (resultMethods, resultIntegrations) = adj.apply(methods, existingIntegrations)
 
@@ -407,12 +407,12 @@ class TastyLineageScannerTest extends AnyFreeSpec {
 
     "resource().renameTo renames target across integrations" in {
       val adj = LineageAdjustments.builder
-        .resource("kafka", "old-topic").renameTo("new-topic")
+        .resource(ResourceType.Kafka, "old-topic").renameTo("new-topic")
         .build
 
       val existing = List(
-        DiscoveredIntegration(MethodRef("", "A", "m"), DataAccessType.Write, "kafka", "pekko-kafka", "old-topic", "evidence", Some("Kafka")),
-        DiscoveredIntegration(MethodRef("", "B", "n"), DataAccessType.Write, "kafka", "pekko-kafka", "other-topic", "evidence", Some("Kafka")),
+        DiscoveredIntegration(MethodRef("", "A", "m"), DataAccessType.Write, ResourceType.Kafka, "pekko-kafka", "old-topic", "evidence", Some("Kafka")),
+        DiscoveredIntegration(MethodRef("", "B", "n"), DataAccessType.Write, ResourceType.Kafka, "pekko-kafka", "other-topic", "evidence", Some("Kafka")),
       )
       val (_, result) = adj.apply(Nil, existing)
       result.find(_.method.className == "A").get.target shouldBe "new-topic"
@@ -421,12 +421,12 @@ class TastyLineageScannerTest extends AnyFreeSpec {
 
     "resource().remove removes all integrations to target" in {
       val adj = LineageAdjustments.builder
-        .resource("kafka", "old-topic").remove
+        .resource(ResourceType.Kafka, "old-topic").remove
         .build
 
       val existing = List(
-        DiscoveredIntegration(MethodRef("", "A", "m"), DataAccessType.Write, "kafka", "pekko-kafka", "old-topic", "evidence"),
-        DiscoveredIntegration(MethodRef("", "B", "n"), DataAccessType.Read, "database", "doobie", "users", "SELECT"),
+        DiscoveredIntegration(MethodRef("", "A", "m"), DataAccessType.Write, ResourceType.Kafka, "pekko-kafka", "old-topic", "evidence"),
+        DiscoveredIntegration(MethodRef("", "B", "n"), DataAccessType.Read, ResourceType.Database, "doobie", "users", "SELECT"),
       )
       val (_, result) = adj.apply(Nil, existing)
       result should have size 1
@@ -435,11 +435,11 @@ class TastyLineageScannerTest extends AnyFreeSpec {
 
     "resource().setGroup changes group" in {
       val adj = LineageAdjustments.builder
-        .resource("database", "users").setGroup("user-db")
+        .resource(ResourceType.Database, "users").setGroup("user-db")
         .build
 
       val existing = List(
-        DiscoveredIntegration(MethodRef("", "A", "m"), DataAccessType.Read, "database", "doobie", "users", "SELECT"),
+        DiscoveredIntegration(MethodRef("", "A", "m"), DataAccessType.Read, ResourceType.Database, "doobie", "users", "SELECT"),
       )
       val (_, result) = adj.apply(Nil, existing)
       result.head.group shouldBe Some("user-db")
@@ -465,9 +465,9 @@ class TastyLineageScannerTest extends AnyFreeSpec {
 
       val (_, result) = adj.apply(Nil, Nil)
       result should have size 2
-      result(0).resourceType shouldBe "database"
+      result(0).resourceType shouldBe ResourceType.Database
       result(0).group shouldBe Some("user-db")
-      result(1).resourceType shouldBe "grpc"
+      result(1).resourceType shouldBe ResourceType.Grpc
       result(1).group shouldBe Some("RateService")
     }
 
@@ -482,7 +482,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
 
     "strict by default — class-level integration passes when scanner detected matching resourceType" in {
       val existing = List(
-        DiscoveredIntegration(MethodRef("", "Handler", "send"), DataAccessType.Write, "kafka", "pekko-kafka", "auto-topic", "evidence"),
+        DiscoveredIntegration(MethodRef("", "Handler", "send"), DataAccessType.Write, ResourceType.Kafka, "pekko-kafka", "auto-topic", "evidence"),
       )
       val methods = List(
         ExtractedMethod("Handler", "", "send", Nil),
@@ -500,7 +500,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
 
     "strict by default — passes when detection is on a callee reachable through call graph" in {
       val existing = List(
-        DiscoveredIntegration(MethodRef("", "LowLevel", "write"), DataAccessType.Write, "s3", "s3", "S3", "putObject"),
+        DiscoveredIntegration(MethodRef("", "LowLevel", "write"), DataAccessType.Write, ResourceType.S3, "s3", "S3", "putObject"),
       )
       val methods = List(
         ExtractedMethod("Handler", "", "handle", List(MethodRef("", "Middle", "process"))),
@@ -519,7 +519,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
 
     "strict by default — throws when no matching resourceType is detected" in {
       val existing = List(
-        DiscoveredIntegration(MethodRef("", "Handler", "query"), DataAccessType.Read, "database", "doobie", "users", "SELECT"),
+        DiscoveredIntegration(MethodRef("", "Handler", "query"), DataAccessType.Read, ResourceType.Database, "doobie", "users", "SELECT"),
       )
       val methods = List(
         ExtractedMethod("Handler", "", "query", Nil),
@@ -550,15 +550,15 @@ class TastyLineageScannerTest extends AnyFreeSpec {
 
     "builder-level .undetected opts out per resource type" in {
       val existing = List(
-        DiscoveredIntegration(MethodRef("", "Handler", "query"), DataAccessType.Read, "database", "doobie", "users", "SELECT"),
+        DiscoveredIntegration(MethodRef("", "Handler", "query"), DataAccessType.Read, ResourceType.Database, "doobie", "users", "SELECT"),
       )
       val methods = List(
         ExtractedMethod("Handler", "", "query", Nil),
       )
 
-      // kafka is not auto-detected, but .undetected("kafka") marks it as manual-only
+      // kafka is not auto-detected, but .undetected(ResourceType.Kafka) marks it as manual-only
       val adj = LineageAdjustments.builder
-        .undetected("kafka")
+        .undetected(ResourceType.Kafka)
         .cls("", "Handler").writes.kafka("topic")
         .cls("", "Handler").reads.database("users")
         .build
@@ -570,7 +570,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
 
     ".undetected on integration builder opts out for current entries only" in {
       val existing = List(
-        DiscoveredIntegration(MethodRef("", "Handler", "query"), DataAccessType.Read, "database", "doobie", "users", "SELECT"),
+        DiscoveredIntegration(MethodRef("", "Handler", "query"), DataAccessType.Read, ResourceType.Database, "doobie", "users", "SELECT"),
       )
       val methods = List(
         ExtractedMethod("Handler", "", "query", Nil),
@@ -607,7 +607,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
 
     ".detected overrides builder-level .undetected for specific entries" in {
       val existing = List(
-        DiscoveredIntegration(MethodRef("", "Handler", "send"), DataAccessType.Write, "kafka", "pekko-kafka", "auto-topic", "evidence"),
+        DiscoveredIntegration(MethodRef("", "Handler", "send"), DataAccessType.Write, ResourceType.Kafka, "pekko-kafka", "auto-topic", "evidence"),
       )
       val methods = List(
         ExtractedMethod("Handler", "", "send", Nil),
@@ -615,7 +615,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
 
       // Builder marks kafka as undetected, but .detected overrides for this entry
       val adj = LineageAdjustments.builder
-        .undetected("kafka")
+        .undetected(ResourceType.Kafka)
         .cls("", "Handler").writes.kafka("real-topic").detected
         .build
 
@@ -631,7 +631,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
 
       // Builder marks kafka as undetected, but .detected overrides — and there's no detection
       val adj = LineageAdjustments.builder
-        .undetected("kafka")
+        .undetected(ResourceType.Kafka)
         .cls("", "Handler").writes.kafka("topic").detected
         .build
 
@@ -692,9 +692,9 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       pqReads.head.evidence should include("PersistenceQuery")
     }
 
-    "all pekko integrations have resourceType journal and scanner pekko-journal" in {
+    "all pekko integrations have resourceType database and scanner pekko-journal" in {
       pekkoIntegrations.foreach { di =>
-        di.resourceType shouldBe "journal"
+        di.resourceType shouldBe ResourceType.Database
         di.scanner shouldBe "pekko-journal"
       }
     }
@@ -722,7 +722,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
     "outputs DiscoveredIntegration with resourceType database and scanner slick" in {
       slickIntegrations should not be empty
       slickIntegrations.foreach { di =>
-        di.resourceType shouldBe "database"
+        di.resourceType shouldBe ResourceType.Database
         di.scanner shouldBe "slick"
         di.method.className should not be empty
         di.method.methodName should not be empty
@@ -995,7 +995,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
     "all flyway integrations have resourceType database and scanner flyway" in {
       flywayIntegrations should not be empty
       flywayIntegrations.foreach { di =>
-        di.resourceType shouldBe "database"
+        di.resourceType shouldBe ResourceType.Database
         di.scanner shouldBe "flyway"
       }
     }
@@ -1046,7 +1046,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
         di.method.className == "KafkaFlexiFlowProducer" && di.accessType == DataAccessType.Write
       }
       flexiFlowWrites should have size 1
-      flexiFlowWrites.head.resourceType shouldBe "kafka"
+      flexiFlowWrites.head.resourceType shouldBe ResourceType.Kafka
       flexiFlowWrites.head.evidence should include("Producer")
     }
 
@@ -1055,7 +1055,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
         di.method.className == "KafkaPlainSinkProducer" && di.accessType == DataAccessType.Write
       }
       plainSinkWrites should have size 1
-      plainSinkWrites.head.resourceType shouldBe "kafka"
+      plainSinkWrites.head.resourceType shouldBe ResourceType.Kafka
       plainSinkWrites.head.evidence should include("Producer")
     }
 
@@ -1063,7 +1063,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       val kafkaOnly = kafkaIntegrations.filter(_.scanner == "pekko-kafka")
       kafkaOnly should not be empty
       kafkaOnly.foreach { di =>
-        di.resourceType shouldBe "kafka"
+        di.resourceType shouldBe ResourceType.Kafka
         di.group shouldBe Some("Kafka")
       }
     }
@@ -1100,7 +1100,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
     "all S3 integrations have resourceType s3 and scanner s3" in {
       s3Integrations should not be empty
       s3Integrations.foreach { di =>
-        di.resourceType shouldBe "s3"
+        di.resourceType shouldBe ResourceType.S3
         di.scanner shouldBe "s3"
       }
     }
@@ -1111,7 +1111,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
 
     "LineageAdjustments .s3(bucket) overrides auto-detected S3 targets" in {
       val adj = LineageAdjustments.builder
-        .cls[S3Exporter].removeIntegrations("s3")
+        .cls[S3Exporter].removeIntegrations(ResourceType.S3)
         .cls[S3Exporter].writes.s3("ledger-exports/assets")
         .build
 
@@ -1120,7 +1120,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       exporterResults should have size 1
       exporterResults.head.target shouldBe "ledger-exports/assets"
       exporterResults.head.scanner shouldBe "manual"
-      exporterResults.head.resourceType shouldBe "s3"
+      exporterResults.head.resourceType shouldBe ResourceType.S3
       exporterResults.head.group shouldBe Some("S3")
 
       // S3Reader integrations should be untouched
@@ -1138,7 +1138,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
         DiscoveredIntegration(
           method = MethodRef("", "MyProducer", "send"),
           accessType = DataAccessType.Write,
-          resourceType = "kafka",
+          resourceType = ResourceType.Kafka,
           scanner = "pekko-kafka",
           target = "auto-topic",
           evidence = "calls Producer.plainSink",
@@ -1157,12 +1157,12 @@ class TastyLineageScannerTest extends AnyFreeSpec {
 
     "removeIntegration removes specific integration" in {
       val existing = List(
-        DiscoveredIntegration(MethodRef("", "MyProducer", "send"), DataAccessType.Write, "kafka", "pekko-kafka", "topic-a", "evidence"),
-        DiscoveredIntegration(MethodRef("", "MyProducer", "send"), DataAccessType.Write, "kafka", "pekko-kafka", "topic-b", "evidence"),
+        DiscoveredIntegration(MethodRef("", "MyProducer", "send"), DataAccessType.Write, ResourceType.Kafka, "pekko-kafka", "topic-a", "evidence"),
+        DiscoveredIntegration(MethodRef("", "MyProducer", "send"), DataAccessType.Write, ResourceType.Kafka, "pekko-kafka", "topic-b", "evidence"),
       )
 
       val adj = LineageAdjustments.builder
-        .method("", "MyProducer", "send").removeIntegration("kafka", "topic-a")
+        .method("", "MyProducer", "send").removeIntegration(ResourceType.Kafka, "topic-a")
         .build
 
       val (_, result) = adj.apply(Nil, existing)
@@ -1172,25 +1172,25 @@ class TastyLineageScannerTest extends AnyFreeSpec {
 
     "removeIntegrationsByType removes all of a type" in {
       val existing = List(
-        DiscoveredIntegration(MethodRef("", "Handler", "m"), DataAccessType.Write, "kafka", "pekko-kafka", "topic-a", "evidence"),
-        DiscoveredIntegration(MethodRef("", "Handler", "m"), DataAccessType.Write, "kafka", "pekko-kafka", "topic-b", "evidence"),
-        DiscoveredIntegration(MethodRef("", "Handler", "m"), DataAccessType.Read, "database", "doobie", "users", "SELECT"),
+        DiscoveredIntegration(MethodRef("", "Handler", "m"), DataAccessType.Write, ResourceType.Kafka, "pekko-kafka", "topic-a", "evidence"),
+        DiscoveredIntegration(MethodRef("", "Handler", "m"), DataAccessType.Write, ResourceType.Kafka, "pekko-kafka", "topic-b", "evidence"),
+        DiscoveredIntegration(MethodRef("", "Handler", "m"), DataAccessType.Read, ResourceType.Database, "doobie", "users", "SELECT"),
       )
 
       val adj = LineageAdjustments.builder
-        .method("", "Handler", "m").removeIntegrations("kafka")
+        .method("", "Handler", "m").removeIntegrations(ResourceType.Kafka)
         .build
 
       val (_, result) = adj.apply(Nil, existing)
       result should have size 1
-      result.head.resourceType shouldBe "database"
+      result.head.resourceType shouldBe ResourceType.Database
     }
 
     "addClassIntegration adds to methods with matching resourceType" in {
       val existing = List(
-        DiscoveredIntegration(MethodRef("", "Handler", "methodA"), DataAccessType.Write, "kafka", "pekko-kafka", "unknown-a", "evidence"),
-        DiscoveredIntegration(MethodRef("", "Handler", "methodB"), DataAccessType.Write, "kafka", "pekko-kafka", "unknown-b", "evidence"),
-        DiscoveredIntegration(MethodRef("", "Handler", "query"), DataAccessType.Read, "database", "doobie", "users", "SELECT"),
+        DiscoveredIntegration(MethodRef("", "Handler", "methodA"), DataAccessType.Write, ResourceType.Kafka, "pekko-kafka", "unknown-a", "evidence"),
+        DiscoveredIntegration(MethodRef("", "Handler", "methodB"), DataAccessType.Write, ResourceType.Kafka, "pekko-kafka", "unknown-b", "evidence"),
+        DiscoveredIntegration(MethodRef("", "Handler", "query"), DataAccessType.Read, ResourceType.Database, "doobie", "users", "SELECT"),
       )
 
       val adj = LineageAdjustments.builder
@@ -1208,25 +1208,25 @@ class TastyLineageScannerTest extends AnyFreeSpec {
 
     "removeIntegrations + addClassIntegration = override pattern" in {
       val existing = List(
-        DiscoveredIntegration(MethodRef("", "Handler", "methodA"), DataAccessType.Write, "kafka", "pekko-kafka", "unknown-a", "evidence", Some("Kafka")),
-        DiscoveredIntegration(MethodRef("", "Handler", "methodB"), DataAccessType.Write, "kafka", "pekko-kafka", "unknown-b", "evidence", Some("Kafka")),
-        DiscoveredIntegration(MethodRef("", "Handler", "query"), DataAccessType.Read, "database", "doobie", "users", "SELECT"),
+        DiscoveredIntegration(MethodRef("", "Handler", "methodA"), DataAccessType.Write, ResourceType.Kafka, "pekko-kafka", "unknown-a", "evidence", Some("Kafka")),
+        DiscoveredIntegration(MethodRef("", "Handler", "methodB"), DataAccessType.Write, ResourceType.Kafka, "pekko-kafka", "unknown-b", "evidence", Some("Kafka")),
+        DiscoveredIntegration(MethodRef("", "Handler", "query"), DataAccessType.Read, ResourceType.Database, "doobie", "users", "SELECT"),
       )
 
       val adj = LineageAdjustments.builder
-        .cls("", "Handler").removeIntegrations("kafka")
+        .cls("", "Handler").removeIntegrations(ResourceType.Kafka)
         .cls("", "Handler").writes.kafka("topic.a").kafka("topic.b")
         .build
 
       val (_, result) = adj.apply(Nil, existing)
       // 1 database + 4 kafka (2 methods × 2 topics)
       result should have size 5
-      val kafkaResults = result.filter(_.resourceType == "kafka")
+      val kafkaResults = result.filter(_.resourceType == ResourceType.Kafka)
       kafkaResults should have size 4
       kafkaResults.map(_.target).toSet shouldBe Set("topic.a", "topic.b")
       kafkaResults.foreach(_.scanner shouldBe "manual")
       // database integration untouched
-      val dbResults = result.filter(_.resourceType == "database")
+      val dbResults = result.filter(_.resourceType == ResourceType.Database)
       dbResults should have size 1
       dbResults.head.target shouldBe "users"
     }
@@ -1258,23 +1258,23 @@ class TastyLineageScannerTest extends AnyFreeSpec {
 
     "renameResource renames across all integrations" in {
       val existing = List(
-        DiscoveredIntegration(MethodRef("", "A", "m"), DataAccessType.Write, "kafka", "pekko-kafka", "old-topic", "evidence", Some("Kafka")),
-        DiscoveredIntegration(MethodRef("", "B", "n"), DataAccessType.Write, "kafka", "pekko-kafka", "old-topic", "evidence", Some("Kafka")),
-        DiscoveredIntegration(MethodRef("", "C", "o"), DataAccessType.Read, "database", "doobie", "users", "SELECT"),
+        DiscoveredIntegration(MethodRef("", "A", "m"), DataAccessType.Write, ResourceType.Kafka, "pekko-kafka", "old-topic", "evidence", Some("Kafka")),
+        DiscoveredIntegration(MethodRef("", "B", "n"), DataAccessType.Write, ResourceType.Kafka, "pekko-kafka", "old-topic", "evidence", Some("Kafka")),
+        DiscoveredIntegration(MethodRef("", "C", "o"), DataAccessType.Read, ResourceType.Database, "doobie", "users", "SELECT"),
       )
 
       val adj = LineageAdjustments.builder
-        .resource("kafka", "old-topic").renameTo("new-topic")
+        .resource(ResourceType.Kafka, "old-topic").renameTo("new-topic")
         .build
 
       val (_, result) = adj.apply(Nil, existing)
-      result.filter(_.resourceType == "kafka").foreach(_.target shouldBe "new-topic")
-      result.find(_.resourceType == "database").get.target shouldBe "users"
+      result.filter(_.resourceType == ResourceType.Kafka).foreach(_.target shouldBe "new-topic")
+      result.find(_.resourceType == ResourceType.Database).get.target shouldBe "users"
     }
 
     "empty adjustments passes through unchanged" in {
       val existing = List(
-        DiscoveredIntegration(MethodRef("", "A", "b"), DataAccessType.Read, "database", "doobie", "users", "SELECT"),
+        DiscoveredIntegration(MethodRef("", "A", "b"), DataAccessType.Read, ResourceType.Database, "doobie", "users", "SELECT"),
       )
 
       val (_, result) = LineageAdjustments.empty.apply(Nil, existing)
@@ -1286,9 +1286,9 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       val kafkaDetected = new TastyPekkoKafkaScanner().scan(List(pekkoPkg))
 
       val adj = LineageAdjustments.builder
-        .cls[KafkaFlexiFlowProducer].removeIntegrations("kafka")
+        .cls[KafkaFlexiFlowProducer].removeIntegrations(ResourceType.Kafka)
         .cls[KafkaFlexiFlowProducer].writes.kafka("events.flexiflow-topic")
-        .cls[KafkaPlainSinkProducer].removeIntegrations("kafka")
+        .cls[KafkaPlainSinkProducer].removeIntegrations(ResourceType.Kafka)
         .cls[KafkaPlainSinkProducer].writes.kafka("events.plainsink-topic")
         .build
 
