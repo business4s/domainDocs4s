@@ -1,8 +1,9 @@
 import org.typelevel.scalacoptions.ScalacOptions
 
 lazy val commonSettings = Seq(
-  scalaVersion  := "3.7.3",
+  scalaVersion  := "3.8.2",
   scalacOptions ++= Seq("-no-indent"),
+  tpolecatExcludeOptions += ScalacOptions.fatalWarnings, // deprecated in 3.8.2 (now -Werror)
   libraryDependencies ++= Seq(
     "org.scalatest" %% "scalatest" % "3.2.19" % Test,
   ),
@@ -41,7 +42,7 @@ lazy val core = (project in file("domainDocs4s-core"))
   .settings(
     name := "domainDocs4s-core",
     libraryDependencies ++= Seq(
-      "ch.epfl.scala" %% "tasty-query" % "1.6.1",
+      "ch.epfl.scala" %% "tasty-query" % "1.7.0",
     ),
   )
 

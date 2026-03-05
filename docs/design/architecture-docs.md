@@ -48,6 +48,10 @@ interactive views.
 | Other TASTy scanners (Kafka etc.)    | Design only | Section 7 below                                               |
 | Backstage integration                | Research    | Section 13 below                                              |
 | Parity roadmap (real-world coverage) | Planned     | Section 15 below                                              |
+| Recursive package scanning           | Implemented | `core: lineage/TastyUtils` + all scanners                     |
+| Pekko Kafka scanner                  | Implemented | `core: lineage/TastyPekkoKafkaScanner.scala`                  |
+| Flyway migration scanner             | Implemented | `core: lineage/FlywayMigrationScanner.scala`                  |
+| Real-world integration test          | Documented  | Section 16 below                                              |
 
 All lineage infrastructure is in `domainDocs4s-core/src/main/scala/domaindocs4s/architecture/lineage/`.
 Example classes and tests are in `domainDocs4s-examples/`.
@@ -1214,3 +1218,200 @@ integration targets.
   (e.g., all `doobie` targets → "Database", all `kafka` targets → "Kafka")
 
 This is a rendering enhancement, not a scanner improvement.
+
+## 16. Real-World Integration Test — financial-ledger-service
+
+### 16.1 Overview
+
+A large-scale integration test was performed against `financial-ledger-service-4`, a production event-sourced
+Scala service with ~475 scanned classes across many subpackages. The service has a manually maintained
+architecture diagram (~60 nodes) and uses:
+
+- Pekko persistent actors (journal writes)
+- Pekko projections with Slick handlers (journal reads → DB writes)
+- Doobie for direct SQL queries
+- fs2-kafka for Kafka publishing
+- fs2-grpc for 4 gRPC APIs (~100+ endpoints)
+- AWS S3 SDK for file uploads
+- Flyway migrations for 2 databases (Internal DB, Operational DB)
+
+### 16.2 Issues Found and Fixed
+
+#### 16.2.1 TASTy version compatibility (FIXED)
+
+**Problem:** The library was compiled with Scala 3.7.3, using tasty-query 1.6.1 which supports TASTy up to
+minor version 28.7. The target project used Scala 3.8.2 which produces TASTy 28.8. Runtime error:
+`Forward incompatible TASTy file has version 28.8, expected stable TASTy from 28.0 to 28.7`.
+
+**Fix:** Upgraded domainDocs4s to Scala 3.8.2 and tasty-query 1.7.0.
+
+**Lesson:** domainDocs4s must be compiled with a Scala version that produces TASTy at least as recent as the
+consumer project. tasty-query must also support the consumer's TASTy version. This may require maintaining
+multiple published artifacts for different Scala versions.
+
+#### 16.2.2 Non-recursive package scanning (FIXED)
+
+**Problem:** `TastyUtils.userClasses(pkg)` only returned classes directly in the package, not in subpackages.
+Scanning `com.swissborg.ledger` found 35 classes (root package only), missing hundreds of classes in
+subpackages like `.saga`, `.projections`, `.untyped`, `.view`, `.domains`, etc.
+
+**Fix:** Added `allSubpackages`, `userClassesRecursive`, `moduleClassesRecursive` to `TastyUtils`. Updated
+`TastyCallGraphExtractor`, `DeclarativeScanner`, `TastyDoobieScanner`, and `TastySlickScanner` to use
+recursive scanning. After fix: 475 classes found.
+
+**Lesson:** Real projects have deep package hierarchies. The scanner must always recurse into subpackages.
+This is now the default behavior.
+
+#### 16.2.3 Flyway migration path resolution (FIXED)
+
+**Problem:** `FlywayMigrationScanner` paths are resolved relative to the JVM's working directory. When running
+as an sbt test in a subproject (`tooling`), the CWD is the subproject directory, not the root. Paths like
+`service/src/main/resources/...` didn't resolve.
+
+**Fix:** Consumer used `../service/src/main/resources/...` relative paths.
+
+**Lesson:** The FlywayMigrationScanner should document that paths are CWD-relative. Consider accepting
+`java.nio.file.Path` and supporting classpath-based resolution as an alternative.
+
+#### 16.2.4 Duplicate resources from multiple scanners (FIXED)
+
+**Problem:** `DiscoveredResource.merge` grouped by `(target, resourceType, group)`. The same table (e.g.,
+`daily_balance_change`) discovered by doobie (`group=None`) and flyway (`group=Some("Internal DB")`) became
+two separate resources in the diagram.
+
+**Fix:** Changed merge to group by `(target, resourceType)` only. When the same resource has multiple groups,
+the first non-None group wins.
+
+### 16.3 Open Issues
+
+#### Issue 1: Slick scanner finds 0 results — FIXED
+
+**Severity:** HIGH — this project heavily uses Slick through Pekko projection handlers.
+
+**Root causes found and fixed:**
+
+1. **`isTableInit` checked constructor name for "Table"**: The `<init>` method name never contains "Table".
+   Fixed by checking `New(typeTree).toType` instead.
+
+2. **Phase 2b filtered by `returnsDBIO`**: Anonymous class methods return `Future` (wrapping DBIO in
+   `dbConfig.db.run()`), not `DBIO` directly. Fixed by scanning all methods regardless of return type.
+
+3. **`walk` missing `Select(qual, _)` recursion**: For patterns like `.result.map(...)`, the `.map` Select
+   wasn't recursed into, so `.result` was never reached. Added catch-all `Select`, `DefDef`, `Lambda` cases.
+
+4. **`findFirstTableRef` only checked `Ident`**: Fields accessed as `Select(This, fieldName)` in anonymous
+   classes weren't matched. Fixed by checking Select name against fieldToTable map.
+
+5. **Block-level siblings not scanned**: Table classes and TableQuery vals are siblings in the outer Block,
+   not inside the anonymous ClassDef. Refactored `collectAnonClassTableMappings` into
+   `collectTableMappingsFromScope` to handle both layouts.
+
+6. **Runtime table names**: Most Table classes use a method parameter `tableName: String` rather than string
+   literals. Added `<unresolved:ClassName>` placeholder for unresolvable table names.
+
+**Result:** 34 Slick integrations detected. Tests added for both top-level and factory patterns.
+
+#### Issue 2: No fs2-kafka scanner
+
+**Severity:** HIGH — Kafka is a major integration point.
+
+**Problem:** The existing `TastyPekkoKafkaScanner` targets Pekko Kafka connectors
+(`org.apache.pekko.kafka.scaladsl.Producer`). This project uses `fs2-kafka` which has a completely different
+API (`KafkaProducer`, `ProducerRecords`, etc.).
+
+**Fix needed:** Create a `TastyFs2KafkaScanner` (as a `DeclarativeScanner`) detecting:
+- `KafkaProducer` field method calls → Write
+- `KafkaConsumer` field method calls → Read
+- `ProducerRecords` type references → Write
+
+#### Issue 3: Flyway scanner SQL extraction is too noisy
+
+**Severity:** MEDIUM — produces many false positive table names.
+
+**Problem:** The regex-based SQL table extraction picks up:
+- SQL keywords used as identifiers: `IF`, `and`
+- Partial table names from migration scripts: `j_`, `account_assets_`
+- Partition table definitions: `journal_metadata_0` through `journal_metadata_9`
+- Migration-internal temporary tables: `old_journal`, `new_journal`
+
+**Fix options:**
+1. Add a blocklist of common SQL keywords (`IF`, `AND`, `OR`, `SET`, `NOT`, etc.)
+2. Filter out names shorter than N characters or matching `_$` pattern
+3. Allow configurable table name filter in `FlywayMigrationScanner`
+4. Improve SQL parsing to distinguish `CREATE TABLE x` from other uses
+
+#### Issue 4: Too many gRPC endpoints in diagram
+
+**Severity:** LOW — the folding mechanism works, but raw numbers are high.
+
+**Problem:** The fs2-grpc scanner emits one integration per gRPC method implementation. With 100+ endpoints
+across 4 services, this produces 154 integrations. The class-level renderer folds these into 4 nodes (correct),
+but the raw data is very large and method-level diagrams would be overwhelming.
+
+**Current mitigation:** `ClassLevelConfig.foldByGroup` with `ResourceType.Grpc` in the fold set produces
+clean class-level diagrams with one node per gRPC service.
+
+#### Issue 5: Noise classes in the diagram
+
+**Severity:** LOW — visual quality issue.
+
+**Problem:** The diagram includes test classes (`IntegrationTest`, `TestSagaActorInventory`), data model
+classes with no integrations, helper utilities, and spec classes. These clutter the diagram.
+
+**Fix options:**
+1. Filter by naming convention (exclude `*Test`, `*Spec`, `*Fixture`)
+2. Add a package exclusion list to `LineageScanner`
+3. Only show classes that have at least one integration edge (direct or transitive)
+4. The current `visibleFromCallGraph` filter in the renderer already helps, but test classes that call
+   real code still appear
+
+#### Issue 6: Flyway migration path should support absolute paths
+
+**Severity:** LOW — usability.
+
+**Problem:** `FlywayMigrationScanner` resolves paths relative to CWD, which depends on how the JVM is
+launched. This is fragile for multi-module sbt projects.
+
+**Fix:** Accept `java.nio.file.Path` directly (already done). Consider also accepting a classpath resource
+path, since migration directories are typically on the classpath.
+
+#### Issue 7: Flyway node adds no value to the diagram
+
+**Severity:** MEDIUM — obscures the diagram with excessive connections.
+
+**Problem:** The Flyway scanner produces a single "flyway" resource node that connects to every table
+it discovers in migration scripts. Since Flyway migrations touch nearly every table in the database,
+this creates a massive hub node with connections to 100+ tables, dominating the diagram and obscuring
+the actual data flow between application classes and tables. The Flyway node doesn't represent runtime
+data access — it represents schema management, which is a different concern.
+
+**Fix options:**
+1. Remove Flyway scanner from the default diagram entirely — use it only as a table name cross-reference
+   source (to validate/enrich table names found by code scanners like Slick and Doobie)
+2. Make Flyway results opt-in with a configuration flag
+3. Render Flyway tables in a separate subgraph/layer, not connected to the main data flow
+
+### 16.4 Results Summary
+
+| Scanner         | Integrations | Assessment                                          |
+|-----------------|-------------|------------------------------------------------------|
+| doobie          | 9           | Working well, found all direct SQL queries            |
+| fs2-grpc        | 154         | Working, detects all endpoints. Folding handles volume |
+| pekko-journal   | 8           | Working, finds actor writes and projection reads      |
+| s3              | 1           | Working, found SubledgerCsvExport upload              |
+| flyway          | 128         | Working but noisy, many false positive table names    |
+| slick           | 34          | Working — factory pattern (anonymous class) support added |
+| pekko-kafka     | 0           | N/A — project uses fs2-kafka, not pekko-kafka         |
+| **Total**       | **300**     | 172 code-detected + 128 flyway-detected               |
+
+After deduplication: 219 resources (many are flyway noise).
+
+### 16.5 Changes Made to domainDocs4s
+
+1. `model.scala` — Added `allSubpackages`, `userClassesRecursive`, `moduleClassesRecursive` to `TastyUtils`.
+   Fixed `DiscoveredResource.merge` to deduplicate across groups.
+2. `TastyCallGraphExtractor.scala` — Uses recursive package scanning.
+3. `DeclarativeScanner.scala` — Uses recursive paOk, ckage scanning.
+4. `TastyDoobieScanner.scala` — Uses recursive package scanning.
+5. `TastySlickScanner.scala` — Uses recursive package scanning.
+6. `build.sbt` — Upgraded to Scala 3.8.2, tasty-query 1.7.0.

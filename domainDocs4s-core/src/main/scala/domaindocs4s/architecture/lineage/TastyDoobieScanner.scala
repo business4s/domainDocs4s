@@ -32,13 +32,15 @@ class TastyDoobieScanner(
     packages.flatMap(scanPackage)
 
   private def scanPackage(packageName: String): List[DiscoveredIntegration] = {
-    val classes = TastyUtils.userClasses(ctx.findPackage(packageName))
+    val pkg = ctx.findPackage(packageName)
+    val classesWithPkg = TastyUtils.userClassesRecursive(pkg)
 
-    classes.flatMap { cls =>
+    classesWithPkg.flatMap { case (ownerPkg, cls) =>
       val className = cls.name.toString.stripSuffix("$")
+      val pkgName = ownerPkg.fullName.toString
       cls.declarations.collect {
         case ts: TermSymbol if returnsConnectionIO(ts.declaredType) =>
-          val ref = MethodRef(packageName, className, ts.name.toString)
+          val ref = MethodRef(pkgName, className, ts.name.toString)
           ts.tree.toList.flatMap {
             case defDef: DefDef => defDef.rhs.toList.flatMap(rhs => findDoobieOps(ref, rhs))
             case _              => Nil

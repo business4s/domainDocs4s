@@ -772,6 +772,30 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       output should include("slick")
       output should include("database")
     }
+
+    // ── Factory pattern (anonymous class) tests ──────────────────────────
+
+    val factoryIntegrations = slickIntegrations.filter(_.method.className == "FactoryRepo")
+
+    "factory pattern: discovers integrations inside anonymous class" in {
+      factoryIntegrations should not be empty
+    }
+
+    "factory pattern: resolves literal table name" in {
+      factoryIntegrations.map(_.target).toSet should contain("factory_orders")
+    }
+
+    "factory pattern: produces unresolved placeholder for variable table name" in {
+      factoryIntegrations.map(_.target).toSet should contain("<unresolved:ItemTable>")
+    }
+
+    "factory pattern: classifies reads and writes correctly" in {
+      val reads = factoryIntegrations.filter(_.accessType == DataAccessType.Read)
+      val writes = factoryIntegrations.filter(_.accessType == DataAccessType.Write)
+
+      reads.map(_.method.methodName).toSet should contain allOf ("getOrders", "getItems")
+      writes.map(_.method.methodName).toSet should contain allOf ("insertOrder", "deleteItem")
+    }
   }
 
   "MermaidRenderer class-level" - {
@@ -1033,6 +1057,26 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       val usersResource = merged.filter(r => r.target == "users" && r.group.isEmpty)
       usersResource should have size 1
       usersResource.head.discoveries.map(_.scanner).toSet should contain allOf ("doobie", "flyway")
+    }
+
+    "resource scanners contribute to resources but not to integrations" in {
+      val scanner = LineageScanner(
+        packages = List(pkg),
+        scanners = List(new TastyDoobieScanner()),
+        resourceScanners = List(new FlywayMigrationScanner(flywayDir, group = Some("core-db"))),
+      )
+      val result = scanner.scan()
+
+      // Flyway results should not appear in integrations (no "flyway" class node or edges)
+      result.integrations.filter(_.scanner == "flyway") shouldBe empty
+
+      // Flyway results should be in resourceOnlyIntegrations
+      result.resourceOnlyIntegrations.filter(_.scanner == "flyway") should not be empty
+
+      // Resources should include both doobie and flyway tables
+      val scanners = result.resources.flatMap(_.discoveries.map(_.scanner)).toSet
+      scanners should contain("doobie")
+      scanners should contain("flyway")
     }
   }
 
@@ -1351,4 +1395,5 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       output should include("grpc")
     }
   }
+
 }

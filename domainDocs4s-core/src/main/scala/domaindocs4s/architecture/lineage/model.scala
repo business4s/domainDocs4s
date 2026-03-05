@@ -17,6 +17,20 @@ private[lineage] object TastyUtils {
       case cls: ClassSymbol if isModuleClass(cls) => cls
     }
 
+  /** Recursively collect all subpackages (including the root package itself). */
+  def allSubpackages(pkg: PackageSymbol)(using Context): List[PackageSymbol] = {
+    val subPkgs = pkg.declarations.collect { case sub: PackageSymbol => sub }
+    pkg :: subPkgs.flatMap(allSubpackages)
+  }
+
+  /** Recursively collect user classes from a package and all subpackages. */
+  def userClassesRecursive(pkg: PackageSymbol)(using Context): List[(PackageSymbol, ClassSymbol)] =
+    allSubpackages(pkg).flatMap(p => userClasses(p).map(p -> _))
+
+  /** Recursively collect module classes from a package and all subpackages. */
+  def moduleClassesRecursive(pkg: PackageSymbol)(using Context): List[(PackageSymbol, ClassSymbol)] =
+    allSubpackages(pkg).flatMap(p => moduleClasses(p).map(p -> _))
+
   private def isUserClass(cls: ClassSymbol): Boolean = {
     val name = cls.name.toString
     !name.endsWith("$") && !name.startsWith("<")
@@ -214,11 +228,16 @@ case class DiscoveredResource(
 
 object DiscoveredResource {
 
-  /** Merge flat integrations into deduplicated resources. */
+  /** Merge flat integrations into deduplicated resources.
+    *
+    * Groups by (target, resourceType) — if the same resource is found by
+    * multiple scanners with different groups, the first non-None group wins.
+    */
   def merge(integrations: List[DiscoveredIntegration]): List[DiscoveredResource] =
     integrations
-      .groupBy(i => (i.target, i.resourceType, i.group))
-      .map { case ((target, resourceType, group), dis) =>
+      .groupBy(i => (i.target, i.resourceType))
+      .map { case ((target, resourceType), dis) =>
+        val group = dis.flatMap(_.group).headOption
         DiscoveredResource(
           target = target,
           resourceType = resourceType,
@@ -312,16 +331,23 @@ case class LineageChain(
     integration: DiscoveredIntegration,
 )
 
-/** Complete lineage result — all classes, call graph, and lineage chains. */
+/** Complete lineage result — all classes, call graph, and lineage chains.
+  *
+  * `integrations` contains code-scanned integrations (from TASTy scanners) that drive
+  * class nodes and edges in diagrams. `resourceOnlyIntegrations` contains discoveries
+  * from resource scanners (e.g., Flyway) that contribute to resource deduplication but
+  * do not create class nodes or edges.
+  */
 case class ScanResult(
     classes: List[ScannedClass],
     callGraph: List[CallEdge],
     integrations: List[DiscoveredIntegration],
     lineageChains: List[LineageChain],
     classDisplayNames: Map[(String, String), String] = Map.empty,
+    resourceOnlyIntegrations: List[DiscoveredIntegration] = Nil,
 ) {
   lazy val allMethods: List[ScannedMethod] = classes.flatMap(_.methods)
-  lazy val resources: List[DiscoveredResource] = DiscoveredResource.merge(integrations)
+  lazy val resources: List[DiscoveredResource] = DiscoveredResource.merge(integrations ++ resourceOnlyIntegrations)
 
   def findClass(name: String): Option[ScannedClass] =
     classes.find(_.name == name)

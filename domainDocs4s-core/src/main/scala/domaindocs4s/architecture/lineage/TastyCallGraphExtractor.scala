@@ -20,16 +20,18 @@ import scala.collection.mutable.ListBuffer
 class TastyCallGraphExtractor(using ctx: Context) {
 
   def extract(packageName: String): List[ExtractedMethod] = {
-    val classes = TastyUtils.userClasses(ctx.findPackage(packageName))
+    val pkg = ctx.findPackage(packageName)
+    val classesWithPkg = TastyUtils.userClassesRecursive(pkg)
 
-    classes.flatMap { cls =>
+    classesWithPkg.flatMap { case (ownerPkg, cls) =>
       val className = cls.name.toString.stripSuffix("$")
+      val pkgName = ownerPkg.fullName.toString
       val fieldTypes = resolveFieldTypes(cls)
 
       cls.declarations.collect {
         case ts: TermSymbol if isUserMethod(ts) =>
           val calls = extractCalls(ts, fieldTypes)
-          ExtractedMethod(className, packageName, ts.name.toString, calls)
+          ExtractedMethod(className, pkgName, ts.name.toString, calls)
       }
     }
   }

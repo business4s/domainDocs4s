@@ -156,8 +156,10 @@ class DeclarativeScanner(
 
   private def scanPackage(packageName: String): List[DiscoveredIntegration] = {
     val pkg = ctx.findPackage(packageName)
-    val classes = TastyUtils.userClasses(pkg) ++ TastyUtils.moduleClasses(pkg)
-    classes.flatMap(scanClass(packageName, _))
+    val userWithPkg = TastyUtils.userClassesRecursive(pkg)
+    val moduleWithPkg = TastyUtils.moduleClassesRecursive(pkg)
+    val allWithPkg = userWithPkg ++ moduleWithPkg
+    allWithPkg.flatMap { case (ownerPkg, cls) => scanClass(ownerPkg.fullName.toString, cls) }
   }
 
   private def scanClass(packageName: String, cls: ClassSymbol): List[DiscoveredIntegration] = {
