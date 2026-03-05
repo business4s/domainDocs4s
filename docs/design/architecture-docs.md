@@ -83,11 +83,8 @@ Phase 0: Call Graph Extraction       Phase 1: Integration Scanning
 │  ]                       │         │    TastySlickScanner          │
 │                          │         │    TastyS3Scanner             │
 │  Generic: any package    │         │                               │
-│  field.method() calls    │         │  ResourceScanner trait:       │
-└────────────┬─────────────┘         │    FlywayMigrationScanner     │
-             │                       │                               │
-             │                       │  All ──→ List[                │
-             │                       │    DiscoveredIntegration       │
+│  field.method() calls    │         │  ──→ List[                    │
+└────────────┬─────────────┘         │    DiscoveredIntegration      │
              │                       │  ]                            │
              │                       └─────────────┬─────────────────┘
              │                                     │
@@ -98,7 +95,7 @@ Phase 0: Call Graph Extraction       Phase 1: Integration Scanning
                   │  LineageAdjustments      │
                   │                          │
                   │  Modifies call graph +   │
-                  │  integrations:           │
+                  │  code integrations:      │
                   │  add/remove/hide/rename  │
                   │  detection validation    │
                   └────────────┬────────────┘
@@ -115,7 +112,27 @@ Phase 0: Call Graph Extraction       Phase 1: Integration Scanning
                   │  - Builds lineage chains │
                   │  - Entry point → ext     │
                   └────────────┬────────────┘
-                               ▼
+                               │
+          Resource Scanners    │
+          (separate path)      │
+          ┌──────────────────┐ │
+          │ ResourceScanner: │ │
+          │  FlywayMigration │ │
+          │  Scanner         │ │
+          │                  │ │
+          │ ──→ List[        │ │
+          │  DiscoveredInt.] │ │
+          └────────┬─────────┘ │
+                   │           │
+                   ▼           ▼
+              ScanResult merges both:
+              integrations (code) drive
+              nodes + edges in diagrams;
+              resourceOnlyIntegrations
+              (flyway etc.) enrich resource
+              dedup only
+                         │
+                         ▼
                      Phase 3: Rendering
                      ┌─────────────────┐
                      │ MermaidRenderer  │
@@ -182,9 +199,10 @@ case class ClassLevelConfig(
 case class ScanResult(
                        classes: List[ScannedClass],
                        callGraph: List[CallEdge],
-                       integrations: List[DiscoveredIntegration],
+                       integrations: List[DiscoveredIntegration],    // code-scanned — drive diagram nodes + edges
                        lineageChains: List[LineageChain],
                        classDisplayNames: Map[(String, String), String] = Map.empty, // (pkg, cls) → display name
+                       resourceOnlyIntegrations: List[DiscoveredIntegration] = Nil,  // resource-scanned (e.g. Flyway) — enrich dedup only
                      )
 
 case class LineageChain(
@@ -203,8 +221,9 @@ trait IntegrationScanner {
 ```
 
 TASTy-based scanners iterate over the package list internally. `LineageAdjustments` provides
-a separate mechanism for manual modifications — it operates on the raw scanner output (call graph +
-integrations) before `LineageBuilder` runs.
+a separate mechanism for manual modifications — it operates on the raw code scanner output (call graph +
+code integrations) before `LineageBuilder` runs. Resource scanner results (e.g., Flyway) bypass
+adjustments entirely and are stored in `ScanResult.resourceOnlyIntegrations` for resource deduplication only.
 
 `LineageScanner` (`LineageScanner.scala`) is the top-level orchestrator — takes packages, scanners,
 adjustments, and enrichment config, runs everything, and returns a `ScanResult`:
@@ -1375,7 +1394,7 @@ launched. This is fragile for multi-module sbt projects.
 **Fix:** Accept `java.nio.file.Path` directly (already done). Consider also accepting a classpath resource
 path, since migration directories are typically on the classpath.
 
-#### Issue 7: Flyway node adds no value to the diagram
+#### Issue 7: Flyway node adds no value to the diagram — FIXED
 
 **Severity:** MEDIUM — obscures the diagram with excessive connections.
 
@@ -1385,11 +1404,11 @@ this creates a massive hub node with connections to 100+ tables, dominating the 
 the actual data flow between application classes and tables. The Flyway node doesn't represent runtime
 data access — it represents schema management, which is a different concern.
 
-**Fix options:**
-1. Remove Flyway scanner from the default diagram entirely — use it only as a table name cross-reference
-   source (to validate/enrich table names found by code scanners like Slick and Doobie)
-2. Make Flyway results opt-in with a configuration flag
-3. Render Flyway tables in a separate subgraph/layer, not connected to the main data flow
+**Fix:** Resource scanner results (Flyway) are now separated from code scanner results in
+`LineageScanner`. Resource integrations go into `ScanResult.resourceOnlyIntegrations` instead of
+the main `integrations` list. They contribute to `DiscoveredResource.merge` (table name
+deduplication/enrichment) but do not create class nodes or edges in diagrams. Adjustments only
+apply to code-scanned integrations.
 
 ### 16.4 Results Summary
 
@@ -1399,7 +1418,7 @@ data access — it represents schema management, which is a different concern.
 | fs2-grpc        | 154         | Working, detects all endpoints. Folding handles volume |
 | pekko-journal   | 8           | Working, finds actor writes and projection reads      |
 | s3              | 1           | Working, found SubledgerCsvExport upload              |
-| flyway          | 128         | Working but noisy, many false positive table names    |
+| flyway          | 128         | Resource-only (dedup enrichment, no diagram nodes). Still noisy |
 | slick           | 34          | Working — factory pattern (anonymous class) support added |
 | pekko-kafka     | 0           | N/A — project uses fs2-kafka, not pekko-kafka         |
 | **Total**       | **300**     | 172 code-detected + 128 flyway-detected               |
@@ -1409,9 +1428,12 @@ After deduplication: 219 resources (many are flyway noise).
 ### 16.5 Changes Made to domainDocs4s
 
 1. `model.scala` — Added `allSubpackages`, `userClassesRecursive`, `moduleClassesRecursive` to `TastyUtils`.
-   Fixed `DiscoveredResource.merge` to deduplicate across groups.
+   Fixed `DiscoveredResource.merge` to deduplicate across groups. Added `resourceOnlyIntegrations` field
+   to `ScanResult` for resource scanner results that enrich dedup without creating diagram nodes.
 2. `TastyCallGraphExtractor.scala` — Uses recursive package scanning.
-3. `DeclarativeScanner.scala` — Uses recursive paOk, ckage scanning.
+3. `DeclarativeScanner.scala` — Uses recursive package scanning.
 4. `TastyDoobieScanner.scala` — Uses recursive package scanning.
-5. `TastySlickScanner.scala` — Uses recursive package scanning.
+5. `TastySlickScanner.scala` — Uses recursive package scanning. Fixed factory pattern (anonymous class) support.
 6. `build.sbt` — Upgraded to Scala 3.8.2, tasty-query 1.7.0.
+7. `LineageScanner.scala` — Separated resource scanner results from code scanner pipeline. Resource
+   integrations bypass adjustments and go into `resourceOnlyIntegrations` on `ScanResult`.

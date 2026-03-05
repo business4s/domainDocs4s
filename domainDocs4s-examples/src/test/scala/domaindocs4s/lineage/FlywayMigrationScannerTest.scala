@@ -1,0 +1,113 @@
+package domaindocs4s.lineage
+
+import domaindocs4s.architecture.lineage.*
+import domaindocs4s.collector.TastyContext
+import org.scalatest.freespec.AnyFreeSpec
+import org.scalatest.matchers.should.Matchers.*
+import tastyquery.Contexts.Context
+
+import java.nio.file.Paths
+
+class FlywayMigrationScannerTest extends AnyFreeSpec {
+
+  given ctx: Context = TastyContext.fromCurrentProcess()
+
+  private val pkg = "domaindocs4s.architecture.lineage.example"
+
+  private val flywayDir = Paths.get(getClass.getClassLoader.getResource("flyway").toURI)
+  private val flywayScanner = new FlywayMigrationScanner(flywayDir, group = Some("core-db"))
+  private val flywayIntegrations = flywayScanner.scan()
+
+  "FlywayMigrationScanner" - {
+
+    "discovers CREATE TABLE statements as Write" in {
+      val creates = flywayIntegrations.filter { di =>
+        di.accessType == DataAccessType.Write && di.evidence == "V001__create_tables.sql"
+      }
+      creates.map(_.target).toSet should contain allOf ("users", "transactions")
+    }
+
+    "discovers ALTER TABLE as Write" in {
+      val alters = flywayIntegrations.filter(_.evidence == "V003__alter_tables.sql")
+      alters should have size 1
+      alters.head.target shouldBe "users"
+      alters.head.accessType shouldBe DataAccessType.Write
+    }
+
+    "discovers CREATE VIEW as Write to view and Read from source tables" in {
+      val viewIntegrations = flywayIntegrations.filter(_.evidence == "V002__create_views.sql")
+
+      val viewWrite = viewIntegrations.filter(di => di.accessType == DataAccessType.Write)
+      viewWrite should have size 1
+      viewWrite.head.target shouldBe "user_transaction_summary"
+
+      val sourceReads = viewIntegrations.filter(di => di.accessType == DataAccessType.Read)
+      sourceReads.map(_.target).toSet should contain allOf ("users", "transactions")
+    }
+
+    "all flyway integrations have resourceType database and scanner flyway" in {
+      flywayIntegrations should not be empty
+      flywayIntegrations.foreach { di =>
+        di.resourceType shouldBe ResourceType.Database
+        di.scanner shouldBe "flyway"
+      }
+    }
+
+    "all flyway integrations have group core-db" in {
+      flywayIntegrations.foreach(_.group shouldBe Some("core-db"))
+    }
+
+    "evidence includes filename" in {
+      flywayIntegrations.foreach { di =>
+        di.evidence should endWith(".sql")
+      }
+    }
+
+    "method refs use flyway class and version" in {
+      flywayIntegrations.foreach { di =>
+        di.method.className shouldBe "flyway"
+        di.method.methodName should startWith("V")
+      }
+    }
+
+    "merges with doobie integrations into resources" in {
+      val doobieIntegrations = new TastyDoobieScanner().scan(List(pkg))
+      val allIntegrations = doobieIntegrations ++ flywayIntegrations
+      val resources = DiscoveredResource.merge(allIntegrations)
+
+      // "users" table from doobie (group=None) and flyway (group=Some("core-db")) stay separate
+      // because group differs
+      val usersResources = resources.filter(_.target == "users")
+      usersResources should not be empty
+
+      // But if groups matched, they would merge
+      val ungroupedFlyway = new FlywayMigrationScanner(flywayDir).scan()
+      val doobieAndFlyway = doobieIntegrations ++ ungroupedFlyway
+      val merged = DiscoveredResource.merge(doobieAndFlyway)
+      val usersResource = merged.filter(r => r.target == "users" && r.group.isEmpty)
+      usersResource should have size 1
+      usersResource.head.discoveries.map(_.scanner).toSet should contain allOf ("doobie", "flyway")
+    }
+
+    "resource scanners contribute to resources but not to integrations" in {
+      val scanner = LineageScanner(
+        packages = List(pkg),
+        scanners = List(new TastyDoobieScanner()),
+        resourceScanners = List(new FlywayMigrationScanner(flywayDir, group = Some("core-db"))),
+      )
+      val result = scanner.scan()
+
+      // Flyway results should not appear in integrations (no "flyway" class node or edges)
+      result.integrations.filter(_.scanner == "flyway") shouldBe empty
+
+      // Flyway results should be in resourceOnlyIntegrations
+      result.resourceOnlyIntegrations.filter(_.scanner == "flyway") should not be empty
+
+      // Resources should include both doobie and flyway tables
+      val scanners = result.resources.flatMap(_.discoveries.map(_.scanner)).toSet
+      scanners should contain("doobie")
+      scanners should contain("flyway")
+    }
+  }
+
+}
