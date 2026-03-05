@@ -25,7 +25,7 @@ interactive views.
 | Data lineage model                   | Implemented | `core: lineage/model.scala`                                   |
 | Doobie scanner (TASTy-based)         | Implemented | `core: lineage/TastyDoobieScanner.scala`                      |
 | fs2-grpc scanner (server+client)     | Implemented | `core: lineage/TastyFs2GrpcScanner.scala`                     |
-| Manual scanner (Kafka + custom)      | Implemented | `core: lineage/ManualScanner.scala`                           |
+| Lineage adjustments (full graph mod) | Implemented | `core: lineage/LineageAdjustments.scala`                      |
 | Method ref macro (`_.method`)        | Implemented | `core: macros/MethodRefMacro.scala`                           |
 | Call graph extractor                 | Implemented | `core: lineage/TastyCallGraphExtractor.scala`                 |
 | Lineage builder                      | Implemented | `core: lineage/LineageBuilder.scala`                          |
@@ -34,13 +34,14 @@ interactive views.
 | Proto files (user+rate service)      | Implemented | `examples: src/main/protobuf/{user,rate}_service.proto`       |
 | Integration grouping                 | Implemented | `core: lineage/model.scala` (IntegrationGroupConfig)          |
 | Class-level Mermaid rendering        | Implemented | `core: lineage/MermaidRenderer.scala`                         |
-| Class-level config (fold+hide+group) | Implemented | `core: lineage/model.scala` (ClassLevelConfig, ClassGrouping) |
+| Class-level config (fold+group)      | Implemented | `core: lineage/model.scala` (ClassLevelConfig, ClassGrouping) |
 | Pekko journal scanner                | Implemented | `core: lineage/TastyPekkoJournalScanner.scala`                |
 | Slick scanner (TASTy-based)          | Implemented | `core: lineage/TastySlickScanner.scala`                       |
+| S3 scanner (TASTy-based)             | Implemented | `core: lineage/TastyS3Scanner.scala`                          |
 | IntegrationScanner trait             | Implemented | `core: lineage/model.scala`                                   |
 | LineageScanner (top-level API)       | Implemented | `core: lineage/LineageScanner.scala`                          |
 | TASTy debug utility                  | Implemented | `core: lineage/TastyDebug.scala`                              |
-| Tests (47 tests passing)             | Implemented | `examples: TastyLineageScannerTest.scala`                     |
+| Tests (101 tests passing)            | Implemented | `examples: TastyLineageScannerTest.scala`                     |
 | Service flow DSL                     | Design only | Section 6 below                                               |
 | External spec / system view          | Design only | Sections 8-9 below                                            |
 | Cytoscape.js renderer                | Design only | Section 10.3 below                                            |
@@ -63,23 +64,24 @@ scanners (kafka, gRPC, etc.) without changing the lineage builder.
 ```
                          LineageScanner (top-level API)
                     ┌─────────────────────────────────────┐
-                    │  packages + scanners + enrichment    │
-                    │  → scan() → ScanResult              │
+                    │  packages + scanners + adjustments   │
+                    │  + enrichment → scan() → ScanResult  │
                     └──────────────┬──────────────────────┘
                                    │ orchestrates
                     ┌──────────────┴──────────────────────┐
                     │                                      │
 Phase 0: Call Graph Extraction       Phase 1: Integration Scanning
 ┌──────────────────────────┐         ┌───────────────────────────────┐
-│  TastyCallGraphExtractor │         │  All implement                │
-│                          │         │  IntegrationScanner trait:    │
-│  TASTy ──→ List[         │         │                               │
-│    ExtractedMethod       │         │    TastyDoobieScanner         │
-│  ]                       │         │    TastyFs2GrpcScanner        │
-│                          │         │    TastyPekkoJournalScanner   │
-│  Generic: any package    │         │    TastySlickScanner          │
-│  field.method() calls    │         │    ManualScanner              │
-└────────────┬─────────────┘         │                               │
+│  TastyCallGraphExtractor │         │  IntegrationScanner trait:    │
+│                          │         │    TastyDoobieScanner         │
+│  TASTy ──→ List[         │         │    TastyFs2GrpcScanner        │
+│    ExtractedMethod       │         │    TastyPekkoJournalScanner   │
+│  ]                       │         │    TastySlickScanner          │
+│                          │         │    TastyS3Scanner             │
+│  Generic: any package    │         │                               │
+│  field.method() calls    │         │  ResourceScanner trait:       │
+└────────────┬─────────────┘         │    FlywayMigrationScanner     │
+             │                       │                               │
              │                       │  All ──→ List[                │
              │                       │    DiscoveredIntegration       │
              │                       │  ]                            │
@@ -87,6 +89,16 @@ Phase 0: Call Graph Extraction       Phase 1: Integration Scanning
              │                                     │
              └──────────────┬──────────────────────┘
                             ▼
+                  Phase 1.5: Adjustments
+                  ┌─────────────────────────┐
+                  │  LineageAdjustments      │
+                  │                          │
+                  │  Modifies call graph +   │
+                  │  integrations:           │
+                  │  add/remove/hide/rename  │
+                  │  detection validation    │
+                  └────────────┬────────────┘
+                               ▼
                   Phase 2: Lineage Building
                   ┌─────────────────────────┐
                   │     LineageBuilder       │
@@ -154,12 +166,13 @@ object ClassGrouping {
 // Configuration for class-level Mermaid rendering
 case class ClassLevelConfig(
                              foldByGroup: Set[String] = Set("grpc"), // integration types to collapse by group
-                             hiddenClasses: Set[String] = Set.empty, // classes to hide (integrations promoted to callers)
                              classGrouping: ClassGrouping = ClassGrouping.NoGrouping, // spatial grouping of class nodes
                            )
 // Type-safe builder:
-//   ClassLevelConfig.builder.hide[UserRepo].groupByPackage("com.foo").build
+//   ClassLevelConfig.builder.groupByPackage("com.foo").build
 //   ClassLevelConfig.builder.groupClassesBy(cls => Some(cls.name.head.toString)).build
+//
+// Note: class hiding is done via LineageAdjustments (.remove), not ClassLevelConfig.
 
 // Phase 2 output — full lineage result
 case class ScanResult(
@@ -167,6 +180,7 @@ case class ScanResult(
                        callGraph: List[CallEdge],
                        integrations: List[DiscoveredIntegration],
                        lineageChains: List[LineageChain],
+                       classDisplayNames: Map[(String, String), String] = Map.empty, // (pkg, cls) → display name
                      )
 
 case class LineageChain(
@@ -184,16 +198,22 @@ trait IntegrationScanner {
 }
 ```
 
-TASTy-based scanners iterate over the package list internally. `ManualScanner.builder...build` returns
-an `IntegrationScanner` that ignores the package list (its integrations are declared, not discovered).
+TASTy-based scanners iterate over the package list internally. `LineageAdjustments` provides
+a separate mechanism for manual modifications — it operates on the raw scanner output (call graph +
+integrations) before `LineageBuilder` runs.
 
 `LineageScanner` (`LineageScanner.scala`) is the top-level orchestrator — takes packages, scanners,
-and enrichment config, runs everything, and returns a `ScanResult`:
+adjustments, and enrichment config, runs everything, and returns a `ScanResult`:
 
 ```scala
 val result = new LineageScanner(
   packages = List("com.example.app", "com.example.app.persistence"),
-  scanners = List(new TastyDoobieScanner(), new TastySlickScanner(), manualScanner),
+  scanners = List(new TastyDoobieScanner(), new TastySlickScanner()),
+  adjustments = LineageAdjustments.builder
+    .method[EventPublisher](_.publish).writes.kafka("events.topic")
+    .cls[S3Exporter].removeIntegrations("s3")
+    .cls[S3Exporter].writes.s3("exports-bucket")
+    .build,
   enrichment = IntegrationGroupConfig.builder.group[UserRepo]("user-db").build,
 ).scan()
 ```
@@ -261,36 +281,80 @@ Detection approach:
 3. Walk method bodies with `TreeTraverser` looking for `Apply(Select(Ident(field), method), _)` patterns
 4. Service name derived from the field's type name minus the `Fs2Grpc` suffix
 
-### 3.5 Manual Scanner (Kafka and Custom Integrations)
+### 3.5 Lineage Adjustments (Manual Graph Modifications)
 
-`ManualScanner` handles integrations that can't be auto-detected from TASTy — Kafka producers/consumers
-(library-specific: fs2-kafka, pekko-kafka, etc.), custom protocols, or any integration where the usage
-pattern varies too much for reliable AST matching.
+`LineageAdjustments` is the ultimate escape hatch for modifying auto-detected lineage graphs. It uses
+a selector-based API to pinpoint any element of the diagram (class, method, connection, external
+resource) and then apply an action to it.
 
-The builder uses a compile-time macro (`MethodRefMacro` in `domainDocs4s-core`) to extract class and
-method names from `_.methodName` lambdas, providing type-safe references instead of raw strings:
+**Selectors** target elements:
+- `method[T](_.name)` / `method(pkg, cls, name)` — a specific method
+- `cls[T]` / `cls(pkg, name)` — all methods of a class
+- `resource(resourceType, target)` — an external resource node
+
+**Actions** modify the graph (Method and Class support the same operations):
+- **Method/Class**: `.reads`/`.writes` + `.kafka()`/`.s3()`/`.database()`/`.grpc()`/`.journal()`/`.custom()` — add integrations
+- **Method/Class**: `.calls[T](_.name)` / `.removesCall[T](_.name)` — add/remove call edges
+- **Method/Class**: `.removeIntegration(type, target)` / `.removeIntegrations(type)` — remove integrations
+- **Method/Class**: `.remove` — hide from graph (reconnect callers → callees, promote integrations to callers)
+- **Method/Class**: `.delete` — hard-remove from graph (disconnect, discard integrations)
+- **Class only**: `.renameTo(displayName)` — change display label without affecting node IDs or data
+- **Resource**: `.renameTo(newTarget)` / `.setGroup(group)` / `.remove` — modify resource nodes
+
+**Detection strictness** for class-level integrations:
+
+Class-level integrations (via `cls[T].writes.kafka(...)`) are **strict by default** — `apply()` throws
+if no auto-detected integration of the same resource type exists for the class or any method reachable
+through its call graph. This catches stale manual entries when code changes.
+
+- **Builder-level opt-out**: `.undetected("s3", "kafka")` — mark resource types as manual-only
+- **Per-item opt-out**: `.cls[Handler].writes.kafka("topic").undetected`
+- **Per-item opt-in**: `.cls[Handler].writes.s3("bucket").detected` — override builder-level `.undetected`
+
+The builder uses compile-time macros (`MethodRefMacro`) for type-safe references:
 
 ```scala
-val manualScanner = ManualScanner.builder
+val adjustments = LineageAdjustments.builder
+  // Add integration (method can't be auto-detected)
   .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
-  .method[EventConsumer](_.consume).reads.kafka("input.events", cluster = "Analytics")
-  .method[S3Exporter](_.export).writes.custom("s3", "my-bucket/exports", group = Some("S3"))
-  .build  // returns IntegrationScanner
+  // Override auto-detected targets (remove + re-add)
+  .cls[S3Exporter].removeIntegrations("s3")
+  .cls[S3Exporter].writes.s3("exports-bucket")
+  // Add call edges for undetected calls
+  .method[UserService](_.deposit).calls[AuditService](_.log)
+  // Modify resources
+  .resource("kafka", "old-topic").renameTo("new-topic")
+  // Remove false positives
+  .cls[InternalHelper].remove
+  // String-based selectors for non-TASTy elements
+  .method("com.example", "ExternalService", "call").writes.grpc("ExternalService/getData")
+  .build
 ```
 
 Key design decisions:
 
-- **Same interface**: `build` returns an `IntegrationScanner`, composable with TASTy-based scanners
-  in the same `scanners` list — no special handling needed.
-- **Kafka cluster grouping**: `.kafka(topic, cluster)` sets `group = Some(cluster)`, defaulting to
-  `"Kafka"`. Topics render grouped by cluster in diagrams.
-- **Generic escape hatch**: `.custom(integrationType, target)` supports any integration type not
-  covered by specific methods. The `kafka()` method itself delegates to `custom()`.
-- **Macro in core module**: `MethodRefMacro` lives in `domainDocs4s-core` (compiles before examples)
-  and extracts `(className, methodName)` from `T => Any` lambdas at compile time. Zero runtime overhead.
+- **Selector + action pattern**: every modification starts by selecting what to modify, then says
+  what to do. Additions use the same mental model (select a method, declare what it does).
+- **Operates on raw data**: adjustments apply between scanner output and `LineageBuilder`. This means
+  `LineageBuilder` recomputes effective access types and lineage chains after all modifications.
+- **No override magic**: unlike the old `ManualScanner`, the new API is explicit. To replace
+  auto-detected targets, you `removeIntegrations` then add new ones. Two clear steps instead of
+  implicit match-and-replace semantics.
+- **Class-level resolution**: `cls[T].writes.kafka("topic")` finds methods that already have kafka
+  integrations (from auto-detection) and adds the new target to each. This enables concise overrides
+  for classes with multiple producing methods.
+- **Hide vs delete**: `.remove` hides a node while preserving graph connectivity (callers get
+  reconnected to callees, integrations promoted to non-hidden callers). `.delete` hard-removes
+  with no reconnection. Both work at method and class level.
+- **Display rename**: `.renameTo(displayName)` on classes changes only the Mermaid label — node IDs,
+  call graph, and integrations remain unchanged. Stored in `ScanResult.classDisplayNames`.
+- **Synthetic methods**: when adding integrations/calls referencing methods not in the TASTy call
+  graph, the system creates synthetic `ExtractedMethod` entries so they appear in the diagram.
+- **Macro in core module**: `MethodRefMacro` lives in `domainDocs4s-core` and extracts
+  `(packageName, className, methodName)` from `T => Any` lambdas at compile time.
 
-The manual scanner integrates with the call graph: if `UserGrpcApi.deposit` calls
-`EventPublisher.publishDeposit`, and ManualScanner declares that `publishDeposit` writes to Kafka,
+Adjustments integrate with the call graph: if `UserGrpcApi.deposit` calls
+`EventPublisher.publishDeposit`, and adjustments declare that `publishDeposit` writes to Kafka,
 the lineage builder produces the chain:
 `UserGrpcApi.deposit → EventPublisher.publishDeposit → kafka:user.deposit-events`.
 
@@ -373,10 +437,6 @@ Class-level rendering is controlled by `ClassLevelConfig`:
 - **`foldByGroup`** (default `Set("grpc")`): integration types in this set collapse all targets
   within a group into a single node. E.g., `UserService/getBalance`, `UserService/deposit`,
   `UserService/getHistory` → one `UserService` hexagon node.
-- **`hiddenClasses`**: classes to exclude from the diagram. Their integrations are promoted to the
-  nearest non-hidden caller class. E.g., hiding `UserRepo` makes `UserService` connect directly to
-  the DB tables `users` and `transactions`. Call edges through hidden classes are resolved
-  transitively (A → B(hidden) → C becomes A → C).
 - **`classGrouping`**: spatial grouping of class nodes into Mermaid subgraphs. Three modes:
     - `ClassGrouping.NoGrouping` (default) — all class nodes render standalone
     - `ClassGrouping.ByPackage(scanBase)` — group by the first sub-package relative to the scan base.
@@ -386,11 +446,13 @@ Class-level rendering is controlled by `ClassLevelConfig`:
       Returns `Some("groupName")` to place the class in a subgraph, or `None` for standalone.
       Only class nodes are grouped — integration target nodes are unaffected.
 
-All use a type-safe builder with `ClassTag`:
+Class hiding is done via `LineageAdjustments` (`.cls[T].remove`), not `ClassLevelConfig`. This
+operates at the data level before `LineageBuilder`, so it works for all diagram types.
+
+Type-safe builder:
 
 ```scala
 val config = ClassLevelConfig.builder
-  .hide[UserRepo]
   .groupByPackage("com.myapp")
   .foldByGroup(Set("grpc", "kafka"))
   .build
@@ -420,7 +482,7 @@ sbt "examples / runMain domaindocs4s.architecture.lineage.example.RenderLineage"
 
 ### 3.10 Example Output
 
-Given four example classes using real doobie, fs2-grpc, and manual Kafka declarations
+Given four example classes using real doobie, fs2-grpc, and manual Kafka adjustments
 (`UserGrpcApi → UserService → UserRepo`, `UserGrpcApi → RateServiceFs2Grpc`,
 `UserGrpcApi → EventPublisher → Kafka`).
 
@@ -447,7 +509,7 @@ Given four example classes using real doobie, fs2-grpc, and manual Kafka declara
 
   kafka: Write user.deposit-events
     UserGrpcApi.deposit -> EventPublisher.publishDeposit
-    evidence: manual declaration
+    evidence: manual adjustment
 
   grpc: Write UserService/getBalance
     UserGrpcApi.getBalance
@@ -466,7 +528,7 @@ Given four example classes using real doobie, fs2-grpc, and manual Kafka declara
     evidence: SELECT id, user_id, amount, description FROM transactions WHERE user_id =
 ```
 
-**Class-level** diagram with `hide[UserRepo]` (Mermaid nodes and edges):
+**Class-level** diagram with `.cls[UserRepo].remove` (Mermaid nodes and edges):
 
 ```
 Nodes: UserGrpcApi, UserService, EventPublisher  (UserRepo hidden)
@@ -767,14 +829,16 @@ Implemented and planned scanners (see §15.5 for the full revised table includin
 |----------------------------|--------------------------------------------------------------|-------------|
 | `DoobieScanner`            | Doobie SQL table references                                  | Implemented |
 | `Fs2GrpcScanner`           | gRPC server + client                                         | Implemented |
-| `ManualScanner`            | Kafka, custom integrations                                   | Implemented |
 | `PekkoJournalScanner`      | Persistent actor writes + journal reads + projection sources | Implemented |
 | `SlickScanner`             | Slick DBIO table operations                                  | Implemented |
 | `PekkoKafkaScanner`        | Pekko Kafka producer/consumer patterns                       | Implemented |
 | `FlywayMigrationScanner`   | SQL DDL: tables, views, joins (resource)                     | Implemented |
-| `S3Scanner`                | AWS SDK S3 put/get operations                                | Planned     |
+| `S3Scanner`                | AWS SDK v2 S3Client put/get operations                       | Implemented |
 | `SttpClientScanner`        | HTTP client calls                                            | Planned     |
 | `HoconKafkaTopicScanner`   | Kafka topic names from config (resource)                     | Planned     |
+
+Note: `LineageAdjustments` is not a scanner — it operates between scanners and the lineage builder
+(phase 1.5) to modify both the call graph and integrations. See §3.5.
 
 ### 7.4 Resource Scanners
 
@@ -859,8 +923,9 @@ nodes between services.
 - `renderClassLevelDataFlow(result, config)` — data flow
 - Each class is a single node (not a subgraph with methods)
 - Configurable via `ClassLevelConfig`: fold integration groups (e.g., collapse all gRPC endpoints
-  per service into one node), hide technical classes (e.g., repo layer) with integration promotion
-  to callers, group class nodes into subgraphs by package or custom function
+  per service into one node), group class nodes into subgraphs by package or custom function
+- Class hiding done via `LineageAdjustments` (`.cls[T].remove`): hides technical classes (e.g.,
+  repo layer) with integration promotion to callers and call graph reconnection
 
 Visual encoding (both levels):
 
@@ -907,7 +972,8 @@ domainDocs4s-core/
 │       ├── TastyFs2GrpcScanner.scala      ← fs2-grpc server + client scanner
 │       ├── TastyPekkoJournalScanner.scala ← Pekko persistence + projection scanner
 │       ├── TastySlickScanner.scala        ← Slick lifted embedding + plain SQL scanner
-│       ├── ManualScanner.scala            ← Manual integration declarations (Kafka, custom)
+│       ├── TastyS3Scanner.scala           ← AWS SDK v2 S3Client scanner
+│       ├── LineageAdjustments.scala       ← Selector-based manual graph modifications
 │       ├── TastyCallGraphExtractor.scala  ← Generic call graph extractor
 │       ├── LineageBuilder.scala           ← Generic lineage builder
 │       └── MermaidRenderer.scala          ← Mermaid output + URL generation
@@ -938,7 +1004,7 @@ The core module (`domainDocs4s-core`) depends on:
 
 The TASTy scanners only depend on `tasty-query` — they pattern-match TASTy tree shapes by string name
 without importing doobie or gRPC libraries. This is why all lineage infrastructure lives in core.
-`ManualScanner` depends on `MethodRefMacro` (uses `scala.quoted.*` macros).
+`LineageAdjustments` depends on `MethodRefMacro` (uses `scala.quoted.*` macros).
 
 The examples module (`domainDocs4s-examples`) depends on core and adds:
 
@@ -1092,7 +1158,7 @@ direction and data flow modes):
 sbt "examples / runMain domaindocs4s.architecture.lineage.example.RenderLineage"
 ```
 
-Run tests (47 tests):
+Run tests (101 tests):
 
 ```
 sbt "examples / Test / testOnly domaindocs4s.lineage.TastyLineageScannerTest"
@@ -1124,69 +1190,14 @@ Based on concrete investigation of the reference service, here is what the scann
 | Edges     | 47             | ~35 (74%)     | ~44 (94%)                    |
 | Subgraphs | 8              | package-based | ~7 (88%)                     |
 
-#### Remaining gaps
-
-| Gap                             | Nodes                | Edges      | Solution                                |
-|---------------------------------|----------------------|------------|-----------------------------------------|
-| **S3 uploads**                  | 1 node               | 2 edges    | S3/AWS scanner (§15.3.1)                |
-| **Manual/external nodes**       | 1 (data warehouse)   | 1 edge     | Manual node injection (§15.3.2)         |
-
-The remaining gaps are downstream infrastructure (data warehouses) and S3 uploads.
+All lineage-level gaps are now covered. `TastyS3Scanner` handles S3 detection, and
+`LineageAdjustments` handles arbitrary graph modifications including external nodes, removed false
+positives, call graph corrections, class hiding/deletion, and display renames. Remaining
+improvements are rendering-level only (subgraph grouping).
 
 ### 15.3 Planned Improvements
 
-#### 15.3.1 S3 / AWS SDK Scanner (LOW — 3 edges)
-
-**What it detects:**
-
-AWS SDK v2 S3 client usage:
-
-- `S3Client.putObject(PutObjectRequest.builder()...)` → Write to S3
-- `S3Client.getObject(...)` → Read from S3
-
-**Example pattern:**
-
-```scala
-trait S3JobSupport {
-  val s3Client: S3Client = S3Client.builder().region(region).build()
-}
-// Job classes mix in S3JobSupport and call s3Client.putObject(...)
-```
-
-**Detection approach:** TASTy-based. Match calls to `S3Client.putObject` / `S3Client.getObject`. Bucket
-names are in config, not extractable from TASTy — the scanner would produce `integrationType = "s3"` with
-target = "S3" (generic) unless combined with a config scanner.
-
-**Impact:** Adds 1 S3 node and 2 upload edges.
-
-#### 15.3.2 Manual Node Injection into Lineage Results (LOW — 2 nodes)
-
-**What it enables:**
-
-Adding nodes to the scanner output that don't correspond to any code — pure infrastructure or downstream
-systems that exist outside the scanned codebase.
-
-**Example:** A downstream data warehouse that consumes from Kafka/S3. No code in the service repo
-references it directly — it's purely infrastructure.
-
-**Approach:** Extend `ScanResult` or `MermaidRenderer` to accept additional manually declared nodes and
-edges that get merged into the auto-scanned result before rendering. Similar in spirit to `ManualScanner`
-but operates at the graph level rather than the integration level.
-
-```scala
-// Possible API sketch:
-val extraNodes = List(
-  ExtraNode(id = "data-warehouse", label = "Data Warehouse (via S3)", group = "Downstream"),
-)
-val extraEdges = List(
-  ExtraEdge(from = "kafka:movement-events", to = "data-warehouse", label = "flows to"),
-)
-val enrichedResult = result.withExtra(extraNodes, extraEdges)
-```
-
-**Impact:** Adds the last ~2 nodes that can't be scanned from code.
-
-#### 15.3.3 Subgraph Grouping Enhancements (LOW — visual parity)
+#### 15.3.1 Subgraph Grouping Enhancements (LOW — visual parity)
 
 **Current state:** `ClassGrouping.ByPackage` groups classes by their package prefix. `ClassGrouping.Custom`
 allows arbitrary grouping functions.
@@ -1203,13 +1214,3 @@ integration targets.
   (e.g., all `doobie` targets → "Database", all `kafka` targets → "Kafka")
 
 This is a rendering enhancement, not a scanner improvement.
-
-### 15.4 Implementation Priority
-
-```
-  ┌─────────────────────────────────────┐
-  │ 15.3.1  S3/AWS Scanner              │──→ 1 node, 2 edges
-  │ 15.3.2  Manual Node Injection       │──→ data warehouses etc.
-  │ 15.3.3  Subgraph Grouping           │──→ semantic grouping of targets
-  └─────────────────────────────────────┘
-```

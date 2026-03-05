@@ -5,18 +5,18 @@ import tastyquery.Contexts.Context
 class LineageScanner(
     packages: List[String],
     scanners: List[IntegrationScanner],
-    manual: ManualDeclarations = ManualDeclarations.empty,
+    adjustments: LineageAdjustments = LineageAdjustments.empty,
     enrichment: IntegrationGroupConfig = IntegrationGroupConfig(),
     resourceScanners: List[ResourceScanner] = Nil,
 )(using ctx: Context) {
 
   def scan(): ScanResult = {
-    val callGraph            = packages.flatMap(new TastyCallGraphExtractor().extract)
+    val rawCallGraph         = packages.flatMap(new TastyCallGraphExtractor().extract)
     val codeIntegrations     = scanners.flatMap(_.scan(packages))
     val resourceIntegrations = resourceScanners.flatMap(_.scan())
     val rawIntegrations      = codeIntegrations ++ resourceIntegrations
-    val refined              = manual.apply(rawIntegrations)
+    val (callGraph, refined) = adjustments.apply(rawCallGraph, rawIntegrations)
     val integrations         = enrichment.enrich(refined)
-    LineageBuilder.build(callGraph, integrations)
+    LineageBuilder.build(callGraph, integrations).copy(classDisplayNames = adjustments.classRenames)
   }
 }

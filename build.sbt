@@ -25,16 +25,16 @@ lazy val commonSettings = Seq(
   ),
   versionScheme := Some("semver-spec"),
   Test / tpolecatExcludeOptions += ScalacOptions.warnNonUnitStatement,
-  Test / fork := true, // required for tasty collector to work
-  run / fork  := true,
+  Test / fork   := true, // required for tasty collector to work
+  run / fork    := true,
 )
 
 lazy val root = (project in file("."))
   .settings(
-    name := "domainDocs4s",
+    name           := "domainDocs4s",
     publish / skip := true,
   )
-  .aggregate(core , examples)
+  .aggregate(core, examples)
 
 lazy val core = (project in file("domainDocs4s-core"))
   .settings(commonSettings)
@@ -51,12 +51,13 @@ lazy val examples = (project in file("domainDocs4s-examples"))
   .settings(
     name              := "domainDocs4s-examples",
     libraryDependencies ++= Seq(
-      "org.tpolecat"    %% "doobie-core"              % "1.0.0-RC6",
-      "com.typesafe.slick" %% "slick"                 % "3.6.1",
-      "org.apache.pekko" %% "pekko-persistence-typed"          % "1.4.0",
-      "org.apache.pekko" %% "pekko-persistence-query"          % "1.4.0",
-      "org.apache.pekko" %% "pekko-projection-eventsourced"    % "1.1.0",
-      "org.apache.pekko" %% "pekko-connectors-kafka"           % "1.1.0",
+      "org.tpolecat"          %% "doobie-core"                   % "1.0.0-RC6",
+      "com.typesafe.slick"    %% "slick"                         % "3.6.1",
+      "org.apache.pekko"      %% "pekko-persistence-typed"       % "1.4.0",
+      "org.apache.pekko"      %% "pekko-persistence-query"       % "1.4.0",
+      "org.apache.pekko"      %% "pekko-projection-eventsourced" % "1.1.0",
+      "org.apache.pekko"      %% "pekko-connectors-kafka"        % "1.1.0",
+      "software.amazon.awssdk" % "s3"                            % "2.30.2",
     ),
     semanticdbEnabled := true,
     // suppress warnings from protobuf/scalapb generated code

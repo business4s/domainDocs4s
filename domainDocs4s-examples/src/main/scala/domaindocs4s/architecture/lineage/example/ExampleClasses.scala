@@ -69,9 +69,9 @@ class UserService(val repo: UserRepo) {
 /** Event publisher — publishes domain events to Kafka.
   *
   * The actual Kafka interaction is library-specific (fs2-kafka, pekko-kafka, etc.)
-  * and can't be auto-detected from TASTy. Use ManualScanner to declare the
+  * and can't be auto-detected from TASTy. Use LineageAdjustments to declare the
   * Kafka integration:
-  *   ManualScanner.builder
+  *   LineageAdjustments.builder
   *     .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
   *     .build
   */

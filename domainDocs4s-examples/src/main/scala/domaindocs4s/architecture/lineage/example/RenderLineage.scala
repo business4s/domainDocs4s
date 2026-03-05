@@ -27,8 +27,9 @@ object RenderLineage {
         new TastySlickScanner(),
         new TastyPekkoKafkaScanner(),
       ),
-      manual = ManualScanner.builder
-        .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events").lenient
+      adjustments = LineageAdjustments.builder
+        .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
+        .cls[UserRepo].remove
         .build,
       enrichment = IntegrationGroupConfig.builder
         .group[UserRepo]("user-db")
@@ -42,7 +43,6 @@ object RenderLineage {
     println(MermaidRenderer.toViewUrl(MermaidRenderer.renderDataFlow(result)))
 
     val classLevelConfig = ClassLevelConfig.builder
-      .hide[UserRepo]
       .groupByPackage("domaindocs4s.architecture.lineage.example")
       .build
 

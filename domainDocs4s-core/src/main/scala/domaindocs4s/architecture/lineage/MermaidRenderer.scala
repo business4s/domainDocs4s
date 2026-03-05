@@ -80,13 +80,7 @@ object MermaidRenderer {
 
     // Styling
     sb.append("\n")
-    sb.append("  classDef readNode fill:#d4edda,stroke:#28a745\n")
-    sb.append("  classDef writeNode fill:#f8d7da,stroke:#dc3545\n")
-    sb.append("  classDef rwNode fill:#fff3cd,stroke:#ffc107\n")
-    sb.append("  classDef dbNode fill:#d1ecf1,stroke:#17a2b8\n")
-    sb.append("  classDef grpcNode fill:#e8daef,stroke:#8e44ad\n")
-    sb.append("  classDef kafkaNode fill:#d5f5e3,stroke:#27ae60\n")
-    sb.append("  classDef journalNode fill:#fce4ec,stroke:#e91e63\n")
+    appendStyleDefs(sb)
 
     for (m <- result.allMethods if m.effectiveAccess != DataAccessType.Pure) {
       val cls = m.effectiveAccess match {
@@ -116,13 +110,9 @@ object MermaidRenderer {
   private def renderClassLevelInternal(result: ScanResult, dataFlow: Boolean, config: ClassLevelConfig): String = {
     val sb         = new StringBuilder
     val foldByGroup = config.foldByGroup
-    val hidden      = config.hiddenClasses
     sb.append("flowchart LR\n")
 
     val classNames = result.classes.map(_.name).toSet
-
-    // Build promoted-callers map: for each hidden class, find non-hidden classes that call it
-    val promotedCallers = buildPromotedCallers(hidden, result.callGraph)
 
     // Class nodes — one node per visible class, optionally grouped into subgraphs
     val groupFn: ScannedClass => Option[String] = config.classGrouping match {
@@ -138,8 +128,7 @@ object MermaidRenderer {
     }
 
     val visibleFromCallGraph = result.classes.filter { cls =>
-      !hidden.contains((cls.packageName, cls.name)) &&
-        cls.methods.exists(m => m.calls.nonEmpty || m.integrations.nonEmpty || isCalledByOthers(m.ref, result))
+      cls.methods.exists(m => m.calls.nonEmpty || m.integrations.nonEmpty || isCalledByOthers(m.ref, result))
     }
 
     // Classes from integrations not in result.classes (e.g., Scala objects detected by scanners)
@@ -147,10 +136,13 @@ object MermaidRenderer {
     val integrationOnlyClasses: List[ScannedClass] = result.integrations
       .map(i => (i.method.packageName, i.method.className))
       .distinct
-      .filterNot(k => knownClassKeys.contains(k) || hidden.contains(k))
+      .filterNot(k => knownClassKeys.contains(k))
       .map { case (pkg, name) => ScannedClass(name = name, packageName = pkg, methods = Nil) }
 
     val visibleClasses = visibleFromCallGraph ++ integrationOnlyClasses
+
+    val displayName: ScannedClass => String = cls =>
+      result.classDisplayNames.getOrElse((cls.packageName, cls.name), cls.name)
 
     val grouped = visibleClasses.groupBy(groupFn)
 
@@ -158,13 +150,13 @@ object MermaidRenderer {
       val gid = packageGroupId(groupName)
       sb.append(s"""  subgraph $gid ["$groupName"]\n""")
       for (cls <- classes) {
-        sb.append(s"""    ${classNodeId(cls.packageName, cls.name)}["${cls.name}"]\n""")
+        sb.append(s"""    ${classNodeId(cls.packageName, cls.name)}["${displayName(cls)}"]\n""")
       }
       sb.append("  end\n")
     }
 
     for (cls <- grouped.getOrElse(None, Nil)) {
-      sb.append(s"""  ${classNodeId(cls.packageName, cls.name)}["${cls.name}"]\n""")
+      sb.append(s"""  ${classNodeId(cls.packageName, cls.name)}["${displayName(cls)}"]\n""")
     }
 
     sb.append("\n")
@@ -207,31 +199,20 @@ object MermaidRenderer {
 
     sb.append("\n")
 
-    // Class-to-class call graph edges (deduplicated, with transitive edges through hidden classes)
+    // Class-to-class call graph edges (deduplicated)
     val declaredClassKeys: Set[ClassKey] = visibleClasses.map(cls => (cls.packageName, cls.name)).toSet
-    val rawClassEdges: List[(ClassKey, ClassKey)] = result.callGraph
+    val classEdges: List[(ClassKey, ClassKey)] = result.callGraph
       .map(e => ((e.caller.packageName, e.caller.className), (e.callee.packageName, e.callee.className)))
       .distinct
-
-    val visibleEdges = resolveCallEdges(rawClassEdges, hidden)
       .filter { case (from, to) => declaredClassKeys.contains(from) && declaredClassKeys.contains(to) }
-    for ((from, to) <- visibleEdges) {
+    for ((from, to) <- classEdges) {
       sb.append(s"  ${classNodeId(from._1, from._2)} --> ${classNodeId(to._1, to._2)}\n")
     }
 
     sb.append("\n")
 
-    // Re-attribute integrations: promote hidden class integrations to their callers
-    val effectiveIntegrations = result.integrations.flatMap { i =>
-      val key: ClassKey = (i.method.packageName, i.method.className)
-      if (!hidden.contains(key)) List(i)
-      else promotedCallers.getOrElse(key, Set.empty).toList.map(caller =>
-        i.copy(method = i.method.copy(packageName = caller._1, className = caller._2))
-      )
-    }
-
     // Integration edges — folded types: one edge per (classKey, group)
-    val foldedEdges = effectiveIntegrations
+    val foldedEdges = result.integrations
       .filter(i => foldByGroup.contains(i.resourceType) && i.group.isDefined)
       .groupBy(i => ((i.method.packageName, i.method.className), i.group.get))
       .map { case ((classKey, groupName), integrations) =>
@@ -244,7 +225,7 @@ object MermaidRenderer {
     }
 
     // Integration edges — non-folded types: one edge per (classKey, target)
-    val nonFoldedEdges = effectiveIntegrations
+    val nonFoldedEdges = result.integrations
       .filterNot(i => foldByGroup.contains(i.resourceType) && i.group.isDefined)
       .groupBy(i => ((i.method.packageName, i.method.className), i.target))
       .map { case ((classKey, target), integrations) =>
@@ -258,13 +239,7 @@ object MermaidRenderer {
 
     // Styling
     sb.append("\n")
-    sb.append("  classDef readNode fill:#d4edda,stroke:#28a745\n")
-    sb.append("  classDef writeNode fill:#f8d7da,stroke:#dc3545\n")
-    sb.append("  classDef rwNode fill:#fff3cd,stroke:#ffc107\n")
-    sb.append("  classDef dbNode fill:#d1ecf1,stroke:#17a2b8\n")
-    sb.append("  classDef grpcNode fill:#e8daef,stroke:#8e44ad\n")
-    sb.append("  classDef kafkaNode fill:#d5f5e3,stroke:#27ae60\n")
-    sb.append("  classDef journalNode fill:#fce4ec,stroke:#e91e63\n")
+    appendStyleDefs(sb)
 
     for (cls <- visibleClasses) {
       val style = cls.effectiveAccess match {
@@ -289,39 +264,15 @@ object MermaidRenderer {
     sb.toString()
   }
 
-  /** For each hidden class, find the set of non-hidden classes that call it (transitively). */
-  private def buildPromotedCallers(hidden: Set[ClassKey], callGraph: List[CallEdge]): Map[ClassKey, Set[ClassKey]] = {
-    val callers = callGraph
-      .map(e => ((e.caller.packageName, e.caller.className), (e.callee.packageName, e.callee.className)))
-      .distinct
-      .groupBy(_._2)
-      .view.mapValues(_.map(_._1).toSet).toMap
-
-    def findNonHidden(cls: ClassKey, visited: Set[ClassKey]): Set[ClassKey] = {
-      if (visited.contains(cls)) Set.empty
-      else callers.getOrElse(cls, Set.empty).flatMap { c =>
-        if (!hidden.contains(c)) Set(c)
-        else findNonHidden(c, visited + cls)
-      }
-    }
-
-    hidden.map(h => h -> findNonHidden(h, Set.empty)).toMap
-  }
-
-  /** Resolve call edges: remove hidden classes, add transitive edges through them. */
-  private def resolveCallEdges(edges: List[(ClassKey, ClassKey)], hidden: Set[ClassKey]): List[(ClassKey, ClassKey)] = {
-    val callees = edges.groupBy(_._1).view.mapValues(_.map(_._2).toSet).toMap
-
-    def resolveTarget(target: ClassKey, visited: Set[ClassKey]): Set[ClassKey] = {
-      if (visited.contains(target)) Set.empty
-      else if (!hidden.contains(target)) Set(target)
-      else callees.getOrElse(target, Set.empty).flatMap(t => resolveTarget(t, visited + target))
-    }
-
-    edges
-      .filter { case (from, _) => !hidden.contains(from) }
-      .flatMap { case (from, to) => resolveTarget(to, Set.empty).map(t => (from, t)) }
-      .distinct
+  private def appendStyleDefs(sb: StringBuilder): Unit = {
+    sb.append("  classDef readNode fill:#d4edda,stroke:#28a745\n")
+    sb.append("  classDef writeNode fill:#f8d7da,stroke:#dc3545\n")
+    sb.append("  classDef rwNode fill:#fff3cd,stroke:#ffc107\n")
+    sb.append("  classDef dbNode fill:#d1ecf1,stroke:#17a2b8\n")
+    sb.append("  classDef grpcNode fill:#e8daef,stroke:#8e44ad\n")
+    sb.append("  classDef kafkaNode fill:#d5f5e3,stroke:#27ae60\n")
+    sb.append("  classDef journalNode fill:#fce4ec,stroke:#e91e63\n")
+    sb.append("  classDef s3Node fill:#ffe0b2,stroke:#fb8c00\n")
   }
 
   /** Render a single integration target node into the StringBuilder. */
@@ -330,6 +281,7 @@ object MermaidRenderer {
       case "grpc"    => sb.append(s"""$indent$id{{"${label}\n[$rtype]"}}\n""")
       case "kafka"   => sb.append(s"""$indent$id(["${label}\n[$rtype]"])\n""")
       case "journal" => sb.append(s"""$indent$id[["${label}\n[$rtype]"]]\n""")
+      case "s3"      => sb.append(s"""$indent$id[/"${label}\n[$rtype]"/]\n""")
       case _         => sb.append(s"""$indent$id[("${label}\n[$rtype]")]\n""")
     }
 
@@ -346,6 +298,7 @@ object MermaidRenderer {
     case "grpc"    => "grpcNode"
     case "kafka"   => "kafkaNode"
     case "journal" => "journalNode"
+    case "s3"      => "s3Node"
     case _         => "dbNode"
   }
 

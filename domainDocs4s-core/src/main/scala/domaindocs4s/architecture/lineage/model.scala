@@ -217,27 +217,26 @@ object ClassGrouping {
   case class Custom(groupOf: ScannedClass => Option[String]) extends ClassGrouping
 }
 
-/** Configuration for class-level Mermaid rendering. */
+/** Configuration for class-level Mermaid rendering.
+  *
+  * Note: to hide classes (remove them while reconnecting callers → callees),
+  * use `LineageAdjustments.builder.cls[T].remove` instead — this operates at
+  * the data level so it works for all diagram types.
+  */
 case class ClassLevelConfig(
     foldByGroup: Set[String] = Set("grpc"),
-    hiddenClasses: Set[(String, String)] = Set.empty,
     classGrouping: ClassGrouping = ClassGrouping.NoGrouping,
 )
 
 object ClassLevelConfig {
   class Builder {
     private var _foldByGroup: Set[String]      = Set("grpc")
-    private val _hidden                        = scala.collection.mutable.Set.empty[(String, String)]
     private var _classGrouping: ClassGrouping   = ClassGrouping.NoGrouping
 
     def foldByGroup(types: Set[String]): Builder = { _foldByGroup = types; this }
-    def hide[T: reflect.ClassTag]: Builder = {
-      _hidden += splitClassTag(reflect.classTag[T])
-      this
-    }
     def groupByPackage(scanBase: String): Builder = { _classGrouping = ClassGrouping.ByPackage(scanBase); this }
     def groupClassesBy(fn: ScannedClass => Option[String]): Builder = { _classGrouping = ClassGrouping.Custom(fn); this }
-    def build: ClassLevelConfig = ClassLevelConfig(_foldByGroup, _hidden.toSet, _classGrouping)
+    def build: ClassLevelConfig = ClassLevelConfig(_foldByGroup, _classGrouping)
   }
   def builder: Builder = new Builder
 }
@@ -276,6 +275,7 @@ case class ScanResult(
     callGraph: List[CallEdge],
     integrations: List[DiscoveredIntegration],
     lineageChains: List[LineageChain],
+    classDisplayNames: Map[(String, String), String] = Map.empty,
 ) {
   lazy val allMethods: List[ScannedMethod] = classes.flatMap(_.methods)
   lazy val resources: List[DiscoveredResource] = DiscoveredResource.merge(integrations)

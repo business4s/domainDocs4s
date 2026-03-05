@@ -1,7 +1,8 @@
 package domaindocs4s.lineage
 
 import domaindocs4s.architecture.lineage.*
-import domaindocs4s.architecture.lineage.example.{EventPublisher, UserGrpcApi, UserRepo, UserService}
+import domaindocs4s.architecture.lineage.LineageAdjustment
+import domaindocs4s.architecture.lineage.example.{EventPublisher, S3Exporter, UserGrpcApi, UserRepo, UserService}
 import domaindocs4s.architecture.lineage.example.pekko.{KafkaFlexiFlowProducer, KafkaPlainSinkProducer}
 import domaindocs4s.collector.TastyContext
 import org.scalatest.freespec.AnyFreeSpec
@@ -123,59 +124,79 @@ class TastyLineageScannerTest extends AnyFreeSpec {
     }
   }
 
-  "ManualScanner" - {
+  "LineageAdjustments builder" - {
 
-    "produces kafka entries with correct fields" in {
-      val entries = ManualScanner.builder
+    "produces kafka adjustments with correct fields" in {
+      val adj = LineageAdjustments.builder
         .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
-        .build.entries
+        .build
 
-      entries should have size 1
-      val e = entries.head
-      e.className shouldBe "EventPublisher"
-      e.methodName shouldBe Some("publishDeposit")
+      val (_, result) = adj.apply(Nil, Nil)
+      result should have size 1
+      val e = result.head
+      e.method.className shouldBe "EventPublisher"
+      e.method.methodName shouldBe "publishDeposit"
       e.accessType shouldBe DataAccessType.Write
       e.resourceType shouldBe "kafka"
       e.target shouldBe "user.deposit-events"
       e.group shouldBe Some("Kafka")
-      e.strict shouldBe true
+      e.scanner shouldBe "manual"
     }
 
-    "uses default Kafka cluster as group" in {
-      val entries = ManualScanner.builder
+    "kafka uses default Kafka group" in {
+      val adj = LineageAdjustments.builder
         .method[UserRepo](_.getBalance).reads.kafka("some.topic")
-        .build.entries
+        .build
 
-      entries.head.group shouldBe Some("Kafka")
+      val (_, result) = adj.apply(Nil, Nil)
+      result.head.group shouldBe Some("Kafka")
     }
 
     "supports custom group via custom method" in {
-      val entries = ManualScanner.builder
+      val adj = LineageAdjustments.builder
         .method[UserRepo](_.getBalance).reads.custom("kafka", "analytics.events", group = Some("Analytics"))
-        .build.entries
+        .build
 
-      entries.head.group shouldBe Some("Analytics")
+      val (_, result) = adj.apply(Nil, Nil)
+      result.head.group shouldBe Some("Analytics")
     }
 
     "supports generic custom resource type" in {
-      val entries = ManualScanner.builder
+      val adj = LineageAdjustments.builder
         .method[UserRepo](_.getBalance).writes.custom("s3", "my-bucket/exports", group = Some("S3"))
-        .build.entries
+        .build
 
-      val e = entries.head
+      val (_, result) = adj.apply(Nil, Nil)
+      val e = result.head
       e.resourceType shouldBe "s3"
       e.target shouldBe "my-bucket/exports"
       e.group shouldBe Some("S3")
     }
 
-    "composes with automatic scanner results in LineageBuilder" in {
-      val manual = ManualScanner.builder
-        .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events").lenient
+    "produces s3 adjustments with correct fields via .s3()" in {
+      val adj = LineageAdjustments.builder
+        .method[S3Exporter](_.exportData).writes.s3("ledger-exports/assets")
         .build
 
-      val manualIntegrations = manual.apply(Nil)
-      val allIntegrations = enrichment.enrich(doobieIntegrations ++ grpcIntegrations ++ manualIntegrations)
-      val resultWithManual = LineageBuilder.build(callGraph, allIntegrations)
+      val (_, result) = adj.apply(Nil, Nil)
+      result should have size 1
+      val e = result.head
+      e.method.className shouldBe "S3Exporter"
+      e.method.methodName shouldBe "exportData"
+      e.accessType shouldBe DataAccessType.Write
+      e.resourceType shouldBe "s3"
+      e.target shouldBe "ledger-exports/assets"
+      e.group shouldBe Some("S3")
+    }
+
+    "composes with automatic scanner results in LineageBuilder" in {
+      val adj = LineageAdjustments.builder
+        .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
+        .build
+
+      val (adjCallGraph, adjIntegrations) = adj.apply(callGraph, doobieIntegrations ++ grpcIntegrations)
+      val allIntegrations = enrichment.enrich(adjIntegrations)
+      val resultWithManual = LineageBuilder.build(adjCallGraph, allIntegrations)
 
       val depositChains = resultWithManual.lineageFrom(MethodRef(pkg, "UserGrpcApi", "deposit"))
       val kafkaChains = depositChains.filter(_.integration.resourceType == "kafka")
@@ -185,56 +206,439 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       kafkaChains.head.path.map(_.className) shouldBe List("UserGrpcApi", "EventPublisher")
     }
 
-    "supports multiple declarations in a single builder" in {
-      val entries = ManualScanner.builder
+    "supports multiple adjustments in a single builder" in {
+      val adj = LineageAdjustments.builder
         .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
         .method[UserGrpcApi](_.getHistory).reads.custom("kafka", "user.history-events", group = Some("Analytics"))
         .method[UserService](_.deposit).writes.custom("audit", "audit-log", group = Some("Audit"))
-        .build.entries
+        .build
 
-      entries should have size 3
-      entries.count(_.resourceType == "kafka") shouldBe 2
-      entries.count(_.resourceType == "audit") shouldBe 1
+      val (_, result) = adj.apply(Nil, Nil)
+      result should have size 3
+      result.count(_.resourceType == "kafka") shouldBe 2
+      result.count(_.resourceType == "audit") shouldBe 1
     }
 
-    "lenient marks all entries from the same chain as non-strict" in {
-      val entries = ManualScanner.builder
-        .method[EventPublisher](_.publishDeposit).writes.kafka("topic-a")
-        .cls[KafkaFlexiFlowProducer].writes.kafka("topic-b").kafka("topic-c").lenient
-        .build.entries
-
-      entries(0).strict shouldBe true
-      entries(1).strict shouldBe false
-      entries(2).strict shouldBe false
-    }
-
-    "cls builder creates class-level entries via chaining" in {
-      val entries = ManualScanner.builder
+    "cls builds class-level adjustments via chaining" in {
+      val adj = LineageAdjustments.builder
         .cls[KafkaFlexiFlowProducer].writes.kafka("topic.a").kafka("topic.b")
-        .build.entries
+        .build
 
-      entries should have size 2
-      entries.foreach { e =>
-        e.className shouldBe "KafkaFlexiFlowProducer"
-        e.methodName shouldBe None
-        e.accessType shouldBe DataAccessType.Write
-        e.resourceType shouldBe "kafka"
-        e.group shouldBe Some("Kafka")
+      adj.adjustments should have size 2
+      adj.adjustments.foreach { adj =>
+        adj shouldBe a[LineageAdjustment.AddClassIntegration]
       }
-      entries.map(_.target).toSet shouldBe Set("topic.a", "topic.b")
     }
 
-    "transitions from IntegrationBuilder to new declaration" in {
-      val entries = ManualScanner.builder
+    "transitions from IntegrationBuilder to new selector" in {
+      val adj = LineageAdjustments.builder
         .cls[KafkaFlexiFlowProducer].writes.kafka("topic.a")
         .method[EventPublisher](_.publishDeposit).writes.kafka("topic.b")
-        .build.entries
+        .build
 
-      entries should have size 2
-      entries(0).className shouldBe "KafkaFlexiFlowProducer"
-      entries(0).methodName shouldBe None
-      entries(1).className shouldBe "EventPublisher"
-      entries(1).methodName shouldBe Some("publishDeposit")
+      adj.adjustments should have size 2
+      adj.adjustments(0) shouldBe a[LineageAdjustment.AddClassIntegration]
+      adj.adjustments(1) shouldBe a[LineageAdjustment.AddIntegration]
+    }
+
+    "class-level calls adds call edges (resolves to matching method)" in {
+      val adj = LineageAdjustments.builder
+        .cls[UserService].calls[EventPublisher](_.publishDeposit)
+        .build
+
+      val methods = List(
+        ExtractedMethod("UserService", pkg, "deposit", List(MethodRef(pkg, "EventPublisher", "someOther"))),
+        ExtractedMethod("UserService", pkg, "getBalance", Nil),
+        ExtractedMethod("EventPublisher", pkg, "publishDeposit", Nil),
+        ExtractedMethod("EventPublisher", pkg, "someOther", Nil),
+      )
+      val (resultMethods, _) = adj.apply(methods, Nil)
+      // Should resolve to deposit (already calls EventPublisher)
+      val deposit = resultMethods.find(_.ref == MethodRef(pkg, "UserService", "deposit")).get
+      deposit.calls should contain(MethodRef(pkg, "EventPublisher", "publishDeposit"))
+      // getBalance should not be affected
+      val getBalance = resultMethods.find(_.ref == MethodRef(pkg, "UserService", "getBalance")).get
+      getBalance.calls shouldBe empty
+    }
+
+    "class-level removesCall removes from all methods" in {
+      val adj = LineageAdjustments.builder
+        .cls[UserService].removesCall[UserRepo](_.getBalance)
+        .build
+
+      val methods = List(
+        ExtractedMethod("UserService", pkg, "getBalance", List(MethodRef(pkg, "UserRepo", "getBalance"))),
+        ExtractedMethod("UserService", pkg, "deposit", List(MethodRef(pkg, "UserRepo", "getBalance"), MethodRef(pkg, "UserRepo", "updateBalance"))),
+        ExtractedMethod("UserRepo", pkg, "getBalance", Nil),
+        ExtractedMethod("UserRepo", pkg, "updateBalance", Nil),
+      )
+      val (resultMethods, _) = adj.apply(methods, Nil)
+      // Both methods should have the call removed
+      val getBalance = resultMethods.find(_.ref == MethodRef(pkg, "UserService", "getBalance")).get
+      getBalance.calls should not contain MethodRef(pkg, "UserRepo", "getBalance")
+      val deposit = resultMethods.find(_.ref == MethodRef(pkg, "UserService", "deposit")).get
+      deposit.calls should not contain MethodRef(pkg, "UserRepo", "getBalance")
+      deposit.calls should contain(MethodRef(pkg, "UserRepo", "updateBalance"))
+    }
+
+    "method-level calls adds call edges" in {
+      val adj = LineageAdjustments.builder
+        .method[UserService](_.deposit).calls[EventPublisher](_.publishDeposit)
+        .build
+
+      val methods = List(
+        ExtractedMethod("UserService", pkg, "deposit", Nil),
+        ExtractedMethod("EventPublisher", pkg, "publishDeposit", Nil),
+      )
+      val (resultMethods, _) = adj.apply(methods, Nil)
+      val serviceMethod = resultMethods.find(_.ref == MethodRef(pkg, "UserService", "deposit"))
+      serviceMethod.get.calls should contain(MethodRef(pkg, "EventPublisher", "publishDeposit"))
+    }
+
+    "method-level .remove hides method and reconnects callers to callees" in {
+      val adj = LineageAdjustments.builder
+        .method[UserService](_.getBalance).remove
+        .build
+
+      val methods = List(
+        ExtractedMethod("UserGrpcApi", pkg, "getBalance", List(MethodRef(pkg, "UserService", "getBalance"))),
+        ExtractedMethod("UserService", pkg, "getBalance", List(MethodRef(pkg, "UserRepo", "getBalance"))),
+        ExtractedMethod("UserRepo", pkg, "getBalance", Nil),
+      )
+      val existingIntegrations = List(
+        DiscoveredIntegration(MethodRef(pkg, "UserRepo", "getBalance"), DataAccessType.Read, "database", "doobie", "users", "SELECT"),
+      )
+      val (resultMethods, resultIntegrations) = adj.apply(methods, existingIntegrations)
+
+      // Hidden method is gone
+      resultMethods.map(_.ref) should not contain MethodRef(pkg, "UserService", "getBalance")
+      // Caller now calls the hidden method's callee
+      val apiMethod = resultMethods.find(_.ref.className == "UserGrpcApi").get
+      apiMethod.calls should contain(MethodRef(pkg, "UserRepo", "getBalance"))
+      // Existing integrations are untouched (they were on UserRepo, not the hidden method)
+      resultIntegrations should have size 1
+    }
+
+    "method-level .remove promotes integrations from hidden method to callers" in {
+      val adj = LineageAdjustments.builder
+        .method[UserRepo](_.getBalance).remove
+        .build
+
+      val methods = List(
+        ExtractedMethod("UserService", pkg, "getBalance", List(MethodRef(pkg, "UserRepo", "getBalance"))),
+        ExtractedMethod("UserRepo", pkg, "getBalance", Nil),
+      )
+      val existingIntegrations = List(
+        DiscoveredIntegration(MethodRef(pkg, "UserRepo", "getBalance"), DataAccessType.Read, "database", "doobie", "users", "SELECT"),
+      )
+      val (resultMethods, resultIntegrations) = adj.apply(methods, existingIntegrations)
+
+      resultMethods.map(_.ref) should not contain MethodRef(pkg, "UserRepo", "getBalance")
+      // Integration promoted to the caller (UserService)
+      resultIntegrations should have size 1
+      resultIntegrations.head.method shouldBe MethodRef(pkg, "UserService", "getBalance")
+      resultIntegrations.head.target shouldBe "users"
+    }
+
+    "class-level .remove hides class and reconnects callers to external callees" in {
+      val adj = LineageAdjustments.builder
+        .cls[UserRepo].remove
+        .build
+
+      val methods = List(
+        ExtractedMethod("UserService", pkg, "getBalance", List(MethodRef(pkg, "UserRepo", "getBalance"))),
+        ExtractedMethod("UserService", pkg, "deposit", List(MethodRef(pkg, "UserRepo", "updateBalance"))),
+        ExtractedMethod("UserRepo", pkg, "getBalance", Nil),
+        ExtractedMethod("UserRepo", pkg, "updateBalance", Nil),
+      )
+      val existingIntegrations = List(
+        DiscoveredIntegration(MethodRef(pkg, "UserRepo", "getBalance"), DataAccessType.Read, "database", "doobie", "users", "SELECT"),
+        DiscoveredIntegration(MethodRef(pkg, "UserRepo", "updateBalance"), DataAccessType.Write, "database", "doobie", "users", "UPDATE"),
+      )
+      val (resultMethods, resultIntegrations) = adj.apply(methods, existingIntegrations)
+
+      // Hidden class is gone
+      resultMethods.map(_.className) should not contain "UserRepo"
+      // Integrations promoted to the callers
+      resultIntegrations should have size 2
+      resultIntegrations.foreach(_.method.className shouldBe "UserService")
+      resultIntegrations.map(_.method.methodName).toSet shouldBe Set("getBalance", "deposit")
+    }
+
+    "method-level .delete hard-removes method and disconnects graph" in {
+      val adj = LineageAdjustments.builder
+        .method[UserRepo](_.getBalance).delete
+        .build
+
+      val methods = List(
+        ExtractedMethod("UserService", pkg, "getBalance", List(MethodRef(pkg, "UserRepo", "getBalance"))),
+        ExtractedMethod("UserRepo", pkg, "getBalance", Nil),
+      )
+      val existingIntegrations = List(
+        DiscoveredIntegration(MethodRef(pkg, "UserRepo", "getBalance"), DataAccessType.Read, "database", "doobie", "users", "SELECT"),
+      )
+      val (resultMethods, resultIntegrations) = adj.apply(methods, existingIntegrations)
+
+      resultMethods.flatMap(_.calls) should not contain MethodRef(pkg, "UserRepo", "getBalance")
+      resultMethods.map(_.ref) should not contain MethodRef(pkg, "UserRepo", "getBalance")
+      resultIntegrations shouldBe empty
+    }
+
+    "class-level .delete hard-removes class and disconnects graph" in {
+      val adj = LineageAdjustments.builder
+        .cls[UserRepo].delete
+        .build
+
+      val methods = List(
+        ExtractedMethod("UserService", pkg, "getBalance", List(MethodRef(pkg, "UserRepo", "getBalance"))),
+        ExtractedMethod("UserRepo", pkg, "getBalance", Nil),
+        ExtractedMethod("UserRepo", pkg, "updateBalance", Nil),
+      )
+      val existingIntegrations = List(
+        DiscoveredIntegration(MethodRef(pkg, "UserRepo", "getBalance"), DataAccessType.Read, "database", "doobie", "users", "SELECT"),
+        DiscoveredIntegration(MethodRef(pkg, "UserRepo", "updateBalance"), DataAccessType.Write, "database", "doobie", "users", "UPDATE"),
+      )
+      val (resultMethods, resultIntegrations) = adj.apply(methods, existingIntegrations)
+
+      resultMethods.map(_.className) should not contain "UserRepo"
+      resultMethods.head.calls shouldBe empty
+      resultIntegrations shouldBe empty
+    }
+
+    "resource().renameTo renames target across integrations" in {
+      val adj = LineageAdjustments.builder
+        .resource("kafka", "old-topic").renameTo("new-topic")
+        .build
+
+      val existing = List(
+        DiscoveredIntegration(MethodRef("", "A", "m"), DataAccessType.Write, "kafka", "pekko-kafka", "old-topic", "evidence", Some("Kafka")),
+        DiscoveredIntegration(MethodRef("", "B", "n"), DataAccessType.Write, "kafka", "pekko-kafka", "other-topic", "evidence", Some("Kafka")),
+      )
+      val (_, result) = adj.apply(Nil, existing)
+      result.find(_.method.className == "A").get.target shouldBe "new-topic"
+      result.find(_.method.className == "B").get.target shouldBe "other-topic"
+    }
+
+    "resource().remove removes all integrations to target" in {
+      val adj = LineageAdjustments.builder
+        .resource("kafka", "old-topic").remove
+        .build
+
+      val existing = List(
+        DiscoveredIntegration(MethodRef("", "A", "m"), DataAccessType.Write, "kafka", "pekko-kafka", "old-topic", "evidence"),
+        DiscoveredIntegration(MethodRef("", "B", "n"), DataAccessType.Read, "database", "doobie", "users", "SELECT"),
+      )
+      val (_, result) = adj.apply(Nil, existing)
+      result should have size 1
+      result.head.target shouldBe "users"
+    }
+
+    "resource().setGroup changes group" in {
+      val adj = LineageAdjustments.builder
+        .resource("database", "users").setGroup("user-db")
+        .build
+
+      val existing = List(
+        DiscoveredIntegration(MethodRef("", "A", "m"), DataAccessType.Read, "database", "doobie", "users", "SELECT"),
+      )
+      val (_, result) = adj.apply(Nil, existing)
+      result.head.group shouldBe Some("user-db")
+    }
+
+    "class-level renameTo sets display name without affecting data" in {
+      val adj = LineageAdjustments.builder
+        .cls[UserRepo].renameTo("User Repository")
+        .build
+
+      adj.classRenames shouldBe Map((pkg, "UserRepo") -> "User Repository")
+      // apply() does not modify data for renames
+      val methods = List(ExtractedMethod("UserRepo", pkg, "getBalance", Nil))
+      val (resultMethods, _) = adj.apply(methods, Nil)
+      resultMethods.head.className shouldBe "UserRepo"
+    }
+
+    "supports database and grpc convenience methods" in {
+      val adj = LineageAdjustments.builder
+        .method[UserRepo](_.getBalance).reads.database("users", group = Some("user-db"))
+        .method[UserGrpcApi](_.deposit).reads.grpc("RateService/getRate")
+        .build
+
+      val (_, result) = adj.apply(Nil, Nil)
+      result should have size 2
+      result(0).resourceType shouldBe "database"
+      result(0).group shouldBe Some("user-db")
+      result(1).resourceType shouldBe "grpc"
+      result(1).group shouldBe Some("RateService")
+    }
+
+    "string-based selectors work like type-safe ones" in {
+      val adj = LineageAdjustments.builder
+        .method("com.example", "ExternalService", "call").writes.kafka("events")
+        .cls("com.example", "InternalHelper").remove
+        .build
+
+      adj.adjustments should have size 2
+    }
+
+    "strict by default — class-level integration passes when scanner detected matching resourceType" in {
+      val existing = List(
+        DiscoveredIntegration(MethodRef("", "Handler", "send"), DataAccessType.Write, "kafka", "pekko-kafka", "auto-topic", "evidence"),
+      )
+      val methods = List(
+        ExtractedMethod("Handler", "", "send", Nil),
+      )
+
+      val adj = LineageAdjustments.builder
+        .cls("", "Handler").writes.kafka("real-topic")
+        .build
+
+      val (_, result) = adj.apply(methods, existing)
+      // Should succeed — kafka was auto-detected on Handler
+      result.count(_.scanner == "manual") shouldBe 1
+      result.find(_.scanner == "manual").get.target shouldBe "real-topic"
+    }
+
+    "strict by default — passes when detection is on a callee reachable through call graph" in {
+      val existing = List(
+        DiscoveredIntegration(MethodRef("", "LowLevel", "write"), DataAccessType.Write, "s3", "s3", "S3", "putObject"),
+      )
+      val methods = List(
+        ExtractedMethod("Handler", "", "handle", List(MethodRef("", "Middle", "process"))),
+        ExtractedMethod("Middle", "", "process", List(MethodRef("", "LowLevel", "write"))),
+        ExtractedMethod("LowLevel", "", "write", Nil),
+      )
+
+      val adj = LineageAdjustments.builder
+        .cls("", "Handler").writes.s3("exports-bucket")
+        .build
+
+      // Should not throw — s3 detected on LowLevel, reachable from Handler
+      val (_, result) = adj.apply(methods, existing)
+      result.count(_.scanner == "manual") shouldBe 1
+    }
+
+    "strict by default — throws when no matching resourceType is detected" in {
+      val existing = List(
+        DiscoveredIntegration(MethodRef("", "Handler", "query"), DataAccessType.Read, "database", "doobie", "users", "SELECT"),
+      )
+      val methods = List(
+        ExtractedMethod("Handler", "", "query", Nil),
+      )
+
+      val adj = LineageAdjustments.builder
+        .cls("", "Handler").writes.kafka("topic")
+        .build
+
+      val ex = intercept[IllegalStateException] {
+        adj.apply(methods, existing)
+      }
+      ex.getMessage should include("kafka")
+      ex.getMessage should include("Handler")
+    }
+
+    "strict by default — throws when class has no methods in call graph" in {
+      val adj = LineageAdjustments.builder
+        .cls("", "Ghost").writes.s3("bucket")
+        .build
+
+      val ex = intercept[IllegalStateException] {
+        adj.apply(Nil, Nil)
+      }
+      ex.getMessage should include("s3")
+      ex.getMessage should include("Ghost")
+    }
+
+    "builder-level .undetected opts out per resource type" in {
+      val existing = List(
+        DiscoveredIntegration(MethodRef("", "Handler", "query"), DataAccessType.Read, "database", "doobie", "users", "SELECT"),
+      )
+      val methods = List(
+        ExtractedMethod("Handler", "", "query", Nil),
+      )
+
+      // kafka is not auto-detected, but .undetected("kafka") marks it as manual-only
+      val adj = LineageAdjustments.builder
+        .undetected("kafka")
+        .cls("", "Handler").writes.kafka("topic")
+        .cls("", "Handler").reads.database("users")
+        .build
+
+      // Should not throw — kafka is manual-only, database is detected
+      val (_, result) = adj.apply(methods, existing)
+      result.count(_.scanner == "manual") shouldBe 2
+    }
+
+    ".undetected on integration builder opts out for current entries only" in {
+      val existing = List(
+        DiscoveredIntegration(MethodRef("", "Handler", "query"), DataAccessType.Read, "database", "doobie", "users", "SELECT"),
+      )
+      val methods = List(
+        ExtractedMethod("Handler", "", "query", Nil),
+      )
+
+      // First builder: .undetected — kafka not detected, manual-only
+      // Second builder: default — database is detected, passes
+      val adj = LineageAdjustments.builder
+        .cls("", "Handler").writes.kafka("topic").undetected
+        .cls("", "Handler").reads.database("users")
+        .build
+
+      val (_, result) = adj.apply(methods, existing)
+      result.count(_.scanner == "manual") shouldBe 2
+    }
+
+    ".undetected on integration builder does not affect other builders" in {
+      val methods = List(
+        ExtractedMethod("Handler", "", "query", Nil),
+      )
+
+      // First builder: .undetected — kafka not detected, manual-only
+      // Second builder: default — s3 not detected, should throw
+      val adj = LineageAdjustments.builder
+        .cls("", "Handler").writes.kafka("topic").undetected
+        .cls("", "Handler").writes.s3("bucket")
+        .build
+
+      val ex = intercept[IllegalStateException] {
+        adj.apply(methods, Nil)
+      }
+      ex.getMessage should include("s3")
+    }
+
+    ".detected overrides builder-level .undetected for specific entries" in {
+      val existing = List(
+        DiscoveredIntegration(MethodRef("", "Handler", "send"), DataAccessType.Write, "kafka", "pekko-kafka", "auto-topic", "evidence"),
+      )
+      val methods = List(
+        ExtractedMethod("Handler", "", "send", Nil),
+      )
+
+      // Builder marks kafka as undetected, but .detected overrides for this entry
+      val adj = LineageAdjustments.builder
+        .undetected("kafka")
+        .cls("", "Handler").writes.kafka("real-topic").detected
+        .build
+
+      // Should pass — kafka IS detected on Handler, and .detected requires it
+      val (_, result) = adj.apply(methods, existing)
+      result.count(_.scanner == "manual") shouldBe 1
+    }
+
+    ".detected override throws when detection is missing" in {
+      val methods = List(
+        ExtractedMethod("Handler", "", "send", Nil),
+      )
+
+      // Builder marks kafka as undetected, but .detected overrides — and there's no detection
+      val adj = LineageAdjustments.builder
+        .undetected("kafka")
+        .cls("", "Handler").writes.kafka("topic").detected
+        .build
+
+      val ex = intercept[IllegalStateException] {
+        adj.apply(methods, Nil)
+      }
+      ex.getMessage should include("kafka")
     }
   }
 
@@ -295,8 +699,8 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       }
     }
 
-    "all pekko integrations have group Journal" in {
-      pekkoIntegrations.foreach(_.group shouldBe Some("Journal"))
+    "pekko integrations have no group by default" in {
+      pekkoIntegrations.foreach(_.group shouldBe None)
     }
 
     "composes with LineageBuilder" in {
@@ -373,11 +777,21 @@ class TastyLineageScannerTest extends AnyFreeSpec {
   "MermaidRenderer class-level" - {
 
     // Build a result that includes kafka (manual) integrations, matching RenderLineage
-    val manualIntegrations = ManualScanner.builder
-      .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events").lenient
-      .build.apply(Nil)
-    val allIntegrations = enrichment.enrich(doobieIntegrations ++ grpcIntegrations ++ manualIntegrations)
-    val resultWithManual = LineageBuilder.build(callGraph, allIntegrations)
+    val adj = LineageAdjustments.builder
+      .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
+      .build
+    val (adjCallGraph, adjIntegrations) = adj.apply(callGraph, doobieIntegrations ++ grpcIntegrations)
+    val allIntegrations = enrichment.enrich(adjIntegrations)
+    val resultWithManual = LineageBuilder.build(adjCallGraph, allIntegrations)
+
+    // Build a result with UserRepo hidden via LineageAdjustments
+    val adjWithHide = LineageAdjustments.builder
+      .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
+      .cls[UserRepo].remove
+      .build
+    val (hiddenCallGraph, hiddenIntegrations) = adjWithHide.apply(callGraph, doobieIntegrations ++ grpcIntegrations)
+    val hiddenAllIntegrations = enrichment.enrich(hiddenIntegrations)
+    val resultWithHidden = LineageBuilder.build(hiddenCallGraph, hiddenAllIntegrations)
 
     "contains class names as nodes, not individual methods" in {
       val diagram = MermaidRenderer.renderClassLevel(resultWithManual)
@@ -428,9 +842,22 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       lines.count(_.contains(s"cls_${ph}_UserService --> cls_${ph}_UserRepo")) shouldBe 1
     }
 
-    "hides specified classes from diagram" in {
-      val config = ClassLevelConfig.builder.hide[UserRepo].build
-      val diagram = MermaidRenderer.renderClassLevel(resultWithManual, config)
+    "renders renamed class with display name but preserves node ID" in {
+      val renamed = resultWithManual.copy(
+        classDisplayNames = Map((pkg, "UserRepo") -> "User Repository")
+      )
+      val diagram = MermaidRenderer.renderClassLevel(renamed)
+
+      // Display name is used in the label
+      diagram should include("""["User Repository"]""")
+      // Original class name is no longer in any label
+      diagram should not include """["UserRepo"]"""
+      // Node ID still uses the original name
+      diagram should include(s"cls_${ph}_UserRepo")
+    }
+
+    "hides specified classes from diagram via LineageAdjustments.remove" in {
+      val diagram = MermaidRenderer.renderClassLevel(resultWithHidden)
 
       diagram should not include """["UserRepo"]"""
       diagram should include("""["UserGrpcApi"]""")
@@ -438,9 +865,8 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       diagram should include("""["EventPublisher"]""")
     }
 
-    "promotes integrations from hidden class to callers" in {
-      val config = ClassLevelConfig.builder.hide[UserRepo].build
-      val diagram = MermaidRenderer.renderClassLevel(resultWithManual, config)
+    "promotes integrations from hidden class to callers via LineageAdjustments.remove" in {
+      val diagram = MermaidRenderer.renderClassLevel(resultWithHidden)
 
       // UserRepo's DB integrations should be promoted to UserService
       diagram should include(s"cls_${ph}_UserService")
@@ -451,9 +877,8 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       diagram should not include s"cls_${ph}_UserRepo"
     }
 
-    "removes call edges to hidden classes" in {
-      val config = ClassLevelConfig.builder.hide[UserRepo].build
-      val diagram = MermaidRenderer.renderClassLevel(resultWithManual, config)
+    "removes call edges to hidden classes via LineageAdjustments.remove" in {
+      val diagram = MermaidRenderer.renderClassLevel(resultWithHidden)
 
       diagram should not include s"cls_${ph}_UserService --> cls_${ph}_UserRepo"
       // Other call edges remain
@@ -650,240 +1075,224 @@ class TastyLineageScannerTest extends AnyFreeSpec {
     }
   }
 
-  "ManualDeclarations" - {
+  "TastyS3Scanner" - {
 
-    "method-level override replaces target when match exists" in {
-      val autoDetected = List(
-        DiscoveredIntegration(
-          method = MethodRef("", "MyProducer", "send"),
-          accessType = DataAccessType.Write,
-          resourceType = "kafka",
-          scanner = "pekko-kafka",
-          target = "unknown topic from MyProducer.send",
-          evidence = "calls Producer.plainSink",
-          group = Some("Kafka"),
-        ),
-      )
+    val s3Integrations = new TastyS3Scanner().scan(List(pkg))
 
-      val manual = ManualDeclarations(
-        entries = List(
-          ManualEntry("", "MyProducer", Some("send"), DataAccessType.Write, "kafka", "my-actual-topic", Some("Kafka")),
-        ),
-      )
-
-      val result = manual.apply(autoDetected)
-      result should have size 1
-      result.head.target shouldBe "my-actual-topic"
-      result.head.scanner shouldBe "manual"
-      result.head.evidence shouldBe "manual override"
-    }
-
-    "lenient method-level adds when no match exists" in {
-      val autoDetected = List(
-        DiscoveredIntegration(
-          method = MethodRef("", "MyProducer", "send"),
-          accessType = DataAccessType.Write,
-          resourceType = "kafka",
-          scanner = "pekko-kafka",
-          target = "unknown topic from MyProducer.send",
-          evidence = "calls Producer.plainSink",
-          group = Some("Kafka"),
-        ),
-      )
-
-      val manual = ManualDeclarations(
-        entries = List(
-          ManualEntry("", "OtherClass", Some("publish"), DataAccessType.Write, "kafka", "other-topic", Some("Kafka"), strict = false),
-        ),
-      )
-
-      val result = manual.apply(autoDetected)
-      result should have size 2
-      result.map(_.target).toSet shouldBe Set("unknown topic from MyProducer.send", "other-topic")
-    }
-
-    "strict method-level throws when no match exists" in {
-      val autoDetected = List(
-        DiscoveredIntegration(
-          method = MethodRef("", "MyProducer", "send"),
-          accessType = DataAccessType.Write,
-          resourceType = "kafka",
-          scanner = "pekko-kafka",
-          target = "unknown topic from MyProducer.send",
-          evidence = "calls Producer.plainSink",
-          group = Some("Kafka"),
-        ),
-      )
-
-      val manual = ManualDeclarations(
-        entries = List(
-          ManualEntry("", "NonExistent", Some("publish"), DataAccessType.Write, "kafka", "topic", Some("Kafka")),
-        ),
-      )
-
-      val error = intercept[ManualOverrideError] {
-        manual.apply(autoDetected)
+    "detects S3 putObject as Write" in {
+      val writes = s3Integrations.filter { di =>
+        di.method.className == "S3Exporter" && di.accessType == DataAccessType.Write
       }
-      error.unmatched should have size 1
-      error.unmatched.head.className shouldBe "NonExistent"
+      writes should have size 1
+      writes.head.target shouldBe "S3"
+      writes.head.evidence should include("putObject")
     }
 
-    "class-level override replaces all of resourceType with cross-product" in {
-      val autoDetected = List(
+    "detects S3 getObject as Read" in {
+      val reads = s3Integrations.filter { di =>
+        di.method.className == "S3Reader" && di.accessType == DataAccessType.Read
+      }
+      reads should have size 1
+      reads.head.target shouldBe "S3"
+      reads.head.evidence should include("getObject")
+    }
+
+    "all S3 integrations have resourceType s3 and scanner s3" in {
+      s3Integrations should not be empty
+      s3Integrations.foreach { di =>
+        di.resourceType shouldBe "s3"
+        di.scanner shouldBe "s3"
+      }
+    }
+
+    "all S3 integrations have group S3" in {
+      s3Integrations.foreach(_.group shouldBe Some("S3"))
+    }
+
+    "LineageAdjustments .s3(bucket) overrides auto-detected S3 targets" in {
+      val adj = LineageAdjustments.builder
+        .cls[S3Exporter].removeIntegrations("s3")
+        .cls[S3Exporter].writes.s3("ledger-exports/assets")
+        .build
+
+      val (_, result) = adj.apply(Nil, s3Integrations)
+      val exporterResults = result.filter(_.method.className == "S3Exporter")
+      exporterResults should have size 1
+      exporterResults.head.target shouldBe "ledger-exports/assets"
+      exporterResults.head.scanner shouldBe "manual"
+      exporterResults.head.resourceType shouldBe "s3"
+      exporterResults.head.group shouldBe Some("S3")
+
+      // S3Reader integrations should be untouched
+      val readerResults = result.filter(_.method.className == "S3Reader")
+      readerResults should have size 1
+      readerResults.head.target shouldBe "S3"
+      readerResults.head.scanner shouldBe "s3"
+    }
+  }
+
+  "LineageAdjustments apply" - {
+
+    "addIntegration always adds to integration list" in {
+      val existing = List(
         DiscoveredIntegration(
-          method = MethodRef("", "Handler", "methodA"),
+          method = MethodRef("", "MyProducer", "send"),
           accessType = DataAccessType.Write,
           resourceType = "kafka",
           scanner = "pekko-kafka",
-          target = "unknown topic from Handler.methodA",
-          evidence = "calls Producer.flexiFlow",
-          group = Some("Kafka"),
-        ),
-        DiscoveredIntegration(
-          method = MethodRef("", "Handler", "methodB"),
-          accessType = DataAccessType.Write,
-          resourceType = "kafka",
-          scanner = "pekko-kafka",
-          target = "unknown topic from Handler.methodB",
+          target = "auto-topic",
           evidence = "calls Producer.plainSink",
           group = Some("Kafka"),
         ),
-        DiscoveredIntegration(
-          method = MethodRef("", "Handler", "query"),
-          accessType = DataAccessType.Read,
-          resourceType = "database",
-          scanner = "doobie",
-          target = "users",
-          evidence = "SELECT * FROM users",
-        ),
       )
 
-      val manual = ManualDeclarations(
-        entries = List(
-          ManualEntry("", "Handler", None, DataAccessType.Write, "kafka", "topic.a", Some("Kafka")),
-          ManualEntry("", "Handler", None, DataAccessType.Write, "kafka", "topic.b", Some("Kafka")),
-        ),
+      val adj = LineageAdjustments.builder
+        .method("", "OtherClass", "publish").writes.kafka("other-topic")
+        .build
+
+      val (_, result) = adj.apply(Nil, existing)
+      result should have size 2
+      result.map(_.target).toSet shouldBe Set("auto-topic", "other-topic")
+    }
+
+    "removeIntegration removes specific integration" in {
+      val existing = List(
+        DiscoveredIntegration(MethodRef("", "MyProducer", "send"), DataAccessType.Write, "kafka", "pekko-kafka", "topic-a", "evidence"),
+        DiscoveredIntegration(MethodRef("", "MyProducer", "send"), DataAccessType.Write, "kafka", "pekko-kafka", "topic-b", "evidence"),
       )
 
-      val result = manual.apply(autoDetected)
-      // 2 methods x 2 topics = 4 kafka + 1 database = 5
+      val adj = LineageAdjustments.builder
+        .method("", "MyProducer", "send").removeIntegration("kafka", "topic-a")
+        .build
+
+      val (_, result) = adj.apply(Nil, existing)
+      result should have size 1
+      result.head.target shouldBe "topic-b"
+    }
+
+    "removeIntegrationsByType removes all of a type" in {
+      val existing = List(
+        DiscoveredIntegration(MethodRef("", "Handler", "m"), DataAccessType.Write, "kafka", "pekko-kafka", "topic-a", "evidence"),
+        DiscoveredIntegration(MethodRef("", "Handler", "m"), DataAccessType.Write, "kafka", "pekko-kafka", "topic-b", "evidence"),
+        DiscoveredIntegration(MethodRef("", "Handler", "m"), DataAccessType.Read, "database", "doobie", "users", "SELECT"),
+      )
+
+      val adj = LineageAdjustments.builder
+        .method("", "Handler", "m").removeIntegrations("kafka")
+        .build
+
+      val (_, result) = adj.apply(Nil, existing)
+      result should have size 1
+      result.head.resourceType shouldBe "database"
+    }
+
+    "addClassIntegration adds to methods with matching resourceType" in {
+      val existing = List(
+        DiscoveredIntegration(MethodRef("", "Handler", "methodA"), DataAccessType.Write, "kafka", "pekko-kafka", "unknown-a", "evidence"),
+        DiscoveredIntegration(MethodRef("", "Handler", "methodB"), DataAccessType.Write, "kafka", "pekko-kafka", "unknown-b", "evidence"),
+        DiscoveredIntegration(MethodRef("", "Handler", "query"), DataAccessType.Read, "database", "doobie", "users", "SELECT"),
+      )
+
+      val adj = LineageAdjustments.builder
+        .cls("", "Handler").writes.kafka("actual-topic")
+        .build
+
+      val (_, result) = adj.apply(Nil, existing)
+      // Original 3 + 2 new (for methodA and methodB, matched by kafka resourceType)
+      result should have size 5
+      val manualKafka = result.filter(_.scanner == "manual")
+      manualKafka should have size 2
+      manualKafka.map(_.method.methodName).toSet shouldBe Set("methodA", "methodB")
+      manualKafka.foreach(_.target shouldBe "actual-topic")
+    }
+
+    "removeIntegrations + addClassIntegration = override pattern" in {
+      val existing = List(
+        DiscoveredIntegration(MethodRef("", "Handler", "methodA"), DataAccessType.Write, "kafka", "pekko-kafka", "unknown-a", "evidence", Some("Kafka")),
+        DiscoveredIntegration(MethodRef("", "Handler", "methodB"), DataAccessType.Write, "kafka", "pekko-kafka", "unknown-b", "evidence", Some("Kafka")),
+        DiscoveredIntegration(MethodRef("", "Handler", "query"), DataAccessType.Read, "database", "doobie", "users", "SELECT"),
+      )
+
+      val adj = LineageAdjustments.builder
+        .cls("", "Handler").removeIntegrations("kafka")
+        .cls("", "Handler").writes.kafka("topic.a").kafka("topic.b")
+        .build
+
+      val (_, result) = adj.apply(Nil, existing)
+      // 1 database + 4 kafka (2 methods × 2 topics)
       result should have size 5
       val kafkaResults = result.filter(_.resourceType == "kafka")
       kafkaResults should have size 4
       kafkaResults.map(_.target).toSet shouldBe Set("topic.a", "topic.b")
-      kafkaResults.foreach { di =>
-        di.scanner shouldBe "manual"
-        di.evidence shouldBe "manual override"
-      }
+      kafkaResults.foreach(_.scanner shouldBe "manual")
       // database integration untouched
       val dbResults = result.filter(_.resourceType == "database")
       dbResults should have size 1
       dbResults.head.target shouldBe "users"
     }
 
-    "strict class-level throws on unmatched override" in {
-      val autoDetected = List(
-        DiscoveredIntegration(
-          method = MethodRef("", "Other", "m"),
-          accessType = DataAccessType.Write,
-          resourceType = "database",
-          scanner = "doobie",
-          target = "users",
-          evidence = "INSERT INTO users",
-        ),
-      )
+    "addCall creates synthetic methods if needed" in {
+      val adj = LineageAdjustments.builder
+        .method("pkg", "A", "handle").calls("pkg", "B", "process")
+        .build
 
-      val manual = ManualDeclarations(
-        entries = List(
-          ManualEntry("", "NonExistent", None, DataAccessType.Write, "kafka", "topic", Some("Kafka")),
-        ),
-      )
-
-      val error = intercept[ManualOverrideError] {
-        manual.apply(autoDetected)
-      }
-      error.unmatched should have size 1
-      error.unmatched.head.className shouldBe "NonExistent"
+      val (methods, _) = adj.apply(Nil, Nil)
+      methods should have size 2
+      methods.find(_.ref == MethodRef("pkg", "A", "handle")).get.calls should contain(MethodRef("pkg", "B", "process"))
+      methods.find(_.ref == MethodRef("pkg", "B", "process")) shouldBe defined
     }
 
-    "lenient class-level ignores unmatched override" in {
-      val autoDetected = List(
-        DiscoveredIntegration(
-          method = MethodRef("", "Other", "m"),
-          accessType = DataAccessType.Write,
-          resourceType = "database",
-          scanner = "doobie",
-          target = "users",
-          evidence = "INSERT INTO users",
-        ),
+    "removeCall removes call edge" in {
+      val methods = List(
+        ExtractedMethod("A", "pkg", "handle", List(MethodRef("pkg", "B", "process"))),
+        ExtractedMethod("B", "pkg", "process", Nil),
       )
 
-      val manual = ManualDeclarations(
-        entries = List(
-          ManualEntry("", "NonExistent", None, DataAccessType.Write, "kafka", "topic", Some("Kafka"), strict = false),
-        ),
-      )
+      val adj = LineageAdjustments.builder
+        .method("pkg", "A", "handle").removesCall("pkg", "B", "process")
+        .build
 
-      val result = manual.apply(autoDetected)
-      result should have size 1
-      result.head.target shouldBe "users"
+      val (result, _) = adj.apply(methods, Nil)
+      result.find(_.ref == MethodRef("pkg", "A", "handle")).get.calls shouldBe empty
     }
 
-    "per-entry strictness: strict entry throws while lenient entry passes" in {
-      val autoDetected = List(
-        DiscoveredIntegration(
-          method = MethodRef("", "MyProducer", "send"),
-          accessType = DataAccessType.Write,
-          resourceType = "kafka",
-          scanner = "pekko-kafka",
-          target = "unknown",
-          evidence = "calls Producer",
-          group = Some("Kafka"),
-        ),
+    "renameResource renames across all integrations" in {
+      val existing = List(
+        DiscoveredIntegration(MethodRef("", "A", "m"), DataAccessType.Write, "kafka", "pekko-kafka", "old-topic", "evidence", Some("Kafka")),
+        DiscoveredIntegration(MethodRef("", "B", "n"), DataAccessType.Write, "kafka", "pekko-kafka", "old-topic", "evidence", Some("Kafka")),
+        DiscoveredIntegration(MethodRef("", "C", "o"), DataAccessType.Read, "database", "doobie", "users", "SELECT"),
       )
 
-      // First entry matches, second is lenient (no match but OK), third is strict (no match → error)
-      val manual = ManualDeclarations(
-        entries = List(
-          ManualEntry("", "MyProducer", Some("send"), DataAccessType.Write, "kafka", "real-topic", Some("Kafka")),
-          ManualEntry("", "OtherClass", Some("publish"), DataAccessType.Write, "kafka", "other-topic", Some("Kafka"), strict = false),
-          ManualEntry("", "Missing", None, DataAccessType.Write, "kafka", "fail-topic", Some("Kafka")),
-        ),
-      )
+      val adj = LineageAdjustments.builder
+        .resource("kafka", "old-topic").renameTo("new-topic")
+        .build
 
-      val error = intercept[ManualOverrideError] {
-        manual.apply(autoDetected)
-      }
-      error.unmatched should have size 1
-      error.unmatched.head.className shouldBe "Missing"
+      val (_, result) = adj.apply(Nil, existing)
+      result.filter(_.resourceType == "kafka").foreach(_.target shouldBe "new-topic")
+      result.find(_.resourceType == "database").get.target shouldBe "users"
     }
 
-    "empty ManualDeclarations passes through unchanged" in {
-      val autoDetected = List(
-        DiscoveredIntegration(
-          method = MethodRef("", "A", "b"),
-          accessType = DataAccessType.Read,
-          resourceType = "database",
-          scanner = "doobie",
-          target = "users",
-          evidence = "SELECT",
-        ),
+    "empty adjustments passes through unchanged" in {
+      val existing = List(
+        DiscoveredIntegration(MethodRef("", "A", "b"), DataAccessType.Read, "database", "doobie", "users", "SELECT"),
       )
 
-      val result = ManualDeclarations.empty.apply(autoDetected)
-      result shouldBe autoDetected
+      val (_, result) = LineageAdjustments.empty.apply(Nil, existing)
+      result shouldBe existing
     }
 
-    "PekkoKafkaScanner + ManualScanner override integration" in {
+    "PekkoKafkaScanner + adjustments override" in {
       val pekkoPkg = "domaindocs4s.architecture.lineage.example.pekko"
       val kafkaDetected = new TastyPekkoKafkaScanner().scan(List(pekkoPkg))
 
-      val manual = ManualScanner.builder
+      val adj = LineageAdjustments.builder
+        .cls[KafkaFlexiFlowProducer].removeIntegrations("kafka")
         .cls[KafkaFlexiFlowProducer].writes.kafka("events.flexiflow-topic")
+        .cls[KafkaPlainSinkProducer].removeIntegrations("kafka")
         .cls[KafkaPlainSinkProducer].writes.kafka("events.plainsink-topic")
         .build
 
-      val result = manual.apply(kafkaDetected)
+      val (_, result) = adj.apply(Nil, kafkaDetected)
       val flexiFlowResults = result.filter(_.method.className == "KafkaFlexiFlowProducer")
       flexiFlowResults should have size 1
       flexiFlowResults.head.target shouldBe "events.flexiflow-topic"
