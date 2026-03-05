@@ -2,7 +2,7 @@ package domaindocs4s.architecture.lineage
 
 import tastyquery.Contexts.Context
 import tastyquery.Names.{Name, SignedName}
-import tastyquery.Symbols.{ClassSymbol, PackageSymbol}
+import tastyquery.Symbols.{ClassSymbol, PackageSymbol, Symbol}
 import tastyquery.Types.*
 
 private[lineage] object TastyUtils {
@@ -65,6 +65,28 @@ private[lineage] object TastyUtils {
         case _              => ""
       }
     } catch { case _: Exception => "" }
+
+  /** Extract the fully qualified name from a TASTy type. */
+  def extractFqn(tpe: TypeOrMethodic): Option[String] =
+    extractTypeRef(tpe) match {
+      case Some(tr) =>
+        val pkg = typeRefPackage(tr)
+        val name = tr.name.toString.stripSuffix("$")
+        if (pkg.nonEmpty) Some(s"$pkg.$name") else Some(name)
+      case None =>
+        tpe match {
+          case at: AndType => extractFqn(at.first).orElse(extractFqn(at.second))
+          case _           => None
+        }
+    }
+
+  /** Resolve a type to its symbol, safely handling TypeRef and AppliedType. */
+  def resolveSymbol(tpe: TypeOrMethodic)(using Context): Option[Symbol] =
+    tpe match {
+      case tr: TypeRef     => try tr.optSymbol catch { case _: Exception => None }
+      case at: AppliedType => extractTypeRef(at).flatMap(tr => try tr.optSymbol catch { case _: Exception => None })
+      case _               => None
+    }
 }
 
 /** Extract (packageName, className) from a ClassTag's runtime class. */

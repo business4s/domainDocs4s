@@ -662,7 +662,7 @@ class TastyLineageScannerTest extends AnyFreeSpec {
       }
       typedWrites should have size 1
       typedWrites.head.target shouldBe "journal"
-      typedWrites.head.evidence shouldBe "calls EventSourcedBehavior"
+      typedWrites.head.evidence shouldBe "references EventSourcedBehavior"
     }
 
     "detects journal query usage as Read from journal" in {
