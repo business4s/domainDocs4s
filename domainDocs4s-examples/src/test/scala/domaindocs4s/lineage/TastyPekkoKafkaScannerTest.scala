@@ -42,6 +42,15 @@ class TastyPekkoKafkaScannerTest extends AnyFreeSpec {
       }
     }
 
+    "detects Producer usage via imported member (flexiFlow) as Write to kafka" in {
+      val importedWrites = kafkaIntegrations.filter { di =>
+        di.method.className == "KafkaImportedFlexiFlowProducer" && di.accessType == DataAccessType.Write
+      }
+      importedWrites should have size 1
+      importedWrites.head.resourceType shouldBe ResourceType.Kafka
+      importedWrites.head.evidence should include("Producer")
+    }
+
     "target includes class and method name as placeholder" in {
       val flexiFlow = kafkaIntegrations.find(_.method.className == "KafkaFlexiFlowProducer")
       flexiFlow.get.target should include("KafkaFlexiFlowProducer")

@@ -64,12 +64,16 @@ private[lineage] object TypeMatcherResolver {
   def matchesFqn(matcher: TypeMatcher, fqn: String): Boolean =
     matcher.matchFqn(fqn)
 
-  /** Extract FQN from a TermRef (used for Ident/Select tree reference types). */
+  /** Extract FQN from a TermRef (used for Ident/Select tree reference types).
+    * Recursively resolves nested TermRef prefixes (e.g., `Producer.flexiFlow`
+    * where `Producer` is itself a TermRef, not a PackageRef).
+    */
   def termRefFqn(refType: Any): Option[String] = refType match {
     case tr: TermRef =>
       try {
         val prefix = tr.prefix match {
           case pr: PackageRef => pr.symbol.fullName.toString
+          case inner: TermRef => termRefFqn(inner).getOrElse("")
           case _              => ""
         }
         val name = tr.name.toString.stripSuffix("$")

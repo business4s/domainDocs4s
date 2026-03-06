@@ -42,7 +42,8 @@ lazy val core = (project in file("domainDocs4s-core"))
   .settings(
     name := "domainDocs4s-core",
     libraryDependencies ++= Seq(
-      "ch.epfl.scala" %% "tasty-query" % "1.7.0",
+      "ch.epfl.scala"          %% "tasty-query" % "1.7.0",
+      "com.github.jsqlparser"   % "jsqlparser"  % "5.3",
     ),
   )
 
@@ -59,6 +60,7 @@ lazy val examples = (project in file("domainDocs4s-examples"))
       "org.apache.pekko"      %% "pekko-projection-eventsourced" % "1.1.0",
       "org.apache.pekko"      %% "pekko-connectors-kafka"        % "1.1.0",
       "software.amazon.awssdk" % "s3"                            % "2.30.2",
+      "com.github.fd4s"       %% "fs2-kafka"                     % "3.6.0",
     ),
     semanticdbEnabled := true,
     // suppress warnings from protobuf/scalapb generated code

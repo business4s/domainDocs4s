@@ -19,6 +19,7 @@ object RenderLineage {
         "domaindocs4s.architecture.lineage.example",
         "domaindocs4s.architecture.lineage.example.pekko",
         "domaindocs4s.architecture.lineage.example.slick",
+        "domaindocs4s.architecture.lineage.example.fs2kafka",
       ),
       scanners = List(
         new TastyDoobieScanner(),
@@ -26,6 +27,7 @@ object RenderLineage {
         new TastyPekkoJournalScanner(group = Some("user-db")),
         new TastySlickScanner(),
         new TastyPekkoKafkaScanner(),
+        new TastyFs2KafkaScanner(),
       ),
       adjustments = LineageAdjustments.builder
         .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")

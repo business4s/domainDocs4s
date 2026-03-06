@@ -367,12 +367,22 @@ class DeclarativeScanner(
 
     private def tryMatchRef(tree: TermReferenceTree): Unit = {
       try {
-        val refType = tree.referenceType
-        TypeMatcherResolver.termRefFqn(refType).foreach { fqn =>
+        checkRefAndPrefixes(tree.referenceType)
+      } catch { case _: Exception => }
+    }
+
+    /** Walk the TermRef chain checking each level against the target type.
+      * This handles imported member references like `flexiFlow` (imported from `Producer`)
+      * where the Ident refers to the method but the owner type is in the prefix chain.
+      */
+    private def checkRefAndPrefixes(ref: Any): Unit = ref match {
+      case tr: TermRef if !found =>
+        TypeMatcherResolver.termRefFqn(tr).foreach { fqn =>
           if (TypeMatcherResolver.matchesFqn(targetType, fqn))
             matchedRef = Some(fqn.split('.').last)
         }
-      } catch { case _: Exception => }
+        if (!found) checkRefAndPrefixes(tr.prefix)
+      case _ =>
     }
   }
 }

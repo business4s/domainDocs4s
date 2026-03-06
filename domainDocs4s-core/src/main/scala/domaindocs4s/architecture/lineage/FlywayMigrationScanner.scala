@@ -1,8 +1,15 @@
 package domaindocs4s.architecture.lineage
 
+import net.sf.jsqlparser.parser.CCJSqlParserUtil
+import net.sf.jsqlparser.schema.Table
+import net.sf.jsqlparser.statement.alter.Alter
+import net.sf.jsqlparser.statement.create.table.CreateTable
+import net.sf.jsqlparser.statement.create.view.CreateView
+import net.sf.jsqlparser.statement.select.{FromItem, PlainSelect, Select, SetOperationList}
+
 import java.nio.file.{Files, Path}
 import scala.jdk.CollectionConverters.*
-import scala.util.Using
+import scala.util.{Try, Using}
 
 // ============================================================================
 // Flyway Migration Scanner
@@ -10,16 +17,17 @@ import scala.util.Using
 // Discovers schema objects (tables, views) from SQL migration files.
 // Does not require TASTy — reads SQL files directly from disk.
 //
-// Supported DDL:
+// Uses JSqlParser for robust SQL parsing. Handles:
 //   CREATE TABLE [schema.]name          → Write
 //   CREATE VIEW [schema.]name AS ...    → Write to view, Read from source tables
 //   ALTER TABLE [schema.]name           → Write
 //
-// Migration files must follow Flyway naming: V<version>__<description>.sql
+// PL/pgSQL procedural blocks (DO $$...$$, CREATE PROCEDURE) are silently
+// skipped since they typically contain dynamic partition management, not
+// schema definitions relevant for architecture diagrams.
 //
-// SQL parsing is regex-based. For more robust handling (especially views with
-// subqueries, CTEs, or complex JOINs), consider replacing with JSqlParser
-// (com.github.jsqlparser:jsqlparser) which provides a full DDL/DML AST.
+// Migration files must follow Flyway naming: V<version>__<description>.sql
+//   or repeatable migrations: R__<description>.sql
 // ============================================================================
 
 class FlywayMigrationScanner(
@@ -42,37 +50,42 @@ class FlywayMigrationScanner(
   private def parseMigrationFile(file: Path): List[DiscoveredIntegration] = {
     val filename = file.getFileName.toString
     val version  = filename.takeWhile(_ != '_')
-    val content  = new String(Files.readAllBytes(file))
-    val stmts    = content.split(";").map(_.trim).filter(_.nonEmpty)
+    val content  = new String(Files.readAllBytes(file), java.nio.charset.StandardCharsets.UTF_8)
+    val stmts    = parseStatements(content)
 
-    stmts.flatMap(stmt => parseStatement(stmt, version, filename)).toList
+    stmts.flatMap(stmt => processStatement(stmt, version, filename))
   }
 
-  private def parseStatement(stmt: String, version: String, filename: String): List[DiscoveredIntegration] = {
+  private def processStatement(
+      stmt: net.sf.jsqlparser.statement.Statement,
+      version: String,
+      filename: String,
+  ): List[DiscoveredIntegration] = {
     val method = MethodRef("", "flyway", version)
 
-    CreateViewPattern.findFirstMatchIn(stmt) match {
-      case Some(m) =>
-        val viewName = m.group(1)
-        val body     = m.group(2)
-        val sourceTables = SourceTablePattern.findAllMatchIn(body).map(_.group(1)).toList.distinct
+    stmt match {
+      case ct: CreateTable =>
+        List(mkIntegration(method, DataAccessType.Write, ct.getTable.getName, filename))
 
+      case cv: CreateView =>
+        val viewName = cv.getView.getName
+        val sources = Option(cv.getSelect).toList.flatMap(extractSourceTables).distinct
         mkIntegration(method, DataAccessType.Write, viewName, filename) ::
-          sourceTables.map(table => mkIntegration(method, DataAccessType.Read, table, filename))
+          sources.map(t => mkIntegration(method, DataAccessType.Read, t, filename))
 
-      case None =>
-        val createTable = CreateTablePattern.findFirstMatchIn(stmt).map(m =>
-          mkIntegration(method, DataAccessType.Write, m.group(1), filename))
+      case alt: Alter =>
+        List(mkIntegration(method, DataAccessType.Write, alt.getTable.getName, filename))
 
-        val alterTable = AlterTablePattern.findFirstMatchIn(stmt).map(m =>
-          mkIntegration(method, DataAccessType.Write, m.group(1), filename))
-
-        // Prefer CREATE TABLE match; fall back to ALTER TABLE
-        createTable.orElse(alterTable).toList
+      case _ => Nil
     }
   }
 
-  private def mkIntegration(method: MethodRef, access: DataAccessType, target: String, filename: String): DiscoveredIntegration =
+  private def mkIntegration(
+      method: MethodRef,
+      access: DataAccessType,
+      target: String,
+      filename: String,
+  ): DiscoveredIntegration =
     DiscoveredIntegration(
       method = method,
       accessType = access,
@@ -85,11 +98,43 @@ class FlywayMigrationScanner(
 }
 
 object FlywayMigrationScanner {
-  private val MigrationFilePattern = """V[\d._]+__.*\.sql""".r
-  private val CreateTablePattern   = """(?i)CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:\w+\.)?(\w+)""".r
-  private val CreateViewPattern    = """(?is)CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+(?:\w+\.)?(\w+)\s+AS\s+(.+)""".r
-  private val AlterTablePattern    = """(?i)ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:\w+\.)?(\w+)""".r
-  private val SourceTablePattern   = """(?i)(?:FROM|JOIN)\s+(?:\w+\.)?(\w+)""".r
+  private val MigrationFilePattern = """[VR][\d._]*__.*\.sql""".r
+
+  /** Parse SQL content into statements, silently skipping unparseable ones
+    * (e.g. PL/pgSQL procedural blocks with DO $$...$$ or CREATE PROCEDURE).
+    */
+  private def parseStatements(content: String): List[net.sf.jsqlparser.statement.Statement] = {
+    Try {
+      CCJSqlParserUtil.parseStatements(content).asScala.toList
+    }.getOrElse {
+      // If batch parse fails (e.g. PL/pgSQL blocks), try individual statements
+      content.split(";").toList.flatMap { s =>
+        val trimmed = s.trim
+        if (trimmed.isEmpty) None
+        else Try(CCJSqlParserUtil.parse(trimmed)).toOption
+      }
+    }
+  }
+
+  /** Extract table names from a SELECT's FROM and JOIN clauses. */
+  private def extractSourceTables(select: Select): List[String] = select match {
+    case ps: PlainSelect =>
+      val from = Option(ps.getFromItem).toList.flatMap(tableName)
+      val joins = Option(ps.getJoins).map(_.asScala.toList).getOrElse(Nil)
+        .flatMap(j => Option(j.getFromItem)).flatMap(tableName)
+      from ++ joins
+    case sol: SetOperationList =>
+      Option(sol.getSelects).map(_.asScala.toList).getOrElse(Nil).flatMap {
+        case s: Select => extractSourceTables(s)
+        case _         => Nil
+      }
+    case _ => Nil
+  }
+
+  private def tableName(fi: FromItem): Option[String] = fi match {
+    case t: Table => Some(t.getName)
+    case _        => None
+  }
 
   def apply(dir: String, group: Option[String] = None): FlywayMigrationScanner =
     new FlywayMigrationScanner(Path.of(dir), group)

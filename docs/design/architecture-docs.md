@@ -45,7 +45,8 @@ interactive views.
 | Service flow DSL                     | Design only | Section 6 below                                               |
 | External spec / system view          | Design only | Sections 8-9 below                                            |
 | Cytoscape.js renderer                | Design only | Section 10.3 below                                            |
-| Other TASTy scanners (Kafka etc.)    | Design only | Section 7 below                                               |
+| fs2-kafka scanner                    | Implemented | `core: lineage/TastyFs2KafkaScanner.scala`                    |
+| Other TASTy scanners (HTTP etc.)     | Design only | Section 7 below                                               |
 | Backstage integration                | Research    | Section 13 below                                              |
 | Parity roadmap (real-world coverage) | Planned     | Section 15 below                                              |
 | Recursive package scanning           | Implemented | `core: lineage/TastyUtils` + all scanners                     |
@@ -82,6 +83,7 @@ Phase 0: Call Graph Extraction       Phase 1: Integration Scanning
 │    ExtractedMethod       │         │    TastyPekkoJournalScanner   │
 │  ]                       │         │    TastySlickScanner          │
 │                          │         │    TastyS3Scanner             │
+│                          │         │    TastyFs2KafkaScanner       │
 │  Generic: any package    │         │                               │
 │  field.method() calls    │         │  ──→ List[                    │
 └────────────┬─────────────┘         │    DiscoveredIntegration      │
@@ -857,6 +859,7 @@ Implemented and planned scanners (see §15.5 for the full revised table includin
 | `PekkoKafkaScanner`        | Pekko Kafka producer/consumer patterns                       | Implemented |
 | `FlywayMigrationScanner`   | SQL DDL: tables, views, joins (resource)                     | Implemented |
 | `S3Scanner`                | AWS SDK v2 S3Client put/get operations                       | Implemented |
+| `Fs2KafkaScanner`          | fs2-kafka producer/consumer patterns                         | Implemented |
 | `SttpClientScanner`        | HTTP client calls                                            | Planned     |
 | `HoconKafkaTopicScanner`   | Kafka topic names from config (resource)                     | Planned     |
 
@@ -996,6 +999,7 @@ domainDocs4s-core/
 │       ├── TastyPekkoJournalScanner.scala ← Pekko persistence + projection scanner
 │       ├── TastySlickScanner.scala        ← Slick lifted embedding + plain SQL scanner
 │       ├── TastyS3Scanner.scala           ← AWS SDK v2 S3Client scanner
+│       ├── TastyFs2KafkaScanner.scala    ← fs2-kafka producer/consumer scanner
 │       ├── LineageAdjustments.scala       ← Selector-based manual graph modifications
 │       ├── TastyCallGraphExtractor.scala  ← Generic call graph extractor
 │       ├── LineageBuilder.scala           ← Generic lineage builder
@@ -1011,6 +1015,7 @@ domainDocs4s-examples/
 │       │                                 UserGrpcApi → EventPublisher → Kafka
 │       ├── pekko/PekkoExamples.scala  ← Pekko persistence + projection examples
 │       ├── slick/SlickExamples.scala  ← Slick Table + TableQuery + DBIO examples
+│       ├── fs2kafka/Fs2KafkaExamples.scala ← fs2-kafka producer + consumer examples
 │       └── RenderLineage.scala        ← Main entry point for rendering
 ```
 
@@ -1330,7 +1335,7 @@ the first non-None group wins.
 
 **Result:** 34 Slick integrations detected. Tests added for both top-level and factory patterns.
 
-#### Issue 2: No fs2-kafka scanner
+#### Issue 2: No fs2-kafka scanner — FIXED
 
 **Severity:** HIGH — Kafka is a major integration point.
 
@@ -1338,10 +1343,11 @@ the first non-None group wins.
 (`org.apache.pekko.kafka.scaladsl.Producer`). This project uses `fs2-kafka` which has a completely different
 API (`KafkaProducer`, `ProducerRecords`, etc.).
 
-**Fix needed:** Create a `TastyFs2KafkaScanner` (as a `DeclarativeScanner`) detecting:
-- `KafkaProducer` field method calls → Write
-- `KafkaConsumer` field method calls → Read
-- `ProducerRecords` type references → Write
+**Fix:** Created `TastyFs2KafkaScanner` as a `DeclarativeScanner` with two detection strategies:
+- `FieldMethodCall` for injected `KafkaProducer`/`TransactionalKafkaProducer` fields (Write via `produce`)
+  and `KafkaConsumer` fields (Read via `stream`, `records`, `partitionedRecords`, `subscribeTo`)
+- `TypeReference` for static factory usage (`KafkaProducer.stream(settings)` → Write,
+  `KafkaConsumer.stream(settings)` → Read)
 
 #### Issue 3: Flyway scanner SQL extraction is too noisy
 
