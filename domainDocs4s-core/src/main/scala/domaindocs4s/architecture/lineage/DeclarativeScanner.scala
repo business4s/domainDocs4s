@@ -324,6 +324,11 @@ class DeclarativeScanner(
           checkCall(TastyUtils.simpleName(fieldName), TastyUtils.simpleName(methodName))
         case Apply(TypeApply(Select(Ident(fieldName), methodName), _), _) =>
           checkCall(TastyUtils.simpleName(fieldName), TastyUtils.simpleName(methodName))
+        // this.field.method(args) — class body vals referenced via This
+        case Apply(Select(Select(_: This, fieldName), methodName), _) =>
+          checkCall(TastyUtils.simpleName(fieldName), TastyUtils.simpleName(methodName))
+        case Apply(TypeApply(Select(Select(_: This, fieldName), methodName), _), _) =>
+          checkCall(TastyUtils.simpleName(fieldName), TastyUtils.simpleName(methodName))
         case _ =>
       }
       super.traverse(tree)

@@ -277,10 +277,10 @@ object MermaidRenderer {
   /** Render a single integration target node into the StringBuilder. */
   private def renderTargetNode(sb: StringBuilder, id: String, label: String, rtype: ResourceType, indent: String): Unit =
     rtype match {
-      case ResourceType.Grpc    => sb.append(s"""$indent$id{{"${label}\n[$rtype]"}}\n""")
-      case ResourceType.Kafka   => sb.append(s"""$indent$id(["${label}\n[$rtype]"])\n""")
-      case ResourceType.S3      => sb.append(s"""$indent$id[/"${label}\n[$rtype]"/]\n""")
-      case _                    => sb.append(s"""$indent$id[("${label}\n[$rtype]")]\n""")
+      case ResourceType.Grpc    => sb.append(s"""$indent$id{{"$label"}}\n""")
+      case ResourceType.Kafka   => sb.append(s"""$indent$id(["$label"])\n""")
+      case ResourceType.S3      => sb.append(s"""$indent$id[/"$label"/]\n""")
+      case _                    => sb.append(s"""$indent$id[("$label")]\n""")
     }
 
   private def renderEdge(sb: StringBuilder, from: String, to: String, accessType: DataAccessType, dataFlow: Boolean): Unit =

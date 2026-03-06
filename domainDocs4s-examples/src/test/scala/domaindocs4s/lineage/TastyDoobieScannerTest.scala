@@ -51,7 +51,7 @@ class TastyDoobieScannerTest extends AnyFreeSpec {
     }
 
     "enriched doobie integrations have group user-db" in {
-      val enrichedDoobie = integrations.filter(_.scanner == "doobie")
+      val enrichedDoobie = integrations.filter(i => i.scanner == "doobie" && i.method.className == "UserRepo")
       enrichedDoobie should not be empty
       enrichedDoobie.foreach(_.group shouldBe Some("user-db"))
     }

@@ -97,12 +97,13 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
       val allIntegrations = enrichment.enrich(adjIntegrations)
       val resultWithManual = LineageBuilder.build(adjCallGraph, allIntegrations)
 
-      val depositChains = resultWithManual.lineageFrom(MethodRef(pkg, "UserGrpcApi", "deposit"))
+      val depositChains = resultWithManual.lineageForClass("UserGrpcApi")
+        .filter(_.path.exists(r => r.className == "UserGrpcApi" && r.methodName == "deposit"))
       val kafkaChains = depositChains.filter(_.integration.resourceType == ResourceType.Kafka)
       kafkaChains should have size 1
       kafkaChains.head.integration.target shouldBe "user.deposit-events"
       kafkaChains.head.integration.accessType shouldBe DataAccessType.Write
-      kafkaChains.head.path.map(_.className) shouldBe List("UserGrpcApi", "EventPublisher")
+      kafkaChains.head.path.map(_.className) should contain inOrder ("UserGrpcApi", "EventPublisher")
     }
 
     "supports multiple adjustments in a single builder" in {

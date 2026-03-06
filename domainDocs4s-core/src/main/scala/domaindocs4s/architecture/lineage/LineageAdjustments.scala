@@ -143,6 +143,14 @@ object LineageAdjustment {
   /** Change the group of a resource across all integrations. */
   case class SetResourceGroup(resourceType: ResourceType, target: String, group: String) extends LineageAdjustment
 
+  /** Rename all resources whose target matches a regex pattern. Effectively merges
+    * multiple resources (e.g. partition tables) into a single node.
+    */
+  case class RenameResourceByPattern(resourceType: ResourceType, pattern: scala.util.matching.Regex, newTarget: String) extends LineageAdjustment
+
+  /** Remove all integrations whose resource target matches a regex pattern. */
+  case class RemoveResourceByPattern(resourceType: ResourceType, pattern: scala.util.matching.Regex) extends LineageAdjustment
+
   // ── Display modifications ───────────────────────────────────────────
 
   /** Rename a class for display purposes (label only, does not change IDs or data). */
@@ -402,6 +410,15 @@ case class LineageAdjustments(adjustments: List[LineageAdjustment] = Nil) {
           else di
         }
 
+      case RenameResourceByPattern(resourceType, pattern, newTarget) =>
+        integ = integ.map { di =>
+          if (di.resourceType == resourceType && pattern.matches(di.target)) di.copy(target = newTarget)
+          else di
+        }
+
+      case RemoveResourceByPattern(resourceType, pattern) =>
+        integ = integ.filterNot(di => di.resourceType == resourceType && pattern.matches(di.target))
+
       case RenameClass(_, _, _) => // display-only, handled via classRenames
     }
 
@@ -462,6 +479,12 @@ object LineageAdjustments {
     /** Select an external resource by type and target name. */
     def resource(resourceType: ResourceType, target: String): ResourceActions =
       new ResourceActions(resourceType, target)
+
+    /** Select external resources by type and regex pattern on target name.
+      * Useful for batch operations like merging partition tables or removing infrastructure noise.
+      */
+    def resourceMatching(resourceType: ResourceType, pattern: String): ResourcePatternActions =
+      new ResourcePatternActions(resourceType, pattern.r)
 
     // ── Build ─────────────────────────────────────────────────────────────
 
@@ -709,6 +732,31 @@ object LineageAdjustments {
       def cls[T: ClassTag]: ClassActions = Builder.this.cls[T]
       def cls(pkg: String, cls: String): ClassActions = Builder.this.cls(pkg, cls)
       def resource(resourceType: ResourceType, target: String): ResourceActions = Builder.this.resource(resourceType, target)
+      def resourceMatching(resourceType: ResourceType, pattern: String): ResourcePatternActions = Builder.this.resourceMatching(resourceType, pattern)
+      def build: LineageAdjustments = Builder.this.build
+    }
+
+    class ResourcePatternActions(resourceType: ResourceType, pattern: scala.util.matching.Regex) {
+
+      /** Rename all matching resources to a single target (merges them into one node). */
+      def renameTo(newTarget: String): ResourcePatternActions = {
+        _adjustments += LineageAdjustment.RenameResourceByPattern(resourceType, pattern, newTarget)
+        this
+      }
+
+      /** Remove all integrations whose target matches the pattern. */
+      def remove: Builder = {
+        _adjustments += LineageAdjustment.RemoveResourceByPattern(resourceType, pattern)
+        Builder.this
+      }
+
+      // Transitions to other selectors
+      inline def method[T](inline selector: T => Any): MethodActions = Builder.this.method[T](selector)
+      def method(pkg: String, cls: String, method: String): MethodActions = Builder.this.method(pkg, cls, method)
+      def cls[T: ClassTag]: ClassActions = Builder.this.cls[T]
+      def cls(pkg: String, cls: String): ClassActions = Builder.this.cls(pkg, cls)
+      def resource(resourceType: ResourceType, target: String): ResourceActions = Builder.this.resource(resourceType, target)
+      def resourceMatching(resourceType: ResourceType, pattern: String): ResourcePatternActions = Builder.this.resourceMatching(resourceType, pattern)
       def build: LineageAdjustments = Builder.this.build
     }
   }

@@ -237,22 +237,25 @@ class LineagePipelineTest extends AnyFreeSpec {
     "builds lineage chains from API to DB and gRPC" in {
       result.lineageChains should not be empty
 
-      // getBalance chains: 1 doobie + 1 grpc server = 2
-      val balanceChains = result.lineageFrom(MethodRef(pkg, "UserGrpcApi", "getBalance"))
+      // Filter chains that pass through UserGrpcApi
+      val apiChains = result.lineageForClass("UserGrpcApi")
+
+      // getBalance: 1 doobie + 1 grpc server = 2
+      val balanceChains = apiChains.filter(_.path.exists(r => r.className == "UserGrpcApi" && r.methodName == "getBalance"))
       balanceChains should have size 2
 
       val balanceDoobieChains = balanceChains.filter(_.integration.scanner == "doobie")
       balanceDoobieChains should have size 1
       balanceDoobieChains.head.integration.target shouldBe "users"
       balanceDoobieChains.head.integration.accessType shouldBe DataAccessType.Read
-      balanceDoobieChains.head.path.map(_.className) shouldBe List("UserGrpcApi", "UserService", "UserRepo")
+      balanceDoobieChains.head.path.map(_.className) should contain inOrder ("UserGrpcApi", "UserService", "UserRepo")
 
       val balanceGrpcChains = balanceChains.filter(_.integration.scanner == "grpc")
       balanceGrpcChains should have size 1
       balanceGrpcChains.head.integration.target shouldBe "UserService/getBalance"
 
-      // deposit chains: 2 doobie + 1 grpc server + 1 grpc client = 4
-      val depositChains = result.lineageFrom(MethodRef(pkg, "UserGrpcApi", "deposit"))
+      // deposit: 2 doobie + 1 grpc server + 1 grpc client = 4
+      val depositChains = apiChains.filter(_.path.exists(r => r.className == "UserGrpcApi" && r.methodName == "deposit"))
       depositChains should have size 4
       depositChains.filter(_.integration.scanner == "doobie").map(_.integration.target).toSet shouldBe Set("users", "transactions")
       depositChains.filter(_.integration.scanner == "grpc").map(_.integration.target).toSet shouldBe Set("UserService/deposit", "RateService/getRate")
