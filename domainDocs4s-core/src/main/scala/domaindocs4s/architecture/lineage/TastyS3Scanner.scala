@@ -1,6 +1,7 @@
 package domaindocs4s.architecture.lineage
 
 import tastyquery.Contexts.Context
+import tastyquery.Trees.*
 
 // ============================================================================
 // TASTy-based S3 Scanner
@@ -18,21 +19,42 @@ import tastyquery.Contexts.Context
 
 class TastyS3Scanner(
     group: Option[String] = Some("S3"),
-)(using ctx: Context) extends DeclarativeScanner(
-  name = "s3",
-  resourceType = ResourceType.S3,
-  rules = Seq(
-    DetectionRule.FieldMethodCall(
-      fieldType = TypeMatcher.oneOf(
-        "software.amazon.awssdk.services.s3.S3Client",
-        "software.amazon.awssdk.services.s3.S3AsyncClient",
-      ),
-      methods = MethodMapping.Named(
-        writeMethods = Set("putObject", "uploadPart", "copyObject", "deleteObject", "deleteObjects"),
-        readMethods = Set("getObject", "getObjectAsBytes", "headObject", "listObjects", "listObjectsV2"),
-      ),
-    ),
-  ),
-  defaultTarget = "S3",
-  group = group,
-)
+)(using ctx: Context) extends IntegrationScanner {
+
+  private val writeMethods = Set("putObject", "uploadPart", "copyObject", "deleteObject", "deleteObjects")
+  private val readMethods = Set("getObject", "getObjectAsBytes", "headObject", "listObjects", "listObjectsV2")
+
+  private val search = SymbolSearch.MethodCall(TypeMatcher.oneOf(
+    "software.amazon.awssdk.services.s3.S3Client",
+    "software.amazon.awssdk.services.s3.S3AsyncClient",
+  ))
+
+  def scan(packages: List[String]): List[DiscoveredIntegration] = {
+    val finder = new SymbolUsageFinder(Seq(search))
+    finder.findAll(packages).collect { case u: FoundUsage.MethodCallResult => u }.flatMap { u =>
+      val accessType =
+        if (writeMethods.contains(u.methodName)) Some(DataAccessType.Write)
+        else if (readMethods.contains(u.methodName)) Some(DataAccessType.Read)
+        else None
+      val ref = u.path.toMethodRef
+      accessType.map { at =>
+        DiscoveredIntegration(
+          method = ref,
+          accessType = at,
+          resourceType = ResourceType.S3,
+          scanner = "s3",
+          target = "S3",
+          evidence = s"calls ${extractFieldName(u.receiverTree)}.${u.methodName}",
+          group = group,
+        )
+      }
+    }
+  }
+
+  private def extractFieldName(tree: Tree): String = tree match {
+    case Ident(name)           => TastyUtils.simpleName(name)
+    case Select(_: This, name) => TastyUtils.simpleName(name)
+    case Select(_, name)       => TastyUtils.simpleName(name)
+    case _                     => "?"
+  }
+}

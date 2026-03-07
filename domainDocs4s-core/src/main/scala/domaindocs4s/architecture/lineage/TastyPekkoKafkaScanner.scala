@@ -15,15 +15,31 @@ import tastyquery.Contexts.Context
 //   Producer.<any>            → Write to kafka
 // ============================================================================
 
-class TastyPekkoKafkaScanner(using ctx: Context) extends DeclarativeScanner(
-  name = "pekko-kafka",
-  resourceType = ResourceType.Kafka,
-  rules = Seq(
-    DetectionRule.TypeReference(
-      targetType = TypeMatcher("org.apache.pekko.kafka.scaladsl.Producer"),
-      accessType = DataAccessType.Write,
-      target = Some(m => s"unknown topic from ${m.className}.${m.methodName}"),
-    ),
-  ),
-  group = Some("Kafka"),
-)
+class TastyPekkoKafkaScanner(using ctx: Context) extends IntegrationScanner {
+
+  private val search = SymbolSearch.MethodCall(
+    TypeMatcher("org.apache.pekko.kafka.scaladsl.Producer"),
+  )
+
+  def scan(packages: List[String]): List[DiscoveredIntegration] = {
+    val finder = new SymbolUsageFinder(Seq(search))
+    val usages = finder.findAll(packages).collect { case u: FoundUsage.MethodCallResult => u }
+
+    // Dedup: emit at most one per method (first match)
+    val seen = scala.collection.mutable.Set.empty[MethodRef]
+    usages.flatMap { u =>
+      val ref = u.path.toMethodRef
+      if (seen.add(ref)) {
+        Some(DiscoveredIntegration(
+          method = ref,
+          accessType = DataAccessType.Write,
+          resourceType = ResourceType.Kafka,
+          scanner = "pekko-kafka",
+          target = s"unknown topic from ${ref.className}.${ref.methodName}",
+          evidence = s"references ${u.ownerSimpleName}",
+          group = Some("Kafka"),
+        ))
+      } else None
+    }
+  }
+}

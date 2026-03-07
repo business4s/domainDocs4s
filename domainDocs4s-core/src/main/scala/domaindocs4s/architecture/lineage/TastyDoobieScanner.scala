@@ -1,7 +1,6 @@
 package domaindocs4s.architecture.lineage
 
 import tastyquery.Contexts.Context
-import tastyquery.Symbols.*
 import tastyquery.Trees.*
 import tastyquery.Types.*
 
@@ -22,31 +21,22 @@ import scala.collection.mutable.ListBuffer
 // SQL extraction: collects string literal parts from the sql"..." interpolator
 // (StringContext.apply("part1", "part2", ...)) and joins them to recover the
 // SQL template. Table names are extracted via regex from the joined SQL.
+//
+// Uses SymbolUsageFinder.enumerateMethodBodies() for uniform class/method
+// enumeration (including anonymous classes). Keeps custom tree matching for
+// doobie-specific chain patterns.
 // ============================================================================
 
 class TastyDoobieScanner(
     connectionIOTypeName: String = "ConnectionIO",
 )(using ctx: Context) extends IntegrationScanner {
 
-  def scan(packages: List[String]): List[DiscoveredIntegration] =
-    packages.flatMap(scanPackage)
-
-  private def scanPackage(packageName: String): List[DiscoveredIntegration] = {
-    val pkg = ctx.findPackage(packageName)
-    val classesWithPkg = TastyUtils.userClassesRecursive(pkg)
-
-    classesWithPkg.flatMap { case (ownerPkg, cls) =>
-      val className = cls.name.toString.stripSuffix("$")
-      val pkgName = ownerPkg.fullName.toString
-      cls.declarations.collect {
-        case ts: TermSymbol if returnsConnectionIO(ts.declaredType) =>
-          val ref = MethodRef(pkgName, className, ts.name.toString)
-          ts.tree.toList.flatMap {
-            case defDef: DefDef => defDef.rhs.toList.flatMap(rhs => findDoobieOps(ref, rhs))
-            case _              => Nil
-          }
-      }.flatten
-    }
+  //> This whole scanner looks a bit off. I especially dont like enumerateMethodBodies. Id rather look for anything using strign interpolator (sql/fr) through usual search and go from there
+  def scan(packages: List[String]): List[DiscoveredIntegration] = {
+    val methods = SymbolUsageFinder.enumerateMethodBodies(packages)
+    methods
+      .filter(m => m.declaredType.exists(returnsConnectionIO))
+      .flatMap(m => findDoobieOps(m.ref, m.rhs))
   }
 
   private def returnsConnectionIO(tpe: TypeOrMethodic): Boolean = tpe match {

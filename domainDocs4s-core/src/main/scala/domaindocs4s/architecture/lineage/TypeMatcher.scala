@@ -4,7 +4,7 @@ import tastyquery.Contexts.Context
 import tastyquery.Symbols.ClassSymbol
 import tastyquery.Types.*
 
-/** FQN-based type matching for [[DeclarativeScanner]] rules.
+/** FQN-based type matching for [[SymbolUsageFinder]] searches.
   *
   * Wraps a `String => Boolean` predicate on fully qualified names.
   * When `checkAncestors` is true, the predicate is also applied

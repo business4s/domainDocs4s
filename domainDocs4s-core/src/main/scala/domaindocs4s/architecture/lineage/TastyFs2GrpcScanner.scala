@@ -1,6 +1,7 @@
 package domaindocs4s.architecture.lineage
 
 import tastyquery.Contexts.Context
+import tastyquery.Trees.*
 
 // ============================================================================
 // TASTy-based fs2-grpc Scanner
@@ -15,24 +16,72 @@ import tastyquery.Contexts.Context
 //   → each call to field.rpcMethod(...) is a gRPC client consumption
 // ============================================================================
 
-class TastyFs2GrpcScanner(using ctx: Context) extends DeclarativeScanner(
-  name = "grpc",
-  resourceType = ResourceType.Grpc,
-  rules = Seq(
-    // Server: class extends *Fs2Grpc → Write, emit per RPC method
-    DetectionRule.ClassExtends(
-      parentType = TypeMatcher.fqnEndsWith("Fs2Grpc"),
-      accessType = DataAccessType.Write,
-      emitPerMethod = true,
-      target = Some(m => s"${m.typeName.getOrElse("").stripSuffix("Fs2Grpc")}/${m.calledMethod.getOrElse("")}"),
-      group = Some(m => m.typeName.map(_.stripSuffix("Fs2Grpc"))),
-    ),
-    // Client: field type *Fs2Grpc → Read, emit per call
-    DetectionRule.FieldMethodCall(
-      fieldType = TypeMatcher.fqnEndsWith("Fs2Grpc"),
-      methods = MethodMapping.AnyMethod(DataAccessType.Read),
-      target = Some(m => s"${m.typeName.getOrElse("").stripSuffix("Fs2Grpc")}/${m.calledMethod.getOrElse("")}"),
-      group = Some(m => m.typeName.map(_.stripSuffix("Fs2Grpc"))),
-    ),
-  ),
-)
+class TastyFs2GrpcScanner(using ctx: Context) extends IntegrationScanner {
+
+  //> This is a bit fragile but currently there is no toplevel interface for this interface. Maybe we could at least document and describe how to mitigate false positives
+  private val typeMatcher = TypeMatcher.fqnEndsWith("Fs2Grpc")
+  private val inheritanceSearch = SymbolSearch.ClassInheritance(typeMatcher)
+  private val methodCallSearch = SymbolSearch.MethodCall(typeMatcher)
+
+  def scan(packages: List[String]): List[DiscoveredIntegration] = {
+    val finder = new SymbolUsageFinder(Seq(inheritanceSearch, methodCallSearch))
+    val usages = finder.findAll(packages)
+
+    val serverResults = usages.collect { case u: FoundUsage.InheritanceResult => u }.flatMap(interpretServer)
+    val clientResults = usages.collect { case u: FoundUsage.MethodCallResult => u }.map(interpretClient)
+
+    serverResults ++ clientResults
+  }
+
+  // Server: class extends *Fs2Grpc → emit one Write per implemented RPC method
+  private def interpretServer(u: FoundUsage.InheritanceResult): List[DiscoveredIntegration] = {
+    val ref = u.path.toMethodRef
+    val serviceName = u.parentSimpleName.stripSuffix("Fs2Grpc")
+
+    u.inheritedMethods.flatMap { method =>
+      // Only emit if the class actually declares this method
+      val classNode = u.path.nodes.collectFirst { case c: NestingNode.ClassOrObject => c }
+      val classTree = classNode.flatMap(_.tree)
+      val classDeclaresMethod = classTree.exists { cd =>
+        cd.rhs.body.exists {
+          case defDef: DefDef => defDef.name.toString == method
+          case _              => false
+        }
+      }
+      if (classDeclaresMethod) {
+        List(DiscoveredIntegration(
+          method = MethodRef(ref.packageName, ref.className, method),
+          accessType = DataAccessType.Write,
+          resourceType = ResourceType.Grpc,
+          scanner = "grpc",
+          target = s"$serviceName/$method",
+          evidence = s"implements ${u.parentSimpleName}",
+          group = Some(serviceName),
+        ))
+      } else Nil
+    }
+  }
+
+  // Client: field of type *Fs2Grpc → each call is a Read
+  private def interpretClient(u: FoundUsage.MethodCallResult): DiscoveredIntegration = {
+    val ref = u.path.toMethodRef
+    val serviceName = u.ownerSimpleName.stripSuffix("Fs2Grpc")
+    DiscoveredIntegration(
+      method = ref,
+      accessType = DataAccessType.Read,
+      resourceType = ResourceType.Grpc,
+      scanner = "grpc",
+      target = s"$serviceName/${u.methodName}",
+      evidence = s"calls ${extractFieldName(u.receiverTree)}.${u.methodName}",
+      group = Some(serviceName),
+    )
+  }
+
+  //> looks fragile/low-level. Can we do better?
+  private def extractFieldName(tree: Tree): String = tree match {
+    case Ident(name)           => TastyUtils.simpleName(name)
+    case Select(_: This, name) => TastyUtils.simpleName(name)
+    case Select(_, name)       => TastyUtils.simpleName(name)
+    case _                     => "?"
+  }
+}
