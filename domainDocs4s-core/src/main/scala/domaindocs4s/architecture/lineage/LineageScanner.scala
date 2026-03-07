@@ -21,6 +21,7 @@ class LineageScanner(
       .build(callGraph, integrations)
       .copy(
         classDisplayNames = adjustments.classRenames,
+        classGroups = adjustments.classGroups(callGraph),
         resourceOnlyIntegrations = refinedResources,
       )
   }

@@ -115,7 +115,8 @@ object MermaidRenderer {
     val classNames = result.classes.map(_.name).toSet
 
     // Class nodes — one node per visible class, optionally grouped into subgraphs
-    val groupFn: ScannedClass => Option[String] = config.classGrouping match {
+    // classGroups (from adjustments) override config-based grouping per class
+    val configGroupFn: ScannedClass => Option[String] = config.classGrouping match {
       case ClassGrouping.NoGrouping => _ => None
       case ClassGrouping.ByPackage(base) =>
         val prefix = if (base.endsWith(".")) base else base + "."
@@ -126,6 +127,8 @@ object MermaidRenderer {
         }
       case ClassGrouping.Custom(fn) => fn
     }
+    val groupFn: ScannedClass => Option[String] = cls =>
+      result.classGroups.get((cls.packageName, cls.name)).orElse(configGroupFn(cls))
 
     val visibleFromCallGraph = result.classes.filter { cls =>
       cls.methods.exists(m => m.calls.nonEmpty || m.integrations.nonEmpty || isCalledByOthers(m.ref, result))

@@ -272,4 +272,107 @@ class LineagePipelineTest extends AnyFreeSpec {
     }
   }
 
+  "Package-level adjustments" - {
+
+    // Synthetic call graph: A.x -> B.y -> C.z, with integrations on B.y and C.z
+    val pkgA = "com.example.api"
+    val pkgB = "com.example.internal"
+    val pkgBSub = "com.example.internal.helper"
+    val pkgC = "com.example.persistence"
+
+    val syntheticCallGraph = List(
+      ExtractedMethod("ApiController", pkgA, "handle", List(MethodRef(pkgB, "InternalService", "process"))),
+      ExtractedMethod("InternalService", pkgB, "process", List(MethodRef(pkgBSub, "Helper", "compute"), MethodRef(pkgC, "Repo", "save"))),
+      ExtractedMethod("Helper", pkgBSub, "compute", List(MethodRef(pkgC, "Repo", "save"))),
+      ExtractedMethod("Repo", pkgC, "save", Nil),
+    )
+
+    val syntheticIntegrations = List(
+      DiscoveredIntegration(MethodRef(pkgB, "InternalService", "process"), DataAccessType.Write, ResourceType.Kafka, "test", "events", "synthetic"),
+      DiscoveredIntegration(MethodRef(pkgBSub, "Helper", "compute"), DataAccessType.Read, ResourceType.S3, "test", "data-bucket", "synthetic", group = Some("S3")),
+      DiscoveredIntegration(MethodRef(pkgC, "Repo", "save"), DataAccessType.Write, ResourceType.Database, "test", "items", "synthetic"),
+    )
+
+    "HidePackage hides all classes in the package prefix" in {
+      val adj = LineageAdjustments.builder
+        .pkg("com.example.internal").remove
+        .build
+      val (methods, integ) = adj.apply(syntheticCallGraph, syntheticIntegrations)
+
+      // InternalService and Helper should be removed
+      methods.map(m => (m.packageName, m.className)).toSet should not contain (pkgB, "InternalService")
+      methods.map(m => (m.packageName, m.className)).toSet should not contain (pkgBSub, "Helper")
+
+      // ApiController and Repo should remain
+      methods.map(m => (m.packageName, m.className)).toSet should contain (pkgA, "ApiController")
+      methods.map(m => (m.packageName, m.className)).toSet should contain (pkgC, "Repo")
+    }
+
+    "HidePackage promotes integrations to non-hidden callers" in {
+      val adj = LineageAdjustments.builder
+        .pkg("com.example.internal").remove
+        .build
+      val (_, integ) = adj.apply(syntheticCallGraph, syntheticIntegrations)
+
+      // Kafka and S3 integrations from hidden package should be promoted to ApiController
+      val apiIntegrations = integ.filter(_.method.className == "ApiController")
+      apiIntegrations.map(_.target).toSet should contain ("events")
+      apiIntegrations.map(_.target).toSet should contain ("data-bucket")
+
+      // No integrations should remain on hidden classes
+      integ.filter(_.method.packageName == pkgB) shouldBe empty
+      integ.filter(_.method.packageName == pkgBSub) shouldBe empty
+    }
+
+    "HidePackage reconnects callers to callees through hidden package" in {
+      val adj = LineageAdjustments.builder
+        .pkg("com.example.internal").remove
+        .build
+      val (methods, _) = adj.apply(syntheticCallGraph, syntheticIntegrations)
+
+      // ApiController should now directly call Repo.save (bypassing hidden InternalService + Helper)
+      val apiCalls = methods.find(m => m.className == "ApiController").get.calls
+      apiCalls should contain (MethodRef(pkgC, "Repo", "save"))
+    }
+
+    "SetPackageGroup sets class groups for all classes in the package prefix" in {
+      val adj = LineageAdjustments.builder
+        .pkg("com.example.internal").setGroup("Internal")
+        .pkg("com.example.persistence").setGroup("Persistence")
+        .build
+
+      val groups = adj.classGroups(syntheticCallGraph)
+      groups((pkgB, "InternalService")) shouldBe "Internal"
+      groups((pkgBSub, "Helper")) shouldBe "Internal"
+      groups((pkgC, "Repo")) shouldBe "Persistence"
+      groups.get((pkgA, "ApiController")) shouldBe None
+    }
+
+    "SetClassGroup overrides SetPackageGroup" in {
+      val adj = LineageAdjustments.builder
+        .pkg("com.example.internal").setGroup("Internal")
+        .cls(pkgBSub, "Helper").setGroup("Utilities")
+        .build
+
+      val groups = adj.classGroups(syntheticCallGraph)
+      groups((pkgB, "InternalService")) shouldBe "Internal"
+      groups((pkgBSub, "Helper")) shouldBe "Utilities"
+    }
+
+    "classGroups renders into MermaidRenderer subgraphs" in {
+      val adj = LineageAdjustments.builder
+        .pkg("com.example.internal").setGroup("Internal")
+        .pkg("com.example.persistence").setGroup("Persistence")
+        .build
+      val (methods, integ) = adj.apply(syntheticCallGraph, syntheticIntegrations)
+      val scanResult = LineageBuilder.build(methods, integ).copy(
+        classGroups = adj.classGroups(methods),
+      )
+      val diagram = MermaidRenderer.renderClassLevel(scanResult)
+
+      diagram should include(""""Internal"""")
+      diagram should include(""""Persistence"""")
+    }
+  }
+
 }

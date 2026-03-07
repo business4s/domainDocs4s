@@ -344,6 +344,7 @@ case class ScanResult(
     integrations: List[DiscoveredIntegration],
     lineageChains: List[LineageChain],
     classDisplayNames: Map[(String, String), String] = Map.empty,
+    classGroups: Map[(String, String), String] = Map.empty,
     resourceOnlyIntegrations: List[DiscoveredIntegration] = Nil,
 ) {
   lazy val allMethods: List[ScannedMethod] = classes.flatMap(_.methods)

@@ -151,6 +151,17 @@ object LineageAdjustment {
   /** Remove all integrations whose resource target matches a regex pattern. */
   case class RemoveResourceByPattern(resourceType: ResourceType, pattern: scala.util.matching.Regex) extends LineageAdjustment
 
+  // ── Package-level modifications ─────────────────────────────────────
+
+  /** Hide all classes whose package starts with prefix (batch HideClass with promotion). */
+  case class HidePackage(packagePrefix: String) extends LineageAdjustment
+
+  /** Set rendering group on a specific class (metadata-only, no effect on call graph). */
+  case class SetClassGroup(packageName: String, className: String, group: String) extends LineageAdjustment
+
+  /** Set rendering group on all classes in a package prefix (metadata-only, no effect on call graph). */
+  case class SetPackageGroup(packagePrefix: String, group: String) extends LineageAdjustment
+
   // ── Display modifications ───────────────────────────────────────────
 
   /** Rename a class for display purposes (label only, does not change IDs or data). */
@@ -165,9 +176,33 @@ object LineageAdjustment {
   */
 case class LineageAdjustments(adjustments: List[LineageAdjustment] = Nil) {
 
+  private def matchesPackagePrefix(pkg: String, prefix: String): Boolean =
+    pkg == prefix || pkg.startsWith(prefix + ".")
+
   /** Display name overrides for classes: (packageName, className) → displayName. */
   lazy val classRenames: Map[(String, String), String] =
     adjustments.collect { case LineageAdjustment.RenameClass(pkg, cls, name) => (pkg, cls) -> name }.toMap
+
+  /** Resolve class groups from SetClassGroup and SetPackageGroup adjustments.
+    * Requires the resolved call graph to expand package-level groups.
+    * SetClassGroup takes precedence over SetPackageGroup.
+    */
+  def classGroups(methods: List[ExtractedMethod]): Map[(String, String), String] = {
+    val packageGroups = adjustments.collect { case LineageAdjustment.SetPackageGroup(prefix, group) => (prefix, group) }
+    val classGroupOverrides = adjustments.collect { case LineageAdjustment.SetClassGroup(pkg, cls, group) => (pkg, cls) -> group }.toMap
+
+    if (packageGroups.isEmpty && classGroupOverrides.isEmpty) return Map.empty
+
+    val allClassKeys = methods.map(m => (m.packageName, m.className)).distinct
+
+    val fromPackages: Map[(String, String), String] = allClassKeys.flatMap { case key @ (pkg, _) =>
+      packageGroups.collectFirst {
+        case (prefix, group) if matchesPackagePrefix(pkg, prefix) => key -> group
+      }
+    }.toMap
+
+    fromPackages ++ classGroupOverrides // class-level overrides win
+  }
 
   /** Apply all adjustments to the raw scanner output.
     *
@@ -185,6 +220,49 @@ case class LineageAdjustments(adjustments: List[LineageAdjustment] = Nil) {
     var methods              = callGraph
     var integ                = integrations
     val syntheticMethods     = ListBuffer.empty[MethodRef]
+
+    // Shared logic for HideClass and HidePackage: remove hidden methods,
+    // reconnect callers → callees through the hidden set, and promote integrations.
+    def hideRefs(hiddenRefs: Set[MethodRef]): Unit = if (hiddenRefs.nonEmpty) {
+      // Resolve external callees transitively through hidden methods
+      def resolveCallees(ref: MethodRef, visited: Set[MethodRef]): Set[MethodRef] =
+        if (visited.contains(ref)) Set.empty
+        else methods.find(_.ref == ref).map(_.calls).getOrElse(Nil).flatMap { callee =>
+          if (!hiddenRefs.contains(callee)) Set(callee)
+          else resolveCallees(callee, visited + ref)
+        }.toSet
+
+      val externalCallees: Map[MethodRef, Set[MethodRef]] =
+        hiddenRefs.map(r => r -> resolveCallees(r, Set.empty)).toMap
+
+      // Find non-hidden callers transitively for integration promotion
+      def findNonHiddenCallers(ref: MethodRef, visited: Set[MethodRef]): Set[MethodRef] =
+        if (visited.contains(ref)) Set.empty
+        else methods.filter(_.calls.contains(ref)).map(_.ref).flatMap { c =>
+          if (!hiddenRefs.contains(c)) Set(c)
+          else findNonHiddenCallers(c, visited + ref)
+        }.toSet
+
+      // Promote integrations from hidden methods to their non-hidden callers
+      val hiddenIntegrations = integ.filter(di => hiddenRefs.contains(di.method))
+      val promoted = hiddenIntegrations.flatMap { di =>
+        findNonHiddenCallers(di.method, Set.empty).map(caller => di.copy(method = caller))
+      }
+
+      // Reconnect callers to bypass hidden nodes
+      methods = methods.map { m =>
+        if (hiddenRefs.contains(m.ref)) m
+        else {
+          val (hiddenCalls, otherCalls) = m.calls.partition(hiddenRefs.contains)
+          val newCalls = otherCalls ++ hiddenCalls.flatMap(externalCallees.getOrElse(_, Set.empty))
+          m.copy(calls = newCalls.distinct)
+        }
+      }
+
+      // Remove hidden methods and their integrations, add promoted
+      methods = methods.filterNot(m => hiddenRefs.contains(m.ref))
+      integ = integ.filterNot(di => hiddenRefs.contains(di.method)) ++ promoted
+    }
 
     for (adj <- adjustments) adj match {
 
@@ -340,47 +418,10 @@ case class LineageAdjustments(adjustments: List[LineageAdjustment] = Nil) {
         }
 
       case HideClass(pkg, cls) =>
-        val hiddenRefs = methods.filter(m => m.packageName == pkg && m.className == cls).map(_.ref).toSet
-        if (hiddenRefs.nonEmpty) {
-          // Resolve external callees transitively through hidden methods
-          def resolveCallees(ref: MethodRef, visited: Set[MethodRef]): Set[MethodRef] =
-            if (visited.contains(ref)) Set.empty
-            else methods.find(_.ref == ref).map(_.calls).getOrElse(Nil).flatMap { callee =>
-              if (!hiddenRefs.contains(callee)) Set(callee)
-              else resolveCallees(callee, visited + ref)
-            }.toSet
+        hideRefs(methods.filter(m => m.packageName == pkg && m.className == cls).map(_.ref).toSet)
 
-          val externalCallees: Map[MethodRef, Set[MethodRef]] =
-            hiddenRefs.map(r => r -> resolveCallees(r, Set.empty)).toMap
-
-          // Find non-hidden callers transitively for integration promotion
-          def findNonHiddenCallers(ref: MethodRef, visited: Set[MethodRef]): Set[MethodRef] =
-            if (visited.contains(ref)) Set.empty
-            else methods.filter(_.calls.contains(ref)).map(_.ref).flatMap { c =>
-              if (!hiddenRefs.contains(c)) Set(c)
-              else findNonHiddenCallers(c, visited + ref)
-            }.toSet
-
-          // Promote integrations from hidden methods to their non-hidden callers
-          val hiddenIntegrations = integ.filter(di => hiddenRefs.contains(di.method))
-          val promoted = hiddenIntegrations.flatMap { di =>
-            findNonHiddenCallers(di.method, Set.empty).map(caller => di.copy(method = caller))
-          }
-
-          // Reconnect callers to bypass hidden class
-          methods = methods.map { m =>
-            if (hiddenRefs.contains(m.ref)) m
-            else {
-              val (hiddenCalls, otherCalls) = m.calls.partition(hiddenRefs.contains)
-              val newCalls = otherCalls ++ hiddenCalls.flatMap(externalCallees.getOrElse(_, Set.empty))
-              m.copy(calls = newCalls.distinct)
-            }
-          }
-
-          // Remove hidden methods and their integrations, add promoted
-          methods = methods.filterNot(m => hiddenRefs.contains(m.ref))
-          integ = integ.filterNot(di => hiddenRefs.contains(di.method)) ++ promoted
-        }
+      case HidePackage(prefix) =>
+        hideRefs(methods.filter(m => matchesPackagePrefix(m.packageName, prefix)).map(_.ref).toSet)
 
       case DeleteMethod(ref) =>
         methods = methods.collect {
@@ -419,7 +460,9 @@ case class LineageAdjustments(adjustments: List[LineageAdjustment] = Nil) {
       case RemoveResourceByPattern(resourceType, pattern) =>
         integ = integ.filterNot(di => di.resourceType == resourceType && pattern.matches(di.target))
 
-      case RenameClass(_, _, _) => // display-only, handled via classRenames
+      case RenameClass(_, _, _)     => // display-only, handled via classRenames
+      case SetClassGroup(_, _, _)   => // metadata-only, handled via classGroups()
+      case SetPackageGroup(_, _)    => // metadata-only, handled via classGroups()
     }
 
     // Ensure synthetic methods exist in the call graph
@@ -473,6 +516,12 @@ object LineageAdjustments {
     /** Select all methods of a class by fully-qualified name. */
     def cls(pkg: String, cls: String): ClassActions =
       new ClassActions(pkg, cls)
+
+    // ── Package selector ──────────────────────────────────────────────────
+
+    /** Select all classes in a package prefix. */
+    def pkg(packagePrefix: String): PackageActions =
+      new PackageActions(packagePrefix)
 
     // ── Resource selector ─────────────────────────────────────────────────
 
@@ -551,6 +600,7 @@ object LineageAdjustments {
       def method(pkg: String, cls: String, method: String): MethodActions = Builder.this.method(pkg, cls, method)
       def cls[T: ClassTag]: ClassActions = Builder.this.cls[T]
       def cls(pkg: String, cls: String): ClassActions = Builder.this.cls(pkg, cls)
+      def pkg(packagePrefix: String): PackageActions = Builder.this.pkg(packagePrefix)
       def resource(resourceType: ResourceType, target: String): ResourceActions = Builder.this.resource(resourceType, target)
       def build: LineageAdjustments = Builder.this.build
     }
@@ -604,6 +654,12 @@ object LineageAdjustments {
         this
       }
 
+      // Set rendering group for this class (metadata-only)
+      def setGroup(group: String): ClassActions = {
+        _adjustments += LineageAdjustment.SetClassGroup(packageName, className, group)
+        this
+      }
+
       // Hide the class (reconnect callers → callees, promote integrations)
       def remove: Builder = {
         _adjustments += LineageAdjustment.HideClass(packageName, className)
@@ -621,7 +677,35 @@ object LineageAdjustments {
       def method(pkg: String, cls: String, method: String): MethodActions = Builder.this.method(pkg, cls, method)
       def cls[T: ClassTag]: ClassActions = Builder.this.cls[T]
       def cls(pkg: String, cls: String): ClassActions = Builder.this.cls(pkg, cls)
+      def pkg(packagePrefix: String): PackageActions = Builder.this.pkg(packagePrefix)
       def resource(resourceType: ResourceType, target: String): ResourceActions = Builder.this.resource(resourceType, target)
+      def build: LineageAdjustments = Builder.this.build
+    }
+
+    // ── Package-level actions ──────────────────────────────────────────
+
+    class PackageActions(packagePrefix: String) {
+
+      // Set rendering group for all classes in this package prefix (metadata-only)
+      def setGroup(group: String): PackageActions = {
+        _adjustments += LineageAdjustment.SetPackageGroup(packagePrefix, group)
+        this
+      }
+
+      // Hide all classes in this package prefix (reconnect callers → callees, promote integrations)
+      def remove: Builder = {
+        _adjustments += LineageAdjustment.HidePackage(packagePrefix)
+        Builder.this
+      }
+
+      // Transitions to other selectors
+      inline def method[T](inline selector: T => Any): MethodActions = Builder.this.method[T](selector)
+      def method(pkg: String, cls: String, method: String): MethodActions = Builder.this.method(pkg, cls, method)
+      def cls[T: ClassTag]: ClassActions = Builder.this.cls[T]
+      def cls(pkg: String, cls: String): ClassActions = Builder.this.cls(pkg, cls)
+      def pkg(packagePrefix: String): PackageActions = Builder.this.pkg(packagePrefix)
+      def resource(resourceType: ResourceType, target: String): ResourceActions = Builder.this.resource(resourceType, target)
+      def resourceMatching(resourceType: ResourceType, pattern: String): ResourcePatternActions = Builder.this.resourceMatching(resourceType, pattern)
       def build: LineageAdjustments = Builder.this.build
     }
 
@@ -651,6 +735,7 @@ object LineageAdjustments {
       def method(pkg: String, cls: String, method: String): MethodActions = Builder.this.method(pkg, cls, method)
       def cls[T: ClassTag]: ClassActions = Builder.this.cls[T]
       def cls(pkg: String, cls: String): ClassActions = Builder.this.cls(pkg, cls)
+      def pkg(packagePrefix: String): PackageActions = Builder.this.pkg(packagePrefix)
       def resource(resourceType: ResourceType, target: String): ResourceActions = Builder.this.resource(resourceType, target)
       def build: LineageAdjustments = Builder.this.build
     }
@@ -700,6 +785,7 @@ object LineageAdjustments {
       def method(pkg: String, cls: String, method: String): MethodActions = Builder.this.method(pkg, cls, method)
       def cls[T: ClassTag]: ClassActions = Builder.this.cls[T]
       def cls(pkg: String, cls: String): ClassActions = Builder.this.cls(pkg, cls)
+      def pkg(packagePrefix: String): PackageActions = Builder.this.pkg(packagePrefix)
       def resource(resourceType: ResourceType, target: String): ResourceActions = Builder.this.resource(resourceType, target)
       def build: LineageAdjustments = Builder.this.build
     }
@@ -731,6 +817,7 @@ object LineageAdjustments {
       def method(pkg: String, cls: String, method: String): MethodActions = Builder.this.method(pkg, cls, method)
       def cls[T: ClassTag]: ClassActions = Builder.this.cls[T]
       def cls(pkg: String, cls: String): ClassActions = Builder.this.cls(pkg, cls)
+      def pkg(packagePrefix: String): PackageActions = Builder.this.pkg(packagePrefix)
       def resource(resourceType: ResourceType, target: String): ResourceActions = Builder.this.resource(resourceType, target)
       def resourceMatching(resourceType: ResourceType, pattern: String): ResourcePatternActions = Builder.this.resourceMatching(resourceType, pattern)
       def build: LineageAdjustments = Builder.this.build
@@ -755,6 +842,7 @@ object LineageAdjustments {
       def method(pkg: String, cls: String, method: String): MethodActions = Builder.this.method(pkg, cls, method)
       def cls[T: ClassTag]: ClassActions = Builder.this.cls[T]
       def cls(pkg: String, cls: String): ClassActions = Builder.this.cls(pkg, cls)
+      def pkg(packagePrefix: String): PackageActions = Builder.this.pkg(packagePrefix)
       def resource(resourceType: ResourceType, target: String): ResourceActions = Builder.this.resource(resourceType, target)
       def resourceMatching(resourceType: ResourceType, pattern: String): ResourcePatternActions = Builder.this.resourceMatching(resourceType, pattern)
       def build: LineageAdjustments = Builder.this.build

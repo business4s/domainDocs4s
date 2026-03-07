@@ -88,6 +88,8 @@ class TastyDoobieScanner(
     case TypeApply(fun, _)   => walk(fun, out, method)
     case Block(stats, expr)  => stats.foreach(walk(_, out, method)); walk(expr, out, method)
     case t: ValDef           => t.rhs.foreach(walk(_, out, method))
+    case Select(qual, _)     => walk(qual, out, method)
+    case Inlined(body, _, _) => walk(body, out, method)
     case _                   => ()
   }
 
