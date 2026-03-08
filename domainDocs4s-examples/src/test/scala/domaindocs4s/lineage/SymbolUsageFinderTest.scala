@@ -90,6 +90,23 @@ class SymbolUsageFinderTest extends AnyFreeSpec {
       }
     }
 
+    "MethodCall on lambda parameter (not class field)" - {
+
+      "finds S3Client calls when receiver is a lambda parameter" in {
+        val searches = Seq(SymbolSearch.MethodCall(TypeMatcher.oneOf(
+          "software.amazon.awssdk.services.s3.S3Client",
+        )))
+        val finder = new SymbolUsageFinder(searches)
+        val usages = finder.findAll(List(pkg))
+
+        val lambdaUsages = usages.collect { case u: FoundUsage.MethodCallResult => u }
+          .filter(u => u.path.toMethodRef.className == "S3LambdaExporter" && u.methodName == "putObject")
+        lambdaUsages should have size 1
+        // The putObject call is inside the lambda, but attributed to exportViaCallback
+        lambdaUsages.head.path.toMethodRef.methodName shouldBe "exportViaCallback"
+      }
+    }
+
     "ClassInheritance" - {
 
       "finds Fs2Grpc parent types with inherited methods" in {

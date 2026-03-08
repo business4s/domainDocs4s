@@ -46,3 +46,20 @@ class S3ConditionalExporter(val s3Client: S3Client) {
       ))
     else None
 }
+
+/** S3 call via lambda parameter — tests extractParamTypes in SymbolUsageFinder.
+  * The S3Client is received as a lambda/callback parameter, not a class field.
+  * This mirrors the real-world Using(makeS3Client()) { s3Client => ... } pattern.
+  */
+class S3LambdaExporter {
+
+  private def withClient[A](f: S3Client => A): A = f(S3Client.create())
+
+  def exportViaCallback(key: String, data: String): PutObjectResponse =
+    withClient { s3Client =>
+      s3Client.putObject(
+        PutObjectRequest.builder().bucket("my-bucket").key(key).build(),
+        RequestBody.fromString(data),
+      )
+    }
+}

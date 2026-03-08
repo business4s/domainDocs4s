@@ -179,6 +179,17 @@ class MatchUpdateRepo {
   }
 }
 
+/** Demonstrates SQL keyword filtering in table name extraction.
+  * Uses a subquery pattern where `FROM unnest(...)` appears before `FROM keyword_test_table`.
+  * The scanner should skip `unnest` (a SQL keyword) and extract `keyword_test_table`.
+  */
+class UnnestQueryRepo {
+
+  def getExpanded(userId: Long): ConnectionIO[BigDecimal] =
+    sql"SELECT sum(v) FROM unnest(ARRAY[1,2,3]) AS v UNION ALL SELECT balance FROM keyword_test_table WHERE user_id = $userId"
+      .query[BigDecimal].unique
+}
+
 /** gRPC API — entry point, delegates to service.
   *
   * Implements UserServiceFs2Grpc (server exposure) and consumes

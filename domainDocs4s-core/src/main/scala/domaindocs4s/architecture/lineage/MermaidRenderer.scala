@@ -203,7 +203,7 @@ object MermaidRenderer {
     val classEdges: List[(ClassKey, ClassKey)] = result.callGraph
       .map(e => ((e.caller.packageName, e.caller.className), (e.callee.packageName, e.callee.className)))
       .distinct
-      .filter { case (from, to) => declaredClassKeys.contains(from) && declaredClassKeys.contains(to) }
+      .filter { case (from, to) => from != to && declaredClassKeys.contains(from) && declaredClassKeys.contains(to) }
     for ((from, to) <- classEdges) {
       sb.append(s"  ${classNodeId(from._1, from._2)} --> ${classNodeId(to._1, to._2)}\n")
     }
@@ -277,13 +277,15 @@ object MermaidRenderer {
   }
 
   /** Render a single integration target node into the StringBuilder. */
-  private def renderTargetNode(sb: StringBuilder, id: String, label: String, rtype: ResourceType, indent: String): Unit =
+  private def renderTargetNode(sb: StringBuilder, id: String, label: String, rtype: ResourceType, indent: String): Unit = {
+    val safe = escapeHtmlChars(label)
     rtype match {
-      case ResourceType.Grpc    => sb.append(s"""$indent$id{{"$label"}}\n""")
-      case ResourceType.Kafka   => sb.append(s"""$indent$id(["$label"])\n""")
-      case ResourceType.S3      => sb.append(s"""$indent$id[/"$label"/]\n""")
-      case _                    => sb.append(s"""$indent$id[("$label")]\n""")
+      case ResourceType.Grpc    => sb.append(s"""$indent$id{{"$safe"}}\n""")
+      case ResourceType.Kafka   => sb.append(s"""$indent$id(["$safe"])\n""")
+      case ResourceType.S3      => sb.append(s"""$indent$id[/"$safe"/]\n""")
+      case _                    => sb.append(s"""$indent$id[("$safe")]\n""")
     }
+  }
 
   private def renderResourceDependencies(sb: StringBuilder, result: ScanResult, dataFlow: Boolean): Unit = {
     val knownTargets = result.resources.map(_.target).toSet
@@ -349,6 +351,9 @@ object MermaidRenderer {
 
   private def isCalledByOthers(ref: MethodRef, result: ScanResult): Boolean =
     result.callGraph.exists(_.callee == ref)
+
+  private def escapeHtmlChars(s: String): String =
+    s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
   private def escapeJsonString(s: String): String = {
     val sb = new StringBuilder("\"")

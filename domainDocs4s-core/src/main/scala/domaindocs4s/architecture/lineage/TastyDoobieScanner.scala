@@ -38,7 +38,7 @@ class TastyDoobieScanner()(using ctx: Context) extends IntegrationScanner {
   //> This whole scanner looks a bit off. I especially dont like enumerateMethodBodies. Id rather look for anything using strign interpolator (sql/fr) through usual search and go from there
   def scan(packages: List[String]): List[DiscoveredIntegration] = {
     val methods = SymbolUsageFinder.enumerateMethodBodies(packages)
-    methods.flatMap(m => findDoobieOps(m.ref, m.rhs))
+    methods.flatMap(m => findDoobieOps(m.ref, m.rhs)).filter(_.target != "unknown")
   }
 
   private def findDoobieOps(method: MethodRef, tree: Tree): List[DiscoveredIntegration] = {
@@ -142,11 +142,22 @@ private[lineage] object SqlUtils {
     "(?i)\\bDELETE\\s+FROM\\s+(\\w+)".r,
   )
 
+  /** SQL keywords and PostgreSQL functions that should never be treated as table names. */
+  private val sqlKeywords = Set(
+    "select", "from", "where", "set", "values", "join", "inner", "outer", "left", "right",
+    "cross", "full", "on", "and", "or", "not", "in", "exists", "as", "order", "group", "by",
+    "having", "limit", "offset", "union", "intersect", "except", "case", "when", "then", "else",
+    "end", "null", "true", "false", "is", "like", "between", "distinct", "all", "any",
+    "lateral", "unnest", "generate_series", "jsonb_each_text", "jsonb_each", "json_each",
+    "jsonb_array_elements", "json_array_elements",
+  )
+
   def extractTableName(sql: String): String =
-    tablePatterns.iterator.flatMap(_.findFirstMatchIn(sql)).nextOption() match {
-      case Some(m) => m.group(1)
-      case None    => "unknown"
-    }
+    tablePatterns.iterator
+      .flatMap(_.findAllMatchIn(sql))
+      .map(_.group(1))
+      .find(name => !sqlKeywords.contains(name.toLowerCase))
+      .getOrElse("unknown")
 
   /** Check if a string looks like SQL (contains at least one SQL keyword the table patterns recognize). */
   def looksLikeSql(sql: String): Boolean =

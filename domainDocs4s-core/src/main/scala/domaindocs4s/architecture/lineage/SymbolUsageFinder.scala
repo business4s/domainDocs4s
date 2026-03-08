@@ -310,7 +310,9 @@ class SymbolUsageFinder(searches: Seq[SymbolSearch])(using ctx: Context) {
         walkTree(expr, path, blockFieldCtx, results)
 
       case t: ValDef           => t.rhs.foreach(walkTree(_, path, fieldCtx, results))
-      case t: DefDef           => t.rhs.foreach(walkTree(_, path, fieldCtx, results))
+      case t: DefDef           =>
+        val paramCtx = extractParamTypes(t)
+        t.rhs.foreach(walkTree(_, path, fieldCtx ++ paramCtx, results))
       case l: Lambda           => walkTree(l.meth, path, fieldCtx, results)
       case Inlined(body, _, _) => walkTree(body, path, fieldCtx, results)
       case If(_, thenp, elsep) =>
@@ -614,28 +616,25 @@ class SymbolUsageFinder(searches: Seq[SymbolSearch])(using ctx: Context) {
 
   // ── Field extraction from trees ──────────────────────────────────────────
 
-  private def extractFieldsFromClassDef(classDef: ClassDef): Map[String, TypeOrMethodic] = {
-    val fields = scala.collection.mutable.Map.empty[String, TypeOrMethodic]
-    classDef.rhs.body.foreach {
-      case valDef: ValDef =>
-        try {
-          val name = valDef.name.toString
-          if (!name.startsWith("<") && !name.startsWith("$")) {
-            fields += (name -> valDef.symbol.declaredType)
-          }
-        } catch { case _: Exception => }
-      case _              =>
-    }
-    fields.toMap
-  }
+  private def extractFieldsFromClassDef(classDef: ClassDef): Map[String, TypeOrMethodic] =
+    extractValDefTypes(classDef.rhs.body)
 
-  private def extractFieldsFromBlock(stats: List[Tree]): Map[String, TypeOrMethodic] = {
+  private def extractFieldsFromBlock(stats: List[Tree]): Map[String, TypeOrMethodic] =
+    extractValDefTypes(stats)
+
+  private def extractParamTypes(defDef: DefDef): Map[String, TypeOrMethodic] =
+    extractValDefTypes(defDef.paramLists.collect { case Left(termParams) => termParams }.flatten, filterSynthetic = false)
+
+  /** Extract (name → declaredType) entries from a list of trees, keeping only ValDef nodes.
+    * When `filterSynthetic` is true (default), names starting with `<` or `$` are skipped.
+    */
+  private def extractValDefTypes(trees: List[Tree], filterSynthetic: Boolean = true): Map[String, TypeOrMethodic] = {
     val fields = scala.collection.mutable.Map.empty[String, TypeOrMethodic]
-    stats.foreach {
+    trees.foreach {
       case valDef: ValDef =>
         try {
           val name = valDef.name.toString
-          if (!name.startsWith("<") && !name.startsWith("$")) {
+          if (!filterSynthetic || (!name.startsWith("<") && !name.startsWith("$"))) {
             fields += (name -> valDef.symbol.declaredType)
           }
         } catch { case _: Exception => }

@@ -44,6 +44,15 @@ class TastyS3ScannerTest extends AnyFreeSpec {
       writes.head.evidence should include("putObject")
     }
 
+    "detects S3 putObject via lambda parameter (not class field)" in {
+      val writes = s3Integrations.filter { di =>
+        di.method.className == "S3LambdaExporter" && di.accessType == DataAccessType.Write
+      }
+      writes should have size 1
+      writes.head.target shouldBe "S3"
+      writes.head.evidence should include("putObject")
+    }
+
     "all S3 integrations have resourceType s3 and scanner s3" in {
       s3Integrations should not be empty
       s3Integrations.foreach { di =>

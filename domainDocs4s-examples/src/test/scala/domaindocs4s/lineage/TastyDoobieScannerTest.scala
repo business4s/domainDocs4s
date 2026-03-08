@@ -103,6 +103,14 @@ class TastyDoobieScannerTest extends AnyFreeSpec {
       reads.head.method.methodName shouldBe "upsertByType"
     }
 
+    "skips SQL keywords like unnest in table name extraction" in {
+      val unnestMethods = doobieIntegrations.filter(_.method.className == "UnnestQueryRepo")
+      unnestMethods should have size 1
+      unnestMethods.head.method.methodName shouldBe "getExpanded"
+      unnestMethods.head.accessType shouldBe DataAccessType.Read
+      unnestMethods.head.target shouldBe "keyword_test_table"
+    }
+
     "enriched doobie integrations have group user-db" in {
       val enrichedDoobie = integrations.filter(i => i.scanner == "doobie" && i.method.className == "UserRepo")
       enrichedDoobie should not be empty
