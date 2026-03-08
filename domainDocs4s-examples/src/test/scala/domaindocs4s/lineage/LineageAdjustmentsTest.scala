@@ -716,4 +716,99 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
     }
   }
 
+  "ShowClass allowlist" - {
+
+    "filters integrations on non-shown classes even when MethodRef is not in call graph" in {
+      // Simulate a scanner-synthesized integration on a class whose method
+      // was never extracted by the call graph (e.g., PersistentActor.receiveCommand)
+      val methods = List(
+        ExtractedMethod("ShownService", pkg, "handle", List(MethodRef(pkg, "HiddenHelper", "doWork"))),
+        ExtractedMethod("HiddenHelper", pkg, "doWork", Nil),
+      )
+      val integrations = List(
+        // Normal integration on a class in the call graph
+        DiscoveredIntegration(MethodRef(pkg, "HiddenHelper", "doWork"), DataAccessType.Write, ResourceType.Database, "doobie", "users", "INSERT"),
+        // Scanner-synthesized integration on a class NOT in the call graph
+        // (e.g., PekkoJournalScanner creates receiveCommand for PersistentActor subclasses)
+        DiscoveredIntegration(MethodRef(pkg, "OrphanActor", "receiveCommand"), DataAccessType.Write, ResourceType.Database, "pekko-journal", "journal", "extends PersistentActor"),
+      )
+
+      val adj = LineageAdjustments.builder
+        .cls(pkg, "ShownService").show
+        .build
+
+      val (resultMethods, resultIntegrations) = adj.apply(methods, integrations)
+
+      // ShownService should survive with promoted integration from HiddenHelper
+      resultMethods.map(_.className) should contain("ShownService")
+      resultMethods.map(_.className) should not contain "HiddenHelper"
+      // OrphanActor integration should be filtered out (class not in show list)
+      resultIntegrations.map(_.method.className) should not contain "OrphanActor"
+      // HiddenHelper's integration should be promoted to ShownService
+      resultIntegrations should have size 1
+      resultIntegrations.head.method.className shouldBe "ShownService"
+      resultIntegrations.head.target shouldBe "users"
+    }
+
+    "preserves integrations on shown classes" in {
+      val methods = List(
+        ExtractedMethod("ServiceA", pkg, "read", Nil),
+        ExtractedMethod("ServiceB", pkg, "write", Nil),
+      )
+      val integrations = List(
+        DiscoveredIntegration(MethodRef(pkg, "ServiceA", "read"), DataAccessType.Read, ResourceType.Database, "doobie", "users", "SELECT"),
+        DiscoveredIntegration(MethodRef(pkg, "ServiceB", "write"), DataAccessType.Write, ResourceType.Database, "doobie", "users", "INSERT"),
+      )
+
+      val adj = LineageAdjustments.builder
+        .cls(pkg, "ServiceA").show
+        .cls(pkg, "ServiceB").show
+        .build
+
+      val (_, resultIntegrations) = adj.apply(methods, integrations)
+      resultIntegrations should have size 2
+      resultIntegrations.map(_.method.className).toSet shouldBe Set("ServiceA", "ServiceB")
+    }
+
+    "does not filter resource-only integrations (empty call graph) by ShowClass" in {
+      // Resource integrations (e.g., flyway) are processed with an empty call graph
+      val resourceIntegrations = List(
+        DiscoveredIntegration(MethodRef("", "flyway", "V001"), DataAccessType.Write, ResourceType.Database, "flyway", "users", "V001__create.sql"),
+        DiscoveredIntegration(MethodRef("", "flyway", "R__"), DataAccessType.Write, ResourceType.Database, "flyway", "users_detail", "R__view.sql"),
+        DiscoveredIntegration(MethodRef("", "flyway", "R__"), DataAccessType.Read, ResourceType.Database, "flyway", "users", "R__view.sql"),
+      )
+
+      val adj = LineageAdjustments.builder
+        .cls(pkg, "SomeShownClass").show
+        .build
+
+      // When called with empty methods (resource-only), integrations should survive
+      val (_, result) = adj.apply(Nil, resourceIntegrations)
+      result should have size 3
+    }
+
+    "hides all non-shown classes and promotes integrations through chains" in {
+      val methods = List(
+        ExtractedMethod("Visible", pkg, "entry", List(MethodRef(pkg, "Hidden1", "mid"))),
+        ExtractedMethod("Hidden1", pkg, "mid", List(MethodRef(pkg, "Hidden2", "query"))),
+        ExtractedMethod("Hidden2", pkg, "query", Nil),
+      )
+      val integrations = List(
+        DiscoveredIntegration(MethodRef(pkg, "Hidden2", "query"), DataAccessType.Read, ResourceType.Database, "doobie", "orders", "SELECT"),
+      )
+
+      val adj = LineageAdjustments.builder
+        .cls(pkg, "Visible").show
+        .build
+
+      val (resultMethods, resultIntegrations) = adj.apply(methods, integrations)
+      resultMethods should have size 1
+      resultMethods.head.className shouldBe "Visible"
+      // Integration promoted from Hidden2 through Hidden1 to Visible
+      resultIntegrations should have size 1
+      resultIntegrations.head.method.className shouldBe "Visible"
+      resultIntegrations.head.target shouldBe "orders"
+    }
+  }
+
 }

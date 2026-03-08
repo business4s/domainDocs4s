@@ -2,7 +2,6 @@ package domaindocs4s.architecture.lineage
 
 import tastyquery.Contexts.Context
 import tastyquery.Trees.*
-import tastyquery.Types.*
 
 import scala.collection.mutable.ListBuffer
 
@@ -12,11 +11,16 @@ import scala.collection.mutable.ListBuffer
 // Scans compiled Scala code via TASTy to find doobie query invocations.
 // Output: "classA.methodB reads/writes tableC"
 //
-// Detection: finds methods returning ConnectionIO[_], then matches AST patterns:
+// Detection: walks all method/val bodies and matches AST patterns:
 //   sql"...".query[T].unique   → Read
 //   sql"...".query[T].to[F]    → Read
 //   sql"...".query[T].option   → Read
+//   sql"...".query[T].stream   → Read
 //   sql"...".update.run         → Write
+//
+// No return-type filtering — a method that contains sql"...".update.run
+// writes to the table regardless of whether it returns ConnectionIO, IO,
+// or anything else (e.g. after .transact(xa)).
 //
 // SQL extraction: collects string literal parts from the sql"..." interpolator
 // (StringContext.apply("part1", "part2", ...)) and joins them to recover the
@@ -27,24 +31,12 @@ import scala.collection.mutable.ListBuffer
 // doobie-specific chain patterns.
 // ============================================================================
 
-class TastyDoobieScanner(
-    connectionIOTypeName: String = "ConnectionIO",
-)(using ctx: Context) extends IntegrationScanner {
+class TastyDoobieScanner()(using ctx: Context) extends IntegrationScanner {
 
   //> This whole scanner looks a bit off. I especially dont like enumerateMethodBodies. Id rather look for anything using strign interpolator (sql/fr) through usual search and go from there
   def scan(packages: List[String]): List[DiscoveredIntegration] = {
     val methods = SymbolUsageFinder.enumerateMethodBodies(packages)
-    methods
-      .filter(m => m.declaredType.exists(returnsConnectionIO))
-      .flatMap(m => findDoobieOps(m.ref, m.rhs))
-  }
-
-  private def returnsConnectionIO(tpe: TypeOrMethodic): Boolean = tpe match {
-    case mt: MethodType  => returnsConnectionIO(mt.resultType)
-    case pt: PolyType    => returnsConnectionIO(pt.resultType)
-    case at: AppliedType => at.tycon.isInstanceOf[TypeRef] && at.tycon.asInstanceOf[TypeRef].name.toString == connectionIOTypeName
-    case tr: TypeRef     => tr.name.toString == connectionIOTypeName
-    case _               => false
+    methods.flatMap(m => findDoobieOps(m.ref, m.rhs))
   }
 
   private def findDoobieOps(method: MethodRef, tree: Tree): List[DiscoveredIntegration] = {
@@ -84,7 +76,7 @@ class TastyDoobieScanner(
   }
 
   private def isReadTerminal(name: tastyquery.Names.Name): Boolean =
-    nm(name, "unique") || nm(name, "option")
+    nm(name, "unique") || nm(name, "option") || nm(name, "stream")
 
   private def nm(name: tastyquery.Names.Name, target: String): Boolean =
     TastyUtils.matchesName(name, target)

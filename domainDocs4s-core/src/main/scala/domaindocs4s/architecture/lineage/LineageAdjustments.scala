@@ -482,6 +482,19 @@ case class LineageAdjustments(adjustments: List[LineageAdjustment] = Nil) {
         .map(_.ref)
         .toSet
       hideRefs(hiddenRefs)
+
+      // Also filter integrations on non-shown classes whose MethodRefs weren't in the
+      // call graph methods list (e.g., scanner-synthesized methods like receiveCommand).
+      // hideRefs above only removes integrations whose MethodRef was in `methods`;
+      // integrations referencing MethodRefs absent from the call graph survive and cause
+      // non-shown classes to leak into the diagram via MermaidRenderer's
+      // "integration-only classes" logic.
+      //
+      // Only apply when a call graph was provided — resource-only integrations (e.g., flyway)
+      // are processed with an empty call graph and should not be subject to ShowClass filtering.
+      if (callGraph.nonEmpty) {
+        integ = integ.filter(di => shownClasses.contains((di.method.packageName, di.method.className)))
+      }
     }
 
     // Ensure synthetic methods exist in the call graph

@@ -48,6 +48,10 @@ class UserRepo {
   def updateBalance(userId: Long, newBalance: BigDecimal): ConnectionIO[Int] =
     sql"UPDATE users SET balance = $newBalance WHERE id = $userId"
       .update.run
+
+  def streamTransactions(userId: Long): fs2.Stream[ConnectionIO, Transaction] =
+    sql"SELECT id, user_id, amount, description FROM transactions WHERE user_id = $userId"
+      .query[Transaction].stream
 }
 
 /** Service — business logic, orchestrates repository calls. */
@@ -77,6 +81,56 @@ class UserService(val repo: UserRepo) {
   */
 class EventPublisher {
   def publishDeposit(@scala.annotation.unused userId: Long, @scala.annotation.unused amount: BigDecimal): IO[Unit] = IO.unit
+}
+
+/** Handler that processes events and writes to DB via a repository.
+  * Mimics the Fs2Projection handler pattern (handler wraps a repository).
+  */
+class BalanceHandler(val repo: UserRepo) {
+  def process(userId: Long): ConnectionIO[Int] =
+    repo.updateBalance(userId, BigDecimal(0))
+}
+
+/** Singleton object with val handler — mimics the Fs2Projection pattern.
+  * The call graph should detect that this object's val body constructs
+  * a BalanceHandler, linking to its methods and transitively to UserRepo.
+  */
+object BalanceProjection {
+  val handler: BalanceHandler = new BalanceHandler(new UserRepo)
+}
+
+/** Demonstrates doobie detection without ConnectionIO return type.
+  * The method contains sql"...".query[T].unique but returns IO[T] after .transact(xa).
+  * The scanner should detect the doobie pattern regardless of the method's return type.
+  */
+class DirectDbAccess(xa: Transactor[IO]) {
+  def getBalanceIO(userId: Long): IO[BigDecimal] =
+    sql"SELECT balance FROM users WHERE id = $userId".query[BigDecimal].unique.transact(xa)
+}
+
+/** Demonstrates doobie detection inside a val initializer.
+  * The val body contains sql"...".query[T].unique — the scanner should find it
+  * now that enumerateMethodBodies includes val bodies.
+  */
+class InlineQueryHolder {
+  val activeUserCount: ConnectionIO[Long] =
+    sql"SELECT count(*) FROM users WHERE active = true".query[Long].unique
+}
+
+/** Demonstrates field.method() call detection inside val bodies.
+  * The val `defaultBalance` calls `repo.getBalance(0L)` — the call graph
+  * should detect this as a field.method() call inside a val initializer.
+  */
+class CachedService(val repo: UserRepo) {
+  val defaultBalance: ConnectionIO[BigDecimal] = repo.getBalance(0L)
+}
+
+/** Demonstrates constructor call detection inside def methods.
+  * The method `createHandler` calls `new BalanceHandler(repo)` — the call graph
+  * should detect this as a constructor call and link to BalanceHandler's methods.
+  */
+class ServiceFactory(val repo: UserRepo) {
+  def createHandler(): BalanceHandler = new BalanceHandler(repo)
 }
 
 /** gRPC API — entry point, delegates to service.

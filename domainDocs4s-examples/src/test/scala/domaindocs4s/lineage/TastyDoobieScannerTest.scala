@@ -50,6 +50,29 @@ class TastyDoobieScannerTest extends AnyFreeSpec {
       writes.map(_.method.methodName).toSet should contain allOf ("insertTransaction", "updateBalance")
     }
 
+    "detects streaming queries returning fs2.Stream[ConnectionIO, T]" in {
+      val streamMethods = doobieIntegrations.filter(_.method.methodName == "streamTransactions")
+      streamMethods should have size 1
+      streamMethods.head.accessType shouldBe DataAccessType.Read
+      streamMethods.head.target shouldBe "transactions"
+    }
+
+    "detects doobie queries in methods not returning ConnectionIO (IO after .transact)" in {
+      val directDbMethods = doobieIntegrations.filter(_.method.className == "DirectDbAccess")
+      directDbMethods should have size 1
+      directDbMethods.head.method.methodName shouldBe "getBalanceIO"
+      directDbMethods.head.accessType shouldBe DataAccessType.Read
+      directDbMethods.head.target shouldBe "users"
+    }
+
+    "detects doobie queries inside val initializers" in {
+      val valMethods = doobieIntegrations.filter(_.method.className == "InlineQueryHolder")
+      valMethods should have size 1
+      valMethods.head.method.methodName shouldBe "activeUserCount"
+      valMethods.head.accessType shouldBe DataAccessType.Read
+      valMethods.head.target shouldBe "users"
+    }
+
     "enriched doobie integrations have group user-db" in {
       val enrichedDoobie = integrations.filter(i => i.scanner == "doobie" && i.method.className == "UserRepo")
       enrichedDoobie should not be empty

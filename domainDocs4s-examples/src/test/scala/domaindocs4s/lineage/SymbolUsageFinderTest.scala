@@ -156,6 +156,19 @@ class SymbolUsageFinderTest extends AnyFreeSpec {
         }
       }
 
+      "includes val bodies in enumeration" in {
+        val methods = SymbolUsageFinder.enumerateMethodBodies(List(pkg))
+        // BalanceProjection.handler is a val, not a def — should be included
+        val projectionVals = methods.filter(m => m.ref.className == "BalanceProjection" && m.ref.methodName == "handler")
+        projectionVals should have size 1
+        // InlineQueryHolder.activeUserCount is also a val
+        val holderVals = methods.filter(m => m.ref.className == "InlineQueryHolder" && m.ref.methodName == "activeUserCount")
+        holderVals should have size 1
+        // CachedService.defaultBalance is also a val
+        val cachedVals = methods.filter(m => m.ref.className == "CachedService" && m.ref.methodName == "defaultBalance")
+        cachedVals should have size 1
+      }
+
       "anonymous class methods have None declared type" in {
         val methods = SymbolUsageFinder.enumerateMethodBodies(List(slickPkg))
         val factoryMethods = methods.filter(m =>

@@ -607,6 +607,13 @@ Kafka:
   a list of packages, and all scanners + call graph extractor scan every package in the list.
 - The gRPC scanner uses naming convention (`*Fs2Grpc` suffix) for detection. This is stable for `sbt-fs2-grpc`
   but wouldn't detect other gRPC libraries.
+- **Akka/Pekko actor message sends are not traced.** The call graph extractor detects synchronous
+  `field.method()` dispatch on constructor parameters and class vals. Actor communication via `ask`,
+  `askWithStatus`, `tell`, or `!` operates on `ActorRef`/`EntityRef` values (often local variables)
+  and dispatches messages through the Pekko runtime — there is no static `field.method()` call from
+  sender to receiver. This means the graph breaks at every actor send boundary. Projects using actor
+  messaging must bridge these gaps manually via `LineageAdjustments` (e.g., `.cls[Sender].calls(...)`)
+  until a dedicated Pekko actor-send scanner is implemented.
 
 ---
 

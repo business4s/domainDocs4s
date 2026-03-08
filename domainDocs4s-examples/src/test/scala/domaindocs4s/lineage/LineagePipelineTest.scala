@@ -52,6 +52,48 @@ class LineagePipelineTest extends AnyFreeSpec {
       calledMethods should contain(("UserService", "deposit"))
       calledMethods should contain(("UserService", "getHistory"))
     }
+
+    "discovers standalone objects (BalanceProjection) as classes in call graph" in {
+      val classNames = callGraph.map(_.className).distinct
+      classNames should contain("BalanceProjection")
+    }
+
+    "extracts constructor calls from val bodies — BalanceProjection.handler → BalanceHandler methods" in {
+      val projectionCalls = callGraph.filter(_.className == "BalanceProjection")
+      val calledMethods = projectionCalls.flatMap(_.calls).map(r => (r.className, r.methodName))
+      calledMethods should contain(("BalanceHandler", "process"))
+    }
+
+    "follows chain from BalanceProjection through BalanceHandler to UserRepo" in {
+      val projectionChains = result.lineageChains.filter(c => c.path.exists(_.className == "BalanceProjection"))
+      projectionChains should not be empty
+      projectionChains.exists(_.integration.target == "users") shouldBe true
+    }
+
+    "extracts field.method() calls from val bodies — CachedService.defaultBalance → UserRepo" in {
+      val cachedCalls = callGraph.filter(_.className == "CachedService")
+      cachedCalls should not be empty
+      val calledMethods = cachedCalls.flatMap(_.calls).map(r => (r.className, r.methodName))
+      calledMethods should contain(("UserRepo", "getBalance"))
+    }
+
+    "extracts constructor calls from def methods — ServiceFactory.createHandler → BalanceHandler" in {
+      val factoryCalls = callGraph.filter(_.className == "ServiceFactory")
+      val calledMethods = factoryCalls.flatMap(_.calls).map(r => (r.className, r.methodName))
+      calledMethods should contain(("BalanceHandler", "process"))
+    }
+
+    "lineage follows through val body field.method() calls — CachedService → UserRepo → users" in {
+      val cachedChains = result.lineageChains.filter(c => c.path.exists(_.className == "CachedService"))
+      cachedChains should not be empty
+      cachedChains.exists(_.integration.target == "users") shouldBe true
+    }
+
+    "lineage follows through def constructor calls — ServiceFactory → BalanceHandler → UserRepo → users" in {
+      val factoryChains = result.lineageChains.filter(c => c.path.exists(_.className == "ServiceFactory"))
+      factoryChains should not be empty
+      factoryChains.exists(_.integration.target == "users") shouldBe true
+    }
   }
 
   "MermaidRenderer class-level" - {

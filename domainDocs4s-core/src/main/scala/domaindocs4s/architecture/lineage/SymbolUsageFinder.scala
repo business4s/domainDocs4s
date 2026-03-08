@@ -241,6 +241,18 @@ class SymbolUsageFinder(searches: Seq[SymbolSearch])(using ctx: Context) {
             }
           case _              =>
         }
+      // Also walk val bodies — val initializers can contain scanner-relevant patterns
+      case ts: TermSymbol if !ts.isSynthetic && !ts.name.toString.startsWith("<") && ts.tree.exists(_.isInstanceOf[ValDef]) && !ts.tree.exists(_.isInstanceOf[DefDef]) =>
+        val valName = ts.name.toString
+        ts.tree.foreach {
+          case valDef: ValDef =>
+            val methodNode = NestingNode.Method(valName, None)
+            val methodPath = path :+ methodNode
+            valDef.rhs.foreach { rhs =>
+              walkTree(rhs, methodPath, fieldCtx, results)
+            }
+          case _              =>
+        }
       case _                                                        =>
     }
 
@@ -677,8 +689,8 @@ object SymbolUsageFinder {
       pkgName: String,
       className: String,
       cls: ClassSymbol,
-  )(using Context): List[MethodBody] =
-    cls.declarations.collect {
+  )(using Context): List[MethodBody] = {
+    val defMethods = cls.declarations.collect {
       case ts: TermSymbol if ts.tree.exists(_.isInstanceOf[DefDef]) =>
         val methodName = ts.name.toString
         val declType   =
@@ -690,6 +702,23 @@ object SymbolUsageFinder {
           case _              => Nil
         }
     }.flatten
+
+    // Also enumerate val bodies — val initializers can contain doobie/scanner patterns
+    val valMethods = cls.declarations.collect {
+      case ts: TermSymbol if !ts.isSynthetic && !ts.name.toString.startsWith("<") && ts.tree.exists(_.isInstanceOf[ValDef]) && !ts.tree.exists(_.isInstanceOf[DefDef]) =>
+        val valName  = ts.name.toString
+        val declType =
+          try Some(ts.declaredType)
+          catch { case _: Exception => None }
+        ts.tree.toList.flatMap {
+          case valDef: ValDef =>
+            valDef.rhs.toList.map(rhs => MethodBody(MethodRef(pkgName, className, valName), rhs, declType))
+          case _              => Nil
+        }
+    }.flatten
+
+    defMethods ++ valMethods
+  }
 
   /** Walk method bodies looking for anonymous ClassDef nodes and enumerate their methods. */
   private def enumerateAnonymousClassMethods(

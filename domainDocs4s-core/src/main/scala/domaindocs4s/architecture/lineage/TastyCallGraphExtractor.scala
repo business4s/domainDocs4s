@@ -21,18 +21,57 @@ class TastyCallGraphExtractor(using ctx: Context) {
 
   def extract(packageName: String): List[ExtractedMethod] = {
     val pkg = ctx.findPackage(packageName)
-    val classesWithPkg = TastyUtils.userClassesRecursive(pkg)
+    val userClasses = TastyUtils.userClassesRecursive(pkg)
+    val userClassNames = userClasses.map { case (p, c) => (p.fullName.toString, c.name.toString.stripSuffix("$")) }.toSet
+    // Include module classes (singleton objects) that don't have a corresponding user class,
+    // so standalone objects like DailyBalanceChangeProjection are included.
+    val standaloneModules = TastyUtils.moduleClassesRecursive(pkg).filterNot { case (p, c) =>
+      userClassNames.contains((p.fullName.toString, c.name.toString.stripSuffix("$")))
+    }
+    val classesWithPkg = userClasses ++ standaloneModules
+
+    // Build class→userMethods index for constructor call resolution.
+    // When we see `new SomeClass(...)`, we link to all user methods of SomeClass.
+    val classMethodsIndex: Map[(String, String), List[String]] = classesWithPkg.map { case (ownerPkg, cls) =>
+      val cn = cls.name.toString.stripSuffix("$")
+      val pn = ownerPkg.fullName.toString
+      val methodNames = cls.declarations.collect {
+        case ts: TermSymbol if isUserMethod(ts) => ts.name.toString
+      }
+      (pn, cn) -> methodNames
+    }.toMap
 
     val methods = classesWithPkg.flatMap { case (ownerPkg, cls) =>
       val className = cls.name.toString.stripSuffix("$")
       val pkgName = ownerPkg.fullName.toString
       val fieldTypes = resolveFieldTypes(cls)
 
-      cls.declarations.collect {
+      // Process DefDef methods (existing)
+      val defMethods = cls.declarations.collect {
         case ts: TermSymbol if isUserMethod(ts) =>
-          val calls = extractCalls(ts, fieldTypes)
+          val calls = extractCalls(ts, fieldTypes, classMethodsIndex)
           ExtractedMethod(className, pkgName, ts.name.toString, calls)
       }
+
+      // Process ValDef bodies — picks up constructor calls (new SomeClass(...))
+      // and field.method() patterns inside val initializers.
+      // Vals remain in fieldTypes for other methods to reference.
+      val valMethods = cls.declarations.collect {
+        case ts: TermSymbol if isValWithBody(ts) =>
+          ts.tree.toList.flatMap {
+            case valDef: ValDef =>
+              valDef.rhs.toList.flatMap { rhs =>
+                val collector = new MethodCallCollector(fieldTypes, classMethodsIndex)
+                collector.traverse(rhs)
+                val calls = collector.calls.distinct.toList
+                if (calls.nonEmpty) List(ExtractedMethod(className, pkgName, ts.name.toString, calls))
+                else Nil
+              }
+            case _ => Nil
+          }
+      }.flatten
+
+      defMethods ++ valMethods
     }
 
     addInheritanceEdges(classesWithPkg, methods)
@@ -130,11 +169,15 @@ class TastyCallGraphExtractor(using ctx: Context) {
         }
     }.flatten.toMap
 
-  private def extractCalls(ts: TermSymbol, fieldTypes: Map[String, (String, String)]): List[MethodRef] =
+  private def extractCalls(
+      ts: TermSymbol,
+      fieldTypes: Map[String, (String, String)],
+      classMethodsIndex: Map[(String, String), List[String]],
+  ): List[MethodRef] =
     ts.tree match {
       case Some(defDef: DefDef) =>
         defDef.rhs.toList.flatMap { rhs =>
-          val collector = new MethodCallCollector(fieldTypes)
+          val collector = new MethodCallCollector(fieldTypes, classMethodsIndex)
           collector.traverse(rhs)
           collector.calls.distinct
         }
@@ -156,11 +199,33 @@ class TastyCallGraphExtractor(using ctx: Context) {
     !ts.isSynthetic
   }
 
-  private class MethodCallCollector(fieldTypes: Map[String, (String, String)]) extends TreeTraverser {
+  /** Check if a TermSymbol is a val with a non-trivial body (not a constructor param accessor). */
+  private def isValWithBody(ts: TermSymbol): Boolean = {
+    val name = ts.name.toString
+    !name.startsWith("<") &&
+    !name.startsWith("_") &&
+    !ts.isSynthetic &&
+    ts.tree.exists(_.isInstanceOf[ValDef]) &&
+    !ts.tree.exists(_.isInstanceOf[DefDef]) && // not a method
+    ts.tree.exists {
+      case vd: ValDef => vd.rhs.isDefined
+      case _          => false
+    }
+  }
+
+  private class MethodCallCollector(
+      fieldTypes: Map[String, (String, String)],
+      classMethodsIndex: Map[(String, String), List[String]],
+  ) extends TreeTraverser {
     val calls: ListBuffer[MethodRef] = ListBuffer.empty
 
     override def traverse(tree: Tree): Unit = {
       tree match {
+        // new SomeClass(args) — constructor call. Link to all user methods of the constructed class.
+        case Apply(Select(New(typeTree), _), _) =>
+          addConstructorCalls(typeTree)
+        case Apply(TypeApply(Select(New(typeTree), _), _), _) =>
+          addConstructorCalls(typeTree)
         // field.method(args) — constructor params referenced as Ident
         case Apply(Select(Ident(fieldName), methodName), _) =>
           addIfKnown(TastyUtils.simpleName(fieldName), TastyUtils.simpleName(methodName))
@@ -180,5 +245,17 @@ class TastyCallGraphExtractor(using ctx: Context) {
       fieldTypes.get(fieldName).foreach { case (pkg, className) =>
         calls += MethodRef(pkg, className, methodName)
       }
+
+    private def addConstructorCalls(typeTree: TypeTree): Unit =
+      try {
+        val tpe = typeTree.toType
+        TastyUtils.extractTypeRef(tpe).foreach { tr =>
+          val pkg = TastyUtils.typeRefPackage(tr)
+          val clsName = tr.name.toString.stripSuffix("$")
+          classMethodsIndex.get((pkg, clsName)).foreach { methodNames =>
+            methodNames.foreach(m => calls += MethodRef(pkg, clsName, m))
+          }
+        }
+      } catch { case _: Exception => }
   }
 }
