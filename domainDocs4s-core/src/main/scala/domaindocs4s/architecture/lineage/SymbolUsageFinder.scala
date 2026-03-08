@@ -313,6 +313,14 @@ class SymbolUsageFinder(searches: Seq[SymbolSearch])(using ctx: Context) {
       case t: DefDef           => t.rhs.foreach(walkTree(_, path, fieldCtx, results))
       case l: Lambda           => walkTree(l.meth, path, fieldCtx, results)
       case Inlined(body, _, _) => walkTree(body, path, fieldCtx, results)
+      case If(_, thenp, elsep) =>
+        walkTree(thenp, path, fieldCtx, results); walkTree(elsep, path, fieldCtx, results)
+      case Match(_, cases) =>
+        cases.foreach(c => walkTree(c.body, path, fieldCtx, results))
+      case Try(body, catches, finalizer) =>
+        walkTree(body, path, fieldCtx, results)
+        catches.foreach(c => walkTree(c.body, path, fieldCtx, results))
+        finalizer.foreach(walkTree(_, path, fieldCtx, results))
 
       // Apply(Select(receiver, method), args) — recurse into receiver + args, skip Select
       case Apply(Select(qual, _), args)               =>

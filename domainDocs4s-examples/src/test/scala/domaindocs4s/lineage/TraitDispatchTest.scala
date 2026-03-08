@@ -36,6 +36,20 @@ class TraitDispatchTest extends AnyFreeSpec {
       performAudit shouldBe defined
       performAudit.get.calls should contain(MethodRef(pkg, "AuditRepo", "logAction"))
     }
+
+    "AuditServiceNoVal.performAudit calls AuditRepo.logAction (non-val constructor param)" in {
+      val serviceMethods = callGraph.filter(_.className == "AuditServiceNoVal")
+      val performAudit = serviceMethods.find(_.methodName == "performAudit")
+      performAudit shouldBe defined
+      performAudit.get.calls should contain(MethodRef(pkg, "AuditRepo", "logAction"))
+    }
+
+    "AuditRepoWithHelper.logAction calls AuditRepoWithHelper.insertBatch (intra-class call)" in {
+      val repoMethods = callGraph.filter(_.className == "AuditRepoWithHelper")
+      val logAction = repoMethods.find(_.methodName == "logAction")
+      logAction shouldBe defined
+      logAction.get.calls should contain(MethodRef(pkg, "AuditRepoWithHelper", "insertBatch"))
+    }
   }
 
   "LineageBuilder with trait dispatch" - {
@@ -45,8 +59,23 @@ class TraitDispatchTest extends AnyFreeSpec {
       chains should not be empty
 
       val auditLogChains = chains.filter(_.integration.target == "audit_log")
-      auditLogChains should have size 1
-      auditLogChains.head.path.map(_.className) shouldBe List("AuditService", "AuditRepo", "AuditRepoImpl")
+      // Two paths: AuditService → AuditRepo → AuditRepoImpl (direct impl)
+      //            AuditService → AuditRepo → AuditRepoWithHelper → insertBatch (intra-class delegation)
+      auditLogChains should have size 2
+      auditLogChains.map(_.path.map(_.className)).toSet shouldBe Set(
+        List("AuditService", "AuditRepo", "AuditRepoImpl"),
+        List("AuditService", "AuditRepo", "AuditRepoWithHelper", "AuditRepoWithHelper"),
+      )
+    }
+
+    "builds lineage chain through intra-class call (AuditRepoWithHelper.logAction → insertBatch → audit_log)" in {
+      // AuditRepoWithHelper.logAction is not an entry point (called via AuditRepo bridge),
+      // but it should appear in chains originating from AuditService
+      val chains = result.lineageForClass("AuditRepoWithHelper")
+      val auditLogChains = chains.filter(_.integration.target == "audit_log")
+      auditLogChains should not be empty
+      // Verify the intra-class call path exists
+      auditLogChains.exists(_.path.map(_.methodName).containsSlice(List("logAction", "insertBatch"))) shouldBe true
     }
   }
 }

@@ -133,6 +133,52 @@ class ServiceFactory(val repo: UserRepo) {
   def createHandler(): BalanceHandler = new BalanceHandler(repo)
 }
 
+/** Demonstrates batch Update[Row](sql).updateMany detection.
+  * The scanner should detect the `Update[Row](sql).updateMany(data)` pattern
+  * and extract the table name from the SQL string (even when stored in a val).
+  */
+class BatchUpdateRepo {
+
+  case class Row(userId: Long, amount: BigDecimal)
+  given Write[Row] = Write.derived
+
+  def batchInsert(rows: List[Row]): ConnectionIO[Int] = {
+    val sql = "INSERT INTO daily_balance_change (user_id, amount) VALUES (?, ?)"
+    Update[Row](sql).updateMany(rows)
+  }
+}
+
+/** Demonstrates doobie detection inside if/else branches.
+  * The scanner must recurse into If tree branches (not drop them at `case _ =>`).
+  */
+class ConditionalUpdateRepo {
+
+  case class Row(id: Long, value: String)
+  given Write[Row] = Write.derived
+
+  def upsertIfNotEmpty(rows: List[Row]): ConnectionIO[Unit] =
+    if (rows.isEmpty) cats.Applicative[ConnectionIO].unit
+    else {
+      val sql = "INSERT INTO conditional_table (id, value) VALUES (?, ?)"
+      Update[Row](sql).updateMany(rows).map(_ => ())
+    }
+}
+
+/** Demonstrates doobie detection inside match branches.
+  * The scanner must recurse into Match tree cases (not drop them at `case _ =>`).
+  */
+class MatchUpdateRepo {
+
+  def upsertByType(kind: String, value: Int): ConnectionIO[Int] = kind match {
+    case "insert" =>
+      sql"INSERT INTO match_table (value) VALUES ($value)".update.run
+    case "update" =>
+      sql"UPDATE match_table SET value = $value WHERE value = 0".update.run
+    case _ =>
+      sql"SELECT count(*) FROM match_table".query[Int].unique
+  }
+}
+
 /** gRPC API — entry point, delegates to service.
   *
   * Implements UserServiceFs2Grpc (server exposure) and consumes

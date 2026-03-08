@@ -193,7 +193,16 @@ trait IntegrationScanner {
 /** Common interface for resource scanners (no TASTy needed). */
 trait ResourceScanner {
   def scan(): List[DiscoveredIntegration]
+  def scanDependencies(): List[ResourceDependency] = Nil
 }
+
+/** A dependency between two resources (e.g., a VIEW depends on its source tables). */
+case class ResourceDependency(
+    from: String,              // source resource (e.g., table name)
+    to: String,                // derived resource (e.g., view name)
+    resourceType: ResourceType,
+    label: String = "",        // e.g., "view source"
+)
 
 /** A discovered external integration — output of any scanner.
   *
@@ -346,6 +355,7 @@ case class ScanResult(
     classDisplayNames: Map[(String, String), String] = Map.empty,
     classGroups: Map[(String, String), String] = Map.empty,
     resourceOnlyIntegrations: List[DiscoveredIntegration] = Nil,
+    resourceDependencies: List[ResourceDependency] = Nil,
 ) {
   lazy val allMethods: List[ScannedMethod] = classes.flatMap(_.methods)
   lazy val resources: List[DiscoveredResource] = DiscoveredResource.merge(integrations ++ resourceOnlyIntegrations)

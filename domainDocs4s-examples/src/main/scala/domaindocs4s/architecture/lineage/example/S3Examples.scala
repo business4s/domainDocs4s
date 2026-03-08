@@ -34,3 +34,15 @@ class S3Reader(val s3Client: S3Client) {
       GetObjectRequest.builder().bucket("my-bucket").key(key).build(),
     )
 }
+
+/** S3 call inside if/else — tests SymbolUsageFinder.walkTree If branch handling. */
+class S3ConditionalExporter(val s3Client: S3Client) {
+
+  def exportIfNonEmpty(key: String, data: String): Option[PutObjectResponse] =
+    if (data.nonEmpty)
+      Some(s3Client.putObject(
+        PutObjectRequest.builder().bucket("my-bucket").key(key).build(),
+        RequestBody.fromString(data),
+      ))
+    else None
+}

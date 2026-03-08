@@ -46,10 +46,12 @@ class TastyCallGraphExtractor(using ctx: Context) {
       val pkgName = ownerPkg.fullName.toString
       val fieldTypes = resolveFieldTypes(cls)
 
+      val selfClass = Some((pkgName, className))
+
       // Process DefDef methods (existing)
       val defMethods = cls.declarations.collect {
         case ts: TermSymbol if isUserMethod(ts) =>
-          val calls = extractCalls(ts, fieldTypes, classMethodsIndex)
+          val calls = extractCalls(ts, fieldTypes, classMethodsIndex, selfClass)
           ExtractedMethod(className, pkgName, ts.name.toString, calls)
       }
 
@@ -61,7 +63,7 @@ class TastyCallGraphExtractor(using ctx: Context) {
           ts.tree.toList.flatMap {
             case valDef: ValDef =>
               valDef.rhs.toList.flatMap { rhs =>
-                val collector = new MethodCallCollector(fieldTypes, classMethodsIndex)
+                val collector = new MethodCallCollector(fieldTypes, classMethodsIndex, selfClass)
                 collector.traverse(rhs)
                 val calls = collector.calls.distinct.toList
                 if (calls.nonEmpty) List(ExtractedMethod(className, pkgName, ts.name.toString, calls))
@@ -173,11 +175,12 @@ class TastyCallGraphExtractor(using ctx: Context) {
       ts: TermSymbol,
       fieldTypes: Map[String, (String, String)],
       classMethodsIndex: Map[(String, String), List[String]],
+      selfClass: Option[(String, String)] = None,
   ): List[MethodRef] =
     ts.tree match {
       case Some(defDef: DefDef) =>
         defDef.rhs.toList.flatMap { rhs =>
-          val collector = new MethodCallCollector(fieldTypes, classMethodsIndex)
+          val collector = new MethodCallCollector(fieldTypes, classMethodsIndex, selfClass)
           collector.traverse(rhs)
           collector.calls.distinct
         }
@@ -216,6 +219,7 @@ class TastyCallGraphExtractor(using ctx: Context) {
   private class MethodCallCollector(
       fieldTypes: Map[String, (String, String)],
       classMethodsIndex: Map[(String, String), List[String]],
+      selfClass: Option[(String, String)] = None, // (packageName, className) for this.method() calls
   ) extends TreeTraverser {
     val calls: ListBuffer[MethodRef] = ListBuffer.empty
 
@@ -236,6 +240,11 @@ class TastyCallGraphExtractor(using ctx: Context) {
           addIfKnown(TastyUtils.simpleName(fieldName), TastyUtils.simpleName(methodName))
         case Apply(TypeApply(Select(Select(_: This, fieldName), methodName), _), _) =>
           addIfKnown(TastyUtils.simpleName(fieldName), TastyUtils.simpleName(methodName))
+        // this.method(args) — direct intra-class method call
+        case Apply(Select(_: This, methodName), _) =>
+          addSelfCall(TastyUtils.simpleName(methodName))
+        case Apply(TypeApply(Select(_: This, methodName), _), _) =>
+          addSelfCall(TastyUtils.simpleName(methodName))
         case _ =>
       }
       super.traverse(tree)
@@ -243,6 +252,11 @@ class TastyCallGraphExtractor(using ctx: Context) {
 
     private def addIfKnown(fieldName: String, methodName: String): Unit =
       fieldTypes.get(fieldName).foreach { case (pkg, className) =>
+        calls += MethodRef(pkg, className, methodName)
+      }
+
+    private def addSelfCall(methodName: String): Unit =
+      selfClass.foreach { case (pkg, className) =>
         calls += MethodRef(pkg, className, methodName)
       }
 

@@ -74,6 +74,22 @@ class SymbolUsageFinderTest extends AnyFreeSpec {
       }
     }
 
+    "MethodCall inside if/else branches" - {
+
+      "finds S3Client calls inside if branches" in {
+        val searches = Seq(SymbolSearch.MethodCall(TypeMatcher.oneOf(
+          "software.amazon.awssdk.services.s3.S3Client",
+        )))
+        val finder = new SymbolUsageFinder(searches)
+        val usages = finder.findAll(List(pkg))
+
+        val conditionalUsages = usages.collect { case u: FoundUsage.MethodCallResult => u }
+          .filter(_.path.toMethodRef.className == "S3ConditionalExporter")
+        conditionalUsages should have size 1
+        conditionalUsages.head.methodName shouldBe "putObject"
+      }
+    }
+
     "ClassInheritance" - {
 
       "finds Fs2Grpc parent types with inherited methods" in {

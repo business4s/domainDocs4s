@@ -42,19 +42,24 @@ class FlywayMigrationScanner(
 
   import FlywayMigrationScanner.*
 
-  def scan(): List[DiscoveredIntegration] = {
+  private lazy val parsedEvents: List[MigrationEvent] = {
     val files = Using(Files.list(migrationDir)) { stream =>
       stream.iterator().asScala.toList
         .filter(p => MigrationFilePattern.matches(p.getFileName.toString))
         .sortBy(_.getFileName.toString)
     }.getOrElse(Nil)
 
-    val events = files.flatMap(parseMigrationFile).filter {
+    files.flatMap(parseMigrationFile).filter {
       case IntegrationEvent(di) => isValidIdentifier(di.target)
       case _                    => true
     }
-    resolveDrops(events)
   }
+
+  private lazy val resolved = resolveDrops(parsedEvents)
+
+  def scan(): List[DiscoveredIntegration] = resolved._1
+
+  override def scanDependencies(): List[ResourceDependency] = resolved._2
 
   private def parseMigrationFile(file: Path): List[MigrationEvent] = {
     val filename = file.getFileName.toString
@@ -80,7 +85,8 @@ class FlywayMigrationScanner(
         val viewName = cv.getView.getName
         val sources = Option(cv.getSelect).toList.flatMap(extractSourceTables).distinct
         IntegrationEvent(mkIntegration(method, DataAccessType.Write, viewName, filename)) ::
-          sources.map(t => IntegrationEvent(mkIntegration(method, DataAccessType.Read, t, filename)))
+          sources.map(t => IntegrationEvent(mkIntegration(method, DataAccessType.Read, t, filename))) :::
+          sources.map(t => DependencyEvent(ResourceDependency(from = t, to = viewName, resourceType = ResourceType.Database, label = "view source")))
 
       case alt: Alter =>
         val oldName = alt.getTable.getName
@@ -132,6 +138,7 @@ object FlywayMigrationScanner {
   private sealed trait MigrationEvent
   private case class IntegrationEvent(di: DiscoveredIntegration) extends MigrationEvent
   private case class DropEvent(target: String)                   extends MigrationEvent
+  private case class DependencyEvent(dep: ResourceDependency)    extends MigrationEvent
 
   private val MigrationFilePattern = """[VR][\d._]*__.*\.sql""".r
 
@@ -142,18 +149,23 @@ object FlywayMigrationScanner {
   private def isValidIdentifier(name: String): Boolean =
     name.nonEmpty && (name.head.isLetter || name.head == '_')
 
-  /** Process migration events in order, removing integrations for dropped targets.
+  /** Process migration events in order, removing integrations and dependencies for dropped targets.
     *
     * When a DropEvent(X) is encountered, all accumulated integrations with target X
-    * are removed. If a subsequent migration re-creates X, fresh integrations are added.
+    * are removed, and all dependencies where `to == X` are removed.
+    * If a subsequent migration re-creates X, fresh integrations/dependencies are added.
     */
-  private def resolveDrops(events: List[MigrationEvent]): List[DiscoveredIntegration] = {
-    val result = scala.collection.mutable.ListBuffer.empty[DiscoveredIntegration]
+  private def resolveDrops(events: List[MigrationEvent]): (List[DiscoveredIntegration], List[ResourceDependency]) = {
+    val integrations = scala.collection.mutable.ListBuffer.empty[DiscoveredIntegration]
+    val dependencies = scala.collection.mutable.ListBuffer.empty[ResourceDependency]
     for (event <- events) event match {
-      case IntegrationEvent(di) => result += di
-      case DropEvent(target)    => result.filterInPlace(_.target != target)
+      case IntegrationEvent(di)  => integrations += di
+      case DependencyEvent(dep)  => dependencies += dep
+      case DropEvent(target)     =>
+        integrations.filterInPlace(_.target != target)
+        dependencies.filterInPlace(_.to != target)
     }
-    result.toList
+    (integrations.toList, dependencies.toList)
   }
 
   /** Parse SQL content into statements, silently skipping unparseable ones

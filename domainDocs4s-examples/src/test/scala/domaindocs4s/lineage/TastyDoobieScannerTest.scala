@@ -73,6 +73,36 @@ class TastyDoobieScannerTest extends AnyFreeSpec {
       valMethods.head.target shouldBe "users"
     }
 
+    "detects Update[A](sql).updateMany as Write" in {
+      val batchMethods = doobieIntegrations.filter(_.method.className == "BatchUpdateRepo")
+      batchMethods should have size 1
+      batchMethods.head.method.methodName shouldBe "batchInsert"
+      batchMethods.head.accessType shouldBe DataAccessType.Write
+      batchMethods.head.target shouldBe "daily_balance_change"
+    }
+
+    "detects doobie patterns inside if/else branches" in {
+      val conditionalMethods = doobieIntegrations.filter(_.method.className == "ConditionalUpdateRepo")
+      conditionalMethods should have size 1
+      conditionalMethods.head.method.methodName shouldBe "upsertIfNotEmpty"
+      conditionalMethods.head.accessType shouldBe DataAccessType.Write
+      conditionalMethods.head.target shouldBe "conditional_table"
+    }
+
+    "detects doobie patterns inside match branches" in {
+      val matchMethods = doobieIntegrations.filter(_.method.className == "MatchUpdateRepo")
+      matchMethods should have size 3
+      matchMethods.foreach(_.target shouldBe "match_table")
+
+      val writes = matchMethods.filter(_.accessType == DataAccessType.Write)
+      writes should have size 2
+      writes.map(_.method.methodName).toSet shouldBe Set("upsertByType")
+
+      val reads = matchMethods.filter(_.accessType == DataAccessType.Read)
+      reads should have size 1
+      reads.head.method.methodName shouldBe "upsertByType"
+    }
+
     "enriched doobie integrations have group user-db" in {
       val enrichedDoobie = integrations.filter(i => i.scanner == "doobie" && i.method.className == "UserRepo")
       enrichedDoobie should not be empty

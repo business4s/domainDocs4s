@@ -14,6 +14,7 @@ class LineageScanner(
     val rawCallGraph         = packages.flatMap(new TastyCallGraphExtractor().extract)
     val codeIntegrations     = scanners.flatMap(_.scan(packages))
     val resourceIntegrations = resourceScanners.flatMap(_.scan())
+    val resourceDeps         = resourceScanners.flatMap(_.scanDependencies())
     val (callGraph, refined) = adjustments.apply(rawCallGraph, codeIntegrations)
     val (_, refinedResources) = adjustments.apply(Nil, resourceIntegrations)
     val integrations         = enrichment.enrich(refined)
@@ -23,6 +24,7 @@ class LineageScanner(
         classDisplayNames = adjustments.classRenames,
         classGroups = adjustments.classGroups(callGraph),
         resourceOnlyIntegrations = refinedResources,
+        resourceDependencies = resourceDeps,
       )
   }
 }

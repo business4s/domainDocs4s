@@ -90,6 +90,26 @@ class FlywayMigrationScannerTest extends AnyFreeSpec {
       ) should not be empty
     }
 
+    "scanDependencies returns VIEW source table relationships" in {
+      val deps = flywayScanner.scanDependencies()
+      // V005 recreates the view (V002 created, V004 dropped)
+      val viewDeps = deps.filter(_.to == "user_transaction_summary")
+      viewDeps.map(_.from).toSet should contain allOf ("users", "transactions")
+      viewDeps.foreach { dep =>
+        dep.resourceType shouldBe ResourceType.Database
+        dep.label shouldBe "view source"
+      }
+    }
+
+    "DROP VIEW removes dependencies for that view" in {
+      // V002 creates view with deps, V004 drops it → V002 deps gone
+      // V005 recreates → fresh deps survive
+      val deps = flywayScanner.scanDependencies()
+      val viewDeps = deps.filter(_.to == "user_transaction_summary")
+      // Only 2 deps (from V005 recreate), not 4 (V002 + V005)
+      viewDeps should have size 2
+    }
+
     "all flyway integrations have resourceType database and scanner flyway" in {
       flywayIntegrations should not be empty
       flywayIntegrations.foreach { di =>

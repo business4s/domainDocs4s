@@ -271,6 +271,13 @@ class TastySlickScanner(
     case t: ValDef           => t.rhs.foreach(walk(_, out, method, fieldToTable))
     case t: DefDef           => t.rhs.foreach(walk(_, out, method, fieldToTable))
     case l: Lambda           => walk(l.meth, out, method, fieldToTable)
+    case Inlined(body, _, _) => walk(body, out, method, fieldToTable)
+    case If(_, thenp, elsep) => walk(thenp, out, method, fieldToTable); walk(elsep, out, method, fieldToTable)
+    case Match(_, cases)     => cases.foreach(c => walk(c.body, out, method, fieldToTable))
+    case Try(body, catches, finalizer) =>
+      walk(body, out, method, fieldToTable)
+      catches.foreach(c => walk(c.body, out, method, fieldToTable))
+      finalizer.foreach(walk(_, out, method, fieldToTable))
     case _                   => ()
   }
 

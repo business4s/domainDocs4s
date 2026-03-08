@@ -68,15 +68,11 @@ object MermaidRenderer {
 
     // Integration edges
     for (i <- result.integrations) {
-      val methodNode = nodeId(i.method)
-      val targetNode = targetNodeId(i.target)
-      (i.accessType, dataFlow) match {
-        case (DataAccessType.Read, false) => sb.append(s"""  $methodNode -.->|Read| $targetNode\n""")
-        case (DataAccessType.Read, true)  => sb.append(s"""  $targetNode -.->|Read| $methodNode\n""")
-        case (DataAccessType.Write, _)    => sb.append(s"""  $methodNode ==>|Write| $targetNode\n""")
-        case _                            => sb.append(s"""  $methodNode -->|${i.accessType}| $targetNode\n""")
-      }
+      renderEdge(sb, nodeId(i.method), targetNodeId(i.target), i.accessType, dataFlow)
     }
+
+    // Resource dependency edges (e.g., VIEW sources)
+    renderResourceDependencies(sb, result, dataFlow)
 
     // Styling
     sb.append("\n")
@@ -240,6 +236,9 @@ object MermaidRenderer {
       renderEdge(sb, classNodeId(classKey._1, classKey._2), targetNodeId(target), accessType, dataFlow)
     }
 
+    // Resource dependency edges (e.g., VIEW sources)
+    renderResourceDependencies(sb, result, dataFlow)
+
     // Styling
     sb.append("\n")
     appendStyleDefs(sb)
@@ -285,6 +284,16 @@ object MermaidRenderer {
       case ResourceType.S3      => sb.append(s"""$indent$id[/"$label"/]\n""")
       case _                    => sb.append(s"""$indent$id[("$label")]\n""")
     }
+
+  private def renderResourceDependencies(sb: StringBuilder, result: ScanResult, dataFlow: Boolean): Unit = {
+    val knownTargets = result.resources.map(_.target).toSet
+    for (dep <- result.resourceDependencies if knownTargets(dep.from) && knownTargets(dep.to)) {
+      val fromNode = targetNodeId(dep.from)
+      val toNode   = targetNodeId(dep.to)
+      if (dataFlow) sb.append(s"""  $fromNode -.-> $toNode\n""")
+      else sb.append(s"""  $toNode -.-> $fromNode\n""")
+    }
+  }
 
   private def renderEdge(sb: StringBuilder, from: String, to: String, accessType: DataAccessType, dataFlow: Boolean): Unit =
     (accessType, dataFlow) match {
