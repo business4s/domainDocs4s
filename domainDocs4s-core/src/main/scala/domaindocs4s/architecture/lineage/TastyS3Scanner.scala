@@ -1,7 +1,6 @@
 package domaindocs4s.architecture.lineage
 
 import tastyquery.Contexts.Context
-import tastyquery.Trees.*
 
 // ============================================================================
 // TASTy-based S3 Scanner
@@ -44,17 +43,10 @@ class TastyS3Scanner(
           resourceType = ResourceType.S3,
           scanner = "s3",
           target = "S3",
-          evidence = s"calls ${extractFieldName(u.receiverTree)}.${u.methodName}",
+          evidence = s"calls ${u.receiverName}.${u.methodName}",
           group = group,
         )
       }
     }
-  }
-
-  private def extractFieldName(tree: Tree): String = tree match {
-    case Ident(name)           => TastyUtils.simpleName(name)
-    case Select(_: This, name) => TastyUtils.simpleName(name)
-    case Select(_, name)       => TastyUtils.simpleName(name)
-    case _                     => "?"
   }
 }

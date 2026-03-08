@@ -98,7 +98,16 @@ object FoundUsage {
       methodName: String,
       args: Map[String, Option[LiteralValue]],
       receiverTree: Tree,
-  ) extends FoundUsage
+  ) extends FoundUsage {
+
+    /** Simple name of the receiver expression, for use in evidence strings. */
+    lazy val receiverName: String = receiverTree match {
+      case Ident(name)           => TastyUtils.simpleName(name)
+      case Select(_: This, name) => TastyUtils.simpleName(name)
+      case Select(_, name)       => TastyUtils.simpleName(name)
+      case _                     => "?"
+    }
+  }
 
   /** A class inheriting from a matching type was found. */
   case class InheritanceResult(
@@ -144,11 +153,9 @@ class SymbolUsageFinder(searches: Seq[SymbolSearch])(using ctx: Context) {
         results ++= checkInheritance(cls, path, classTree)
       }
 
-      // 2. Pre-scan fields for receiver type resolution
-      val fieldCtx = buildFieldContext(cls)
-
-      // 3. Walk method bodies
+      // 2. Walk method bodies (with field pre-scan for receiver type resolution)
       if (methodCallSearches.nonEmpty) {
+        val fieldCtx = buildFieldContext(cls)
         walkClassMethods(cls, path, fieldCtx, results)
       }
 
@@ -566,10 +573,7 @@ class SymbolUsageFinder(searches: Seq[SymbolSearch])(using ctx: Context) {
           val fqn = TastyUtils.extractFqn(tpe)
           fqn.foreach { parentFqn =>
             inheritanceSearches.foreach { search =>
-              if (
-                TypeMatcherResolver.matchesFqn(search.parentType, parentFqn) ||
-                TypeMatcherResolver.matches(search.parentType, tpe)
-              ) {
+              if (TypeMatcherResolver.matches(search.parentType, tpe)) {
                 val simpleName       = TastyUtils.extractTypeName(tpe).getOrElse(parentFqn.split('.').last)
                 val inheritedMethods = resolveParentMethods(tpe)
                 results += FoundUsage.InheritanceResult(

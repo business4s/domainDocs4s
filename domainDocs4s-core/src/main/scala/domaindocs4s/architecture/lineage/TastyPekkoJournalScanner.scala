@@ -1,7 +1,6 @@
 package domaindocs4s.architecture.lineage
 
 import tastyquery.Contexts.Context
-import tastyquery.Trees.*
 
 // ============================================================================
 // TASTy-based Pekko Journal Scanner
@@ -30,101 +29,69 @@ class TastyPekkoJournalScanner(
     group: Option[String] = None,
 )(using ctx: Context) extends IntegrationScanner {
 
-  // Inheritance: class extends PersistentActor
-  private val persistentActorSearch = SymbolSearch.ClassInheritance(TypeMatcher.oneOf(
-    "org.apache.pekko.persistence.PersistentActor",
-    "org.apache.pekko.persistence.AbstractPersistentActor",
-  ))
-
-  // Field method calls: ReadJournal field.method(...)
-  private val readJournalSearch = SymbolSearch.MethodCall(
-    TypeMatcher.isOrInheritsFrom("org.apache.pekko.persistence.query.scaladsl.ReadJournal"),
-  )
-
-  // Type references: EventSourcedBehavior (write), EventSourcedProvider/PersistenceQuery (read)
-  private val eventSourcedBehaviorSearch = SymbolSearch.MethodCall(
-    TypeMatcher("org.apache.pekko.persistence.typed.scaladsl.EventSourcedBehavior"),
-  )
-  private val projectionSourceSearch = SymbolSearch.MethodCall(TypeMatcher.oneOf(
-    "org.apache.pekko.projection.eventsourced.scaladsl.EventSourcedProvider",
-    "org.apache.pekko.persistence.query.PersistenceQuery",
-  ))
-
-  //> I dont like that we search for everything at once. those are separate concern, separate algorithms, should live separately. performance is not that important here.
   def scan(packages: List[String]): List[DiscoveredIntegration] = {
-    val finder = new SymbolUsageFinder(Seq(
-      persistentActorSearch, readJournalSearch, eventSourcedBehaviorSearch, projectionSourceSearch,
-    ))
-    val usages = finder.findAll(packages)
+    // Primary rules (inheritance + field calls) take precedence
+    val primaryResults = scanPersistentActors(packages) ++ scanReadJournal(packages)
+    val primaryMethods = primaryResults.map(_.method).toSet
 
-    // Phase 1: inheritance + field calls (higher priority)
-    val inheritanceResults = usages.collect { case u: FoundUsage.InheritanceResult => u }.flatMap(interpretInheritance)
-    val fieldResults = usages.collect { case u: FoundUsage.MethodCallResult if u.search == readJournalSearch => u }.map(interpretFieldCall)
-    val primaryMethods = (inheritanceResults ++ fieldResults).map(_.method).toSet
+    // Type-reference rules only emit if no primary rule already covered the method
+    val typeRefResults = scanTypeRef(
+      TypeMatcher("org.apache.pekko.persistence.typed.scaladsl.EventSourcedBehavior"),
+      DataAccessType.Write, packages,
+    ) ++ scanTypeRef(
+      TypeMatcher.oneOf(
+        "org.apache.pekko.projection.eventsourced.scaladsl.EventSourcedProvider",
+        "org.apache.pekko.persistence.query.PersistenceQuery",
+      ),
+      DataAccessType.Read, packages,
+    )
 
-    // Phase 2: type references (only if no primary rule matched for that method)
-    val seen = scala.collection.mutable.Set.empty[MethodRef]
-    val typeRefResults = usages.collect { case u: FoundUsage.MethodCallResult if u.search != readJournalSearch => u }.flatMap { u =>
-      interpretTypeRef(u).filter { di =>
-        !primaryMethods.contains(di.method) && seen.add(di.method)
-      }
-    }
-
-    inheritanceResults ++ fieldResults ++ typeRefResults
+    primaryResults ++ typeRefResults.filterNot(r => primaryMethods.contains(r.method))
   }
 
   // Write: class extends PersistentActor → single integration with methodName "receiveCommand"
-  private def interpretInheritance(u: FoundUsage.InheritanceResult): List[DiscoveredIntegration] = {
-    val ref = u.path.toMethodRef
-    List(DiscoveredIntegration(
-      method = MethodRef(ref.packageName, ref.className, "receiveCommand"),
-      accessType = DataAccessType.Write,
-      resourceType = ResourceType.Database,
-      scanner = "pekko-journal",
-      target = "journal",
-      evidence = s"extends ${u.parentSimpleName}",
-      group = group,
+  private def scanPersistentActors(packages: List[String]): List[DiscoveredIntegration] = {
+    val search = SymbolSearch.ClassInheritance(TypeMatcher.oneOf(
+      "org.apache.pekko.persistence.PersistentActor",
+      "org.apache.pekko.persistence.AbstractPersistentActor",
     ))
+    val finder = new SymbolUsageFinder(Seq(search))
+    finder.findAll(packages).collect { case u: FoundUsage.InheritanceResult =>
+      val ref = u.path.toMethodRef
+      mkIntegration(MethodRef(ref.packageName, ref.className, "receiveCommand"), DataAccessType.Write, s"extends ${u.parentSimpleName}")
+    }
   }
 
   // Read: ReadJournal field.method(...) → Read
-  private def interpretFieldCall(u: FoundUsage.MethodCallResult): DiscoveredIntegration = {
-    val ref = u.path.toMethodRef
-    DiscoveredIntegration(
-      method = ref,
-      accessType = DataAccessType.Read,
-      resourceType = ResourceType.Database,
-      scanner = "pekko-journal",
-      target = "journal",
-      evidence = s"calls ${extractFieldName(u.receiverTree)}.${u.methodName}",
-      group = group,
+  private def scanReadJournal(packages: List[String]): List[DiscoveredIntegration] = {
+    val search = SymbolSearch.MethodCall(
+      TypeMatcher.isOrInheritsFrom("org.apache.pekko.persistence.query.scaladsl.ReadJournal"),
     )
+    val finder = new SymbolUsageFinder(Seq(search))
+    finder.findAll(packages).collect { case u: FoundUsage.MethodCallResult =>
+      mkIntegration(u.path.toMethodRef, DataAccessType.Read, s"calls ${u.receiverName}.${u.methodName}")
+    }
   }
 
-  // Type references: EventSourcedBehavior → Write, EventSourcedProvider/PersistenceQuery → Read
-  private def interpretTypeRef(u: FoundUsage.MethodCallResult): Option[DiscoveredIntegration] = {
-    val ref = u.path.toMethodRef
-    val accessType = u.search match {
-      case s if s == eventSourcedBehaviorSearch => DataAccessType.Write
-      case s if s == projectionSourceSearch     => DataAccessType.Read
-      case _                                   => return None
+  // Type reference: find method calls on a matching type, dedup by MethodRef
+  private def scanTypeRef(typeMatcher: TypeMatcher, accessType: DataAccessType, packages: List[String]): List[DiscoveredIntegration] = {
+    val finder = new SymbolUsageFinder(Seq(SymbolSearch.MethodCall(typeMatcher)))
+    val seen = scala.collection.mutable.Set.empty[MethodRef]
+    finder.findAll(packages).collect { case u: FoundUsage.MethodCallResult => u }.flatMap { u =>
+      val ref = u.path.toMethodRef
+      if (seen.add(ref)) Some(mkIntegration(ref, accessType, s"references ${u.ownerSimpleName}"))
+      else None
     }
-    Some(DiscoveredIntegration(
-      method = ref,
+  }
+
+  private def mkIntegration(method: MethodRef, accessType: DataAccessType, evidence: String): DiscoveredIntegration =
+    DiscoveredIntegration(
+      method = method,
       accessType = accessType,
       resourceType = ResourceType.Database,
       scanner = "pekko-journal",
       target = "journal",
-      evidence = s"references ${u.ownerSimpleName}",
+      evidence = evidence,
       group = group,
-    ))
-  }
-
-  //> duplication with some other scanner?
-  private def extractFieldName(tree: Tree): String = tree match {
-    case Ident(name)           => TastyUtils.simpleName(name)
-    case Select(_: This, name) => TastyUtils.simpleName(name)
-    case Select(_, name)       => TastyUtils.simpleName(name)
-    case _                     => "?"
-  }
+    )
 }

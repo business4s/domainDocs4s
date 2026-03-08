@@ -14,11 +14,16 @@ import tastyquery.Trees.*
 //
 // Client detection (Read): val field of type *Fs2Grpc
 //   → each call to field.rpcMethod(...) is a gRPC client consumption
+//
+// Note: uses fqnEndsWith("Fs2Grpc") because fs2-grpc generates a trait per
+// service (e.g., UserServiceFs2Grpc) with no common base type. This suffix
+// match may produce false positives if user code defines types ending in
+// "Fs2Grpc". If that happens, switch to TypeMatcher.oneOf with explicit FQNs
+// for the services you use, or use LineageAdjustments to filter out noise.
 // ============================================================================
 
 class TastyFs2GrpcScanner(using ctx: Context) extends IntegrationScanner {
 
-  //> This is a bit fragile but currently there is no toplevel interface for this interface. Maybe we could at least document and describe how to mitigate false positives
   private val typeMatcher = TypeMatcher.fqnEndsWith("Fs2Grpc")
   private val inheritanceSearch = SymbolSearch.ClassInheritance(typeMatcher)
   private val methodCallSearch = SymbolSearch.MethodCall(typeMatcher)
@@ -72,16 +77,8 @@ class TastyFs2GrpcScanner(using ctx: Context) extends IntegrationScanner {
       resourceType = ResourceType.Grpc,
       scanner = "grpc",
       target = s"$serviceName/${u.methodName}",
-      evidence = s"calls ${extractFieldName(u.receiverTree)}.${u.methodName}",
+      evidence = s"calls ${u.receiverName}.${u.methodName}",
       group = Some(serviceName),
     )
-  }
-
-  //> looks fragile/low-level. Can we do better?
-  private def extractFieldName(tree: Tree): String = tree match {
-    case Ident(name)           => TastyUtils.simpleName(name)
-    case Select(_: This, name) => TastyUtils.simpleName(name)
-    case Select(_, name)       => TastyUtils.simpleName(name)
-    case _                     => "?"
   }
 }
