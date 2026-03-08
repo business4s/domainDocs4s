@@ -23,7 +23,8 @@ import scala.reflect.ClassTag
 //                 .removeIntegration(type, target)  .removeIntegrations(type)
 //                 .remove  (hide: reconnect callers → callees, promote integrations)
 //                 .delete  (hard removal: disconnects the graph)
-//   Class only:   .renameTo(displayName)
+//   Class only:   .show  (allowlist: when any .show exists, non-shown classes are hidden)
+//                 .renameTo(displayName)
 //                 .reads/.writes  — detected by default (fail if scanner didn't find this type)
 //                 .reads/.writes...undetected  (this is manual-only, don't expect scanner output)
 //                 .undetected("s3", ...)       (builder-level: these types are manual-only)
@@ -166,6 +167,13 @@ object LineageAdjustment {
 
   /** Rename a class for display purposes (label only, does not change IDs or data). */
   case class RenameClass(packageName: String, className: String, displayName: String) extends LineageAdjustment
+
+  // ── Visibility (allowlist) ─────────────────────────────────────────
+
+  /** Explicitly show a class in the diagram. When any ShowClass adjustment exists,
+    * only shown classes are visible — everything else is hidden (with promotion).
+    */
+  case class ShowClass(packageName: String, className: String) extends LineageAdjustment
 }
 
 /** Adjustments to apply to auto-detected lineage data before building.
@@ -463,6 +471,17 @@ case class LineageAdjustments(adjustments: List[LineageAdjustment] = Nil) {
       case RenameClass(_, _, _)     => // display-only, handled via classRenames
       case SetClassGroup(_, _, _)   => // metadata-only, handled via classGroups()
       case SetPackageGroup(_, _)    => // metadata-only, handled via classGroups()
+      case ShowClass(_, _)          => // handled after main loop
+    }
+
+    // ShowClass allowlist: if any ShowClass adjustments exist, hide all non-shown classes
+    val shownClasses = adjustments.collect { case ShowClass(pkg, cls) => (pkg, cls) }.toSet
+    if (shownClasses.nonEmpty) {
+      val hiddenRefs = methods
+        .filterNot(m => shownClasses.contains((m.packageName, m.className)))
+        .map(_.ref)
+        .toSet
+      hideRefs(hiddenRefs)
     }
 
     // Ensure synthetic methods exist in the call graph
@@ -657,6 +676,12 @@ object LineageAdjustments {
       // Set rendering group for this class (metadata-only)
       def setGroup(group: String): ClassActions = {
         _adjustments += LineageAdjustment.SetClassGroup(packageName, className, group)
+        this
+      }
+
+      // Explicitly show this class (when any ShowClass exists, non-shown classes are hidden)
+      def show: ClassActions = {
+        _adjustments += LineageAdjustment.ShowClass(packageName, className)
         this
       }
 

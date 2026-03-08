@@ -34,15 +34,60 @@ class FlywayMigrationScannerTest extends AnyFreeSpec {
       alters.head.accessType shouldBe DataAccessType.Write
     }
 
-    "discovers CREATE VIEW as Write to view and Read from source tables" in {
-      val viewIntegrations = flywayIntegrations.filter(_.evidence == "V002__create_views.sql")
+    "discovers CREATE VIEW as Write to view and Read from source tables (after drop+recreate)" in {
+      // V002 creates the view, V004 drops it, V005 recreates it
+      val viewWrites = flywayIntegrations.filter(di =>
+        di.accessType == DataAccessType.Write && di.target == "user_transaction_summary"
+      )
+      viewWrites should have size 1
+      viewWrites.head.evidence shouldBe "V005__recreate_view.sql"
 
-      val viewWrite = viewIntegrations.filter(di => di.accessType == DataAccessType.Write)
-      viewWrite should have size 1
-      viewWrite.head.target shouldBe "user_transaction_summary"
-
-      val sourceReads = viewIntegrations.filter(di => di.accessType == DataAccessType.Read)
+      val sourceReads = flywayIntegrations.filter(di =>
+        di.accessType == DataAccessType.Read && di.evidence == "V005__recreate_view.sql"
+      )
       sourceReads.map(_.target).toSet should contain allOf ("users", "transactions")
+    }
+
+    "DROP VIEW removes view Write but preserves source table reads from that migration" in {
+      // V002 created view reading users+transactions. V004 drops the view.
+      // Write to user_transaction_summary from V002 is gone,
+      // but Read from users/transactions in V002 survives (different target).
+      val v002Integrations = flywayIntegrations.filter(_.evidence == "V002__create_views.sql")
+      v002Integrations.foreach(_.accessType shouldBe DataAccessType.Read)
+      v002Integrations.map(_.target).toSet should contain allOf ("users", "transactions")
+    }
+
+    "DROP does not affect unrelated tables" in {
+      // V004 drops user_transaction_summary, but users and transactions tables survive
+      val userWrites = flywayIntegrations.filter(di =>
+        di.accessType == DataAccessType.Write && di.target == "users"
+      )
+      userWrites should not be empty
+
+      val txWrites = flywayIntegrations.filter(di =>
+        di.accessType == DataAccessType.Write && di.target == "transactions"
+      )
+      txWrites should not be empty
+    }
+
+    "RENAME removes old table name and adds new one" in {
+      // V006 creates audit_log, V007 renames it to activity_log
+      flywayIntegrations.filter(_.target == "audit_log") shouldBe empty
+
+      val renamed = flywayIntegrations.filter(_.target == "activity_log")
+      renamed should have size 1
+      renamed.head.accessType shouldBe DataAccessType.Write
+      renamed.head.evidence shouldBe "V007__rename_table.sql"
+    }
+
+    "RENAME preserves unrelated tables" in {
+      flywayIntegrations.filter(di =>
+        di.accessType == DataAccessType.Write && di.target == "users"
+      ) should not be empty
+
+      flywayIntegrations.filter(di =>
+        di.accessType == DataAccessType.Write && di.target == "transactions"
+      ) should not be empty
     }
 
     "all flyway integrations have resourceType database and scanner flyway" in {

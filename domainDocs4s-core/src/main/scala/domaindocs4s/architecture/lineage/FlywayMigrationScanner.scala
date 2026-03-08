@@ -2,9 +2,10 @@ package domaindocs4s.architecture.lineage
 
 import net.sf.jsqlparser.parser.CCJSqlParserUtil
 import net.sf.jsqlparser.schema.Table
-import net.sf.jsqlparser.statement.alter.Alter
+import net.sf.jsqlparser.statement.alter.{Alter, AlterOperation, RenameTableStatement}
 import net.sf.jsqlparser.statement.create.table.CreateTable
 import net.sf.jsqlparser.statement.create.view.CreateView
+import net.sf.jsqlparser.statement.drop.Drop
 import net.sf.jsqlparser.statement.select.{FromItem, PlainSelect, Select, SetOperationList}
 
 import java.nio.file.{Files, Path}
@@ -21,6 +22,10 @@ import scala.util.{Try, Using}
 //   CREATE TABLE [schema.]name          → Write
 //   CREATE VIEW [schema.]name AS ...    → Write to view, Read from source tables
 //   ALTER TABLE [schema.]name           → Write
+//   ALTER TABLE [schema.]name RENAME TO → Drop old + Write new
+//   RENAME TABLE old TO new             → Drop old + Write new (MySQL syntax)
+//   DROP TABLE [schema.]name            → removes previously discovered integrations for name
+//   DROP VIEW [schema.]name             → removes previously discovered integrations for name
 //
 // PL/pgSQL procedural blocks (DO $$...$$, CREATE PROCEDURE) are silently
 // skipped since they typically contain dynamic partition management, not
@@ -44,10 +49,14 @@ class FlywayMigrationScanner(
         .sortBy(_.getFileName.toString)
     }.getOrElse(Nil)
 
-    files.flatMap(parseMigrationFile)
+    val events = files.flatMap(parseMigrationFile).filter {
+      case IntegrationEvent(di) => isValidIdentifier(di.target)
+      case _                    => true
+    }
+    resolveDrops(events)
   }
 
-  private def parseMigrationFile(file: Path): List[DiscoveredIntegration] = {
+  private def parseMigrationFile(file: Path): List[MigrationEvent] = {
     val filename = file.getFileName.toString
     val version  = filename.takeWhile(_ != '_')
     val content  = new String(Files.readAllBytes(file), java.nio.charset.StandardCharsets.UTF_8)
@@ -60,25 +69,47 @@ class FlywayMigrationScanner(
       stmt: net.sf.jsqlparser.statement.Statement,
       version: String,
       filename: String,
-  ): List[DiscoveredIntegration] = {
+  ): List[MigrationEvent] = {
     val method = MethodRef("", "flyway", version)
 
     stmt match {
       case ct: CreateTable =>
-        List(mkIntegration(method, DataAccessType.Write, ct.getTable.getName, filename))
+        List(IntegrationEvent(mkIntegration(method, DataAccessType.Write, ct.getTable.getName, filename)))
 
       case cv: CreateView =>
         val viewName = cv.getView.getName
         val sources = Option(cv.getSelect).toList.flatMap(extractSourceTables).distinct
-        mkIntegration(method, DataAccessType.Write, viewName, filename) ::
-          sources.map(t => mkIntegration(method, DataAccessType.Read, t, filename))
+        IntegrationEvent(mkIntegration(method, DataAccessType.Write, viewName, filename)) ::
+          sources.map(t => IntegrationEvent(mkIntegration(method, DataAccessType.Read, t, filename)))
 
       case alt: Alter =>
-        List(mkIntegration(method, DataAccessType.Write, alt.getTable.getName, filename))
+        val oldName = alt.getTable.getName
+        val renameExpr = Option(alt.getAlterExpressions).map(_.asScala).getOrElse(Nil)
+          .find(_.getOperation == AlterOperation.RENAME_TABLE)
+        renameExpr match {
+          case Some(expr) => renameEvents(oldName, expr.getNewTableName, method, filename)
+          case None       => List(IntegrationEvent(mkIntegration(method, DataAccessType.Write, oldName, filename)))
+        }
+
+      case rename: RenameTableStatement =>
+        rename.getTableNames.asScala.toList.flatMap { entry =>
+          renameEvents(entry.getKey.getName, entry.getValue.getName, method, filename)
+        }
+
+      case drop: Drop if drop.getType.equalsIgnoreCase("TABLE") || drop.getType.equalsIgnoreCase("VIEW") =>
+        List(DropEvent(drop.getName.getName))
 
       case _ => Nil
     }
   }
+
+  private def renameEvents(
+      oldName: String,
+      newName: String,
+      method: MethodRef,
+      filename: String,
+  ): List[MigrationEvent] =
+    List(DropEvent(oldName), IntegrationEvent(mkIntegration(method, DataAccessType.Write, newName, filename)))
 
   private def mkIntegration(
       method: MethodRef,
@@ -98,7 +129,32 @@ class FlywayMigrationScanner(
 }
 
 object FlywayMigrationScanner {
+  private sealed trait MigrationEvent
+  private case class IntegrationEvent(di: DiscoveredIntegration) extends MigrationEvent
+  private case class DropEvent(target: String)                   extends MigrationEvent
+
   private val MigrationFilePattern = """[VR][\d._]*__.*\.sql""".r
+
+  /** SQL identifiers must start with a letter or underscore.
+    * Filters out JSqlParser artifacts from dollar-quoting (DO $$...$$)
+    * and format strings (%1$s) in PL/pgSQL blocks.
+    */
+  private def isValidIdentifier(name: String): Boolean =
+    name.nonEmpty && (name.head.isLetter || name.head == '_')
+
+  /** Process migration events in order, removing integrations for dropped targets.
+    *
+    * When a DropEvent(X) is encountered, all accumulated integrations with target X
+    * are removed. If a subsequent migration re-creates X, fresh integrations are added.
+    */
+  private def resolveDrops(events: List[MigrationEvent]): List[DiscoveredIntegration] = {
+    val result = scala.collection.mutable.ListBuffer.empty[DiscoveredIntegration]
+    for (event <- events) event match {
+      case IntegrationEvent(di) => result += di
+      case DropEvent(target)    => result.filterInPlace(_.target != target)
+    }
+    result.toList
+  }
 
   /** Parse SQL content into statements, silently skipping unparseable ones
     * (e.g. PL/pgSQL procedural blocks with DO $$...$$ or CREATE PROCEDURE).
