@@ -31,6 +31,32 @@ private[lineage] object TastyUtils {
   def moduleClassesRecursive(pkg: PackageSymbol)(using Context): List[(PackageSymbol, ClassSymbol)] =
     allSubpackages(pkg).flatMap(p => moduleClasses(p).map(p -> _))
 
+  /** Collect classes nested inside module classes (companion objects).
+    * E.g., `object Foo { case class Impl(...) }` → finds `Impl` inside `Foo$`.
+    * Returns (ownerPackage, nestedClass) pairs.
+    */
+  def nestedClassesInModules(pkg: PackageSymbol)(using Context): List[(PackageSymbol, ClassSymbol)] =
+    allSubpackages(pkg).flatMap { p =>
+      moduleClasses(p).flatMap { moduleCls =>
+        moduleCls.declarations.collect {
+          case cls: ClassSymbol if isUserClass(cls) => (p, cls)
+        }
+      }
+    }
+
+  /** Collect module classes (objects) nested inside other module classes.
+    * E.g., `object OuterJob { object Helpers { def process(...) } }` → finds `Helpers$` inside `OuterJob$`.
+    * Returns (ownerPackage, nestedModuleClass) pairs.
+    */
+  def nestedModulesInModules(pkg: PackageSymbol)(using Context): List[(PackageSymbol, ClassSymbol)] =
+    allSubpackages(pkg).flatMap { p =>
+      moduleClasses(p).flatMap { moduleCls =>
+        moduleCls.declarations.collect {
+          case cls: ClassSymbol if isModuleClass(cls) => (p, cls)
+        }
+      }
+    }
+
   private def isUserClass(cls: ClassSymbol): Boolean = {
     val name = cls.name.toString
     !name.endsWith("$") && !name.startsWith("<")
@@ -71,12 +97,30 @@ private[lineage] object TastyUtils {
     case _               => None
   }
 
-  /** Extract the package name from a TypeRef's prefix. */
-  def typeRefPackage(tr: TypeRef): String =
+  /** Extract the package name from a TypeRef's prefix.
+    * Walks the prefix chain to handle nested types (e.g., `object Foo { case class Impl(...) }`
+    * where Impl's prefix is a TypeRef to Foo, not a PackageRef).
+    */
+  def typeRefPackage(tr: TypeRef, depth: Int = 0): String =
+    if (depth > 10) "" else
     try {
       tr.prefix match {
-        case pr: PackageRef => pr.symbol.fullName.toString
-        case _              => ""
+        case pr: PackageRef       => pr.symbol.fullName.toString
+        case parent: TypeRef      => typeRefPackage(parent, depth + 1)
+        case tt: ThisType         => typeRefPackage(tt.tref, depth + 1)
+        case _                    => ""
+      }
+    } catch { case _: Exception => "" }
+
+  /** Extract the package name from a TermRef's prefix chain. */
+  def termRefPackage(tr: TermRef, depth: Int = 0): String =
+    if (depth > 10) "" else
+    try {
+      tr.prefix match {
+        case pr: PackageRef  => pr.symbol.fullName.toString
+        case parent: TermRef => termRefPackage(parent, depth + 1)
+        case parent: TypeRef => typeRefPackage(parent, depth + 1)
+        case _               => ""
       }
     } catch { case _: Exception => "" }
 

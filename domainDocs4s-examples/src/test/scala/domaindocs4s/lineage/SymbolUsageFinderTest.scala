@@ -107,6 +107,26 @@ class SymbolUsageFinderTest extends AnyFreeSpec {
       }
     }
 
+    "MethodCall with type alias intersection" - {
+
+      "isOrInheritsFrom resolves type aliases with intersection types (AppliedType scala.&)" in {
+        val searches = Seq(SymbolSearch.MethodCall(
+          TypeMatcher.isOrInheritsFrom(s"$pkg.BaseQueryTrait"),
+        ))
+        val finder = new SymbolUsageFinder(searches)
+        val usages = finder.findAll(List(pkg))
+
+        val callUsages = usages.collect { case u: FoundUsage.MethodCallResult => u }
+          .filter(_.path.toMethodRef.className == "TypeAliasConsumer")
+
+        // TypeAliasConsumer.queryApi has type CombinedQuery = BaseQueryTrait & ExtendedQueryTrait
+        // isOrInheritsFrom("BaseQueryTrait") must resolve the type alias, decompose the
+        // AppliedType(scala.&, List(BaseQueryTrait, ExtendedQueryTrait)), and match.
+        callUsages should not be empty
+        callUsages.map(_.methodName) should contain("runQuery")
+      }
+    }
+
     "ClassInheritance" - {
 
       "finds Fs2Grpc parent types with inherited methods" in {

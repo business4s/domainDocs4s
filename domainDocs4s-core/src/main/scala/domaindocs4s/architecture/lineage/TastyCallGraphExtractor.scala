@@ -7,6 +7,7 @@ import tastyquery.Traversers.*
 import tastyquery.Types.*
 
 import scala.collection.mutable.ListBuffer
+import scala.util.control.NonFatal
 
 // ============================================================================
 // TASTy-based Call Graph Extractor
@@ -28,7 +29,20 @@ class TastyCallGraphExtractor(using ctx: Context) {
     val standaloneModules = TastyUtils.moduleClassesRecursive(pkg).filterNot { case (p, c) =>
       userClassNames.contains((p.fullName.toString, c.name.toString.stripSuffix("$")))
     }
-    val classesWithPkg = userClasses ++ standaloneModules
+    // Include classes nested inside companion objects (e.g., object Foo { case class Impl(...) })
+    // Only include nested classes that have at least one user method — filters out ADT case classes,
+    // protocol messages, etc. that would bloat the scan without contributing to the call graph.
+    val hasUserMethods: ((PackageSymbol, ClassSymbol)) => Boolean = { case (_, cls) =>
+      cls.declarations.exists {
+        case ts: TermSymbol => isUserMethod(ts)
+        case _              => false
+      }
+    }
+    val nestedClasses = TastyUtils.nestedClassesInModules(pkg).filter(hasUserMethods)
+    // Include module classes (objects) nested inside other module classes
+    // (e.g., object OuterJob { object Helpers { def process(...) } })
+    val nestedModules = TastyUtils.nestedModulesInModules(pkg).filter(hasUserMethods)
+    val classesWithPkg = userClasses ++ standaloneModules ++ nestedClasses ++ nestedModules
 
     // Build class→userMethods index for constructor call resolution.
     // When we see `new SomeClass(...)`, we link to all user methods of SomeClass.
@@ -76,7 +90,7 @@ class TastyCallGraphExtractor(using ctx: Context) {
       defMethods ++ valMethods
     }
 
-    addInheritanceEdges(classesWithPkg, methods)
+    addInheritanceEdges(classesWithPkg, methods, classMethodsIndex)
   }
 
   /** For each child class, add edges from parent methods to child methods.
@@ -89,6 +103,7 @@ class TastyCallGraphExtractor(using ctx: Context) {
   private def addInheritanceEdges(
       classesWithPkg: List[(PackageSymbol, ClassSymbol)],
       methods: List[ExtractedMethod],
+      classMethodsIndex: Map[(String, String), List[String]],
   ): List[ExtractedMethod] = {
     // Build parentFqn → List[(childPkg, childName)] map
     val parentToChildren: Map[String, List[(String, String)]] =
@@ -100,26 +115,28 @@ class TastyCallGraphExtractor(using ctx: Context) {
             cls.parents.flatMap { parentType =>
               TastyUtils.extractFqn(parentType).map(_ -> (childPkg, childName))
             }
-          } catch { case _: Exception => Nil }
+          } catch { case NonFatal(_) => Nil }
         }
         .groupMap(_._1)(_._2)
 
-    // Index: (pkg, className) → Set[methodName] from existing methods
+    // Index: (pkg, className) → Set[methodName] from existing methods with bodies
     val methodsByClass: Map[(String, String), Set[String]] =
       methods.groupBy(m => (m.packageName, m.className)).map { case (k, ms) =>
         k -> ms.map(_.methodName).toSet
       }
 
-    // For each parent class that has children, create bridge edges
+    // For each parent class that has children, create bridge edges.
+    // Use classMethodsIndex (includes abstract methods) for parent methods so that
+    // trait abstract methods also get bridges to concrete implementations.
     val bridgeEntries: List[ExtractedMethod] = classesWithPkg.flatMap { case (ownerPkg, cls) =>
       val parentPkg = ownerPkg.fullName.toString
       val parentName = cls.name.toString.stripSuffix("$")
       val parentFqn = s"$parentPkg.$parentName"
-      val parentMethods = methodsByClass.getOrElse((parentPkg, parentName), Set.empty)
+      val parentMethods = classMethodsIndex.getOrElse((parentPkg, parentName), Nil).toSet
 
       parentToChildren.getOrElse(parentFqn, Nil).flatMap { case (childPkg, childName) =>
         val childMethods = methodsByClass.getOrElse((childPkg, childName), Set.empty)
-        // Methods present in both parent and child
+        // Methods declared in parent and implemented in child
         val sharedMethods = parentMethods.intersect(childMethods)
         sharedMethods.map { methodName =>
           ExtractedMethod(
@@ -143,7 +160,8 @@ class TastyCallGraphExtractor(using ctx: Context) {
         val key = (m.packageName, m.className, m.methodName)
         bridgesByKey.get(key) match {
           case Some(bridges) =>
-            val newCalls = bridges.flatMap(_.calls).filterNot(m.calls.contains)
+            val existingCalls = m.calls.toSet
+            val newCalls = bridges.flatMap(_.calls).filterNot(existingCalls.contains)
             m.copy(calls = m.calls ++ newCalls)
           case None => m
         }
@@ -179,13 +197,29 @@ class TastyCallGraphExtractor(using ctx: Context) {
   ): List[MethodRef] =
     ts.tree match {
       case Some(defDef: DefDef) =>
+        val paramTypes = extractParamTypes(defDef)
         defDef.rhs.toList.flatMap { rhs =>
-          val collector = new MethodCallCollector(fieldTypes, classMethodsIndex, selfClass)
+          val collector = new MethodCallCollector(fieldTypes, classMethodsIndex, selfClass, paramTypes)
           collector.traverse(rhs)
           collector.calls.distinct
         }
       case _ => Nil
     }
+
+  /** Extract name→(package, className) mappings from method parameters. */
+  private def extractParamTypes(defDef: DefDef): Map[String, (String, String)] =
+    defDef.paramLists.flatMap {
+      case Left(params) => params.flatMap { p =>
+        try {
+          TastyUtils.extractTypeRef(p.symbol.declaredType).flatMap { tr =>
+            val pkg = TastyUtils.typeRefPackage(tr)
+            val cls = tr.name.toString.stripSuffix("$")
+            if (pkg.nonEmpty) Some(TastyUtils.simpleName(p.name) -> (pkg, cls)) else None
+          }
+        } catch { case NonFatal(_) => None }
+      }
+      case Right(_) => Nil
+    }.toMap
 
   private def isUserMethod(ts: TermSymbol): Boolean = {
     val name = ts.name.toString
@@ -220,8 +254,12 @@ class TastyCallGraphExtractor(using ctx: Context) {
       fieldTypes: Map[String, (String, String)],
       classMethodsIndex: Map[(String, String), List[String]],
       selfClass: Option[(String, String)] = None, // (packageName, className) for this.method() calls
+      paramTypes: Map[String, (String, String)] = Map.empty, // method parameter types
   ) extends TreeTraverser {
     val calls: ListBuffer[MethodRef] = ListBuffer.empty
+    // Track local variable and parameter types for resolving localVar.method() calls.
+    // Seeded from method parameters; populated from ValDef nodes in Block stats.
+    private val localVarTypes: scala.collection.mutable.Map[String, (String, String)] = scala.collection.mutable.Map.from(paramTypes)
 
     override def traverse(tree: Tree): Unit = {
       tree match {
@@ -230,7 +268,12 @@ class TastyCallGraphExtractor(using ctx: Context) {
           addConstructorCalls(typeTree)
         case Apply(TypeApply(Select(New(typeTree), _), _), _) =>
           addConstructorCalls(typeTree)
-        // field.method(args) — constructor params referenced as Ident
+        // Track local variable types from ValDef for later localVar.method() resolution.
+        // When `val svc = Foo(args)` appears in a block, we record svc's type so that
+        // `svc.bar()` resolves to MethodRef(pkg, "Foo", "bar") — only for methods actually called.
+        case vd: ValDef =>
+          trackLocalVarType(vd)
+        // field.method(args) — constructor params and local vars referenced as Ident
         case Apply(Select(Ident(fieldName), methodName), _) =>
           addIfKnown(TastyUtils.simpleName(fieldName), TastyUtils.simpleName(methodName))
         case Apply(TypeApply(Select(Ident(fieldName), methodName), _), _) =>
@@ -245,13 +288,36 @@ class TastyCallGraphExtractor(using ctx: Context) {
           addSelfCall(TastyUtils.simpleName(methodName))
         case Apply(TypeApply(Select(_: This, methodName), _), _) =>
           addSelfCall(TastyUtils.simpleName(methodName))
+        // Imported function call: importedFunc(args) where the function was imported from another object.
+        // The Ident's TermRef prefix chain contains the owning class.
+        case Apply(ident: Ident, _) =>
+          addImportedCall(ident)
+        case Apply(TypeApply(ident: Ident, _), _) =>
+          addImportedCall(ident)
+        // No-arg method/property access: field.method (without Apply wrapper).
+        // Handles patterns like `journalReader.currentOperatorTransactions` which produce
+        // Select(Ident(fieldName), methodName) without an Apply wrapper.
+        case Select(Ident(fieldName), methodName) =>
+          addIfKnown(TastyUtils.simpleName(fieldName), TastyUtils.simpleName(methodName))
+        case Select(Select(_: This, fieldName), methodName) =>
+          addIfKnown(TastyUtils.simpleName(fieldName), TastyUtils.simpleName(methodName))
         case _ =>
       }
       super.traverse(tree)
     }
 
+    private def trackLocalVarType(vd: ValDef): Unit =
+      try {
+        TastyUtils.extractTypeRef(vd.symbol.declaredType).foreach { tr =>
+          val pkg = TastyUtils.typeRefPackage(tr)
+          val clsName = tr.name.toString.stripSuffix("$")
+          if (pkg.nonEmpty)
+            localVarTypes(TastyUtils.simpleName(vd.name)) = (pkg, clsName)
+        }
+      } catch { case NonFatal(_) => }
+
     private def addIfKnown(fieldName: String, methodName: String): Unit =
-      fieldTypes.get(fieldName).foreach { case (pkg, className) =>
+      fieldTypes.get(fieldName).orElse(localVarTypes.get(fieldName)).foreach { case (pkg, className) =>
         calls += MethodRef(pkg, className, methodName)
       }
 
@@ -259,6 +325,29 @@ class TastyCallGraphExtractor(using ctx: Context) {
       selfClass.foreach { case (pkg, className) =>
         calls += MethodRef(pkg, className, methodName)
       }
+
+    /** Resolve an imported function call (Apply(Ident(name), args)) to a MethodRef.
+      * Walks the Ident's TermRef prefix chain to find the owning class.
+      * Skips ThisType prefixes (local methods handled by addSelfCall).
+      */
+    private def addImportedCall(ident: Ident): Unit =
+      try {
+        ident.referenceType match {
+          case tr: TermRef =>
+            tr.prefix match {
+              case _: ThisType => () // local method, handled by addSelfCall
+              case prefixTr: TermRef =>
+                val methodName = TastyUtils.simpleName(tr.name)
+                val pkg = TastyUtils.termRefPackage(prefixTr)
+                val className = prefixTr.name.toString.stripSuffix("$")
+                if (pkg.nonEmpty && classMethodsIndex.contains((pkg, className))) {
+                  calls += MethodRef(pkg, className, methodName)
+                }
+              case _ =>
+            }
+          case _ =>
+        }
+      } catch { case NonFatal(_) => }
 
     private def addConstructorCalls(typeTree: TypeTree): Unit =
       try {
@@ -270,6 +359,6 @@ class TastyCallGraphExtractor(using ctx: Context) {
             methodNames.foreach(m => calls += MethodRef(pkg, clsName, m))
           }
         }
-      } catch { case _: Exception => }
+      } catch { case NonFatal(_) => }
   }
 }

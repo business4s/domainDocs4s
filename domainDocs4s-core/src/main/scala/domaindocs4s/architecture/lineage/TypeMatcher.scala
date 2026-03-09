@@ -1,7 +1,7 @@
 package domaindocs4s.architecture.lineage
 
 import tastyquery.Contexts.Context
-import tastyquery.Symbols.ClassSymbol
+import tastyquery.Symbols.{ClassSymbol, TypeMemberDefinition, TypeMemberSymbol}
 import tastyquery.Types.*
 
 /** FQN-based type matching for [[SymbolUsageFinder]] searches.
@@ -82,18 +82,63 @@ private[lineage] object TypeMatcherResolver {
     case _ => None
   }
 
-  /** Walk type hierarchy checking for an ancestor matching the predicate. */
+  /** Walk type hierarchy checking if the type itself or any ancestor matches the predicate.
+    *
+    * Handles three forms of intersection types:
+    *   - `AndType(A, B)` — direct intersection in TASTy trees
+    *   - `AppliedType(scala.&, List(A, B))` — intersection inside type aliases
+    *
+    * After splitting intersections, each component's own FQN is checked before
+    * walking parents — this is necessary because `matches` only checks `fqnOf(tpe)`
+    * at the top level, which returns `None` for compound types.
+    *
+    * Type aliases (`type T = ...`) are resolved to their underlying type via
+    * `TypeMemberSymbol.typeDef` before continuing the hierarchy walk.
+    */
   private def hasMatchingAncestor(tpe: TypeOrMethodic, predicate: String => Boolean, visited: Set[ClassSymbol])(using Context): Boolean = {
     tpe match {
-      case at: AndType => return hasMatchingAncestor(at.first, predicate, visited) || hasMatchingAncestor(at.second, predicate, visited)
-      case _           =>
+      case at: AndType =>
+        return hasMatchingAncestor(at.first, predicate, visited) || hasMatchingAncestor(at.second, predicate, visited)
+      // In TASTy, intersection types inside type aliases are represented as
+      // AppliedType(TypeRef(scala.&), List(A, B)) rather than AndType(A, B).
+      case at: AppliedType if isScalaIntersection(at) =>
+        return at.args.exists {
+          case arg: TypeOrMethodic => hasMatchingAncestor(arg, predicate, visited)
+          case _                   => false
+        }
+      case _ =>
     }
-    TastyUtils.resolveSymbol(tpe) match {
-      case Some(cs: ClassSymbol) if !visited.contains(cs) =>
-        try cs.parents.exists { p =>
-          fqnOf(p).exists(predicate) || hasMatchingAncestor(p, predicate, visited + cs)
+    fqnOf(tpe).exists(predicate) || {
+      TastyUtils.resolveSymbol(tpe) match {
+        case Some(cs: ClassSymbol) if !visited.contains(cs) =>
+          try cs.parents.exists { p =>
+            fqnOf(p).exists(predicate) || hasMatchingAncestor(p, predicate, visited + cs)
+          } catch { case _: Exception => false }
+        case Some(tms: TypeMemberSymbol) =>
+          // Resolve type aliases (e.g., `type JournalRead = ReadJournal & ...`)
+          // to their underlying type and continue walking the hierarchy.
+          try tms.typeDef match {
+            case TypeMemberDefinition.TypeAlias(alias) =>
+              hasMatchingAncestor(alias, predicate, visited)
+            case TypeMemberDefinition.OpaqueTypeAlias(_, alias) =>
+              hasMatchingAncestor(alias, predicate, visited)
+            case _ => false
+          } catch { case _: Exception => false }
+        case _ => false
+      }
+    }
+  }
+
+  /** Check if an AppliedType represents `scala.&[A, B]` (intersection type in type alias context). */
+  private def isScalaIntersection(at: AppliedType): Boolean =
+    at.tycon match {
+      case tr: TypeRef =>
+        try {
+          tr.name.toString == "&" && (tr.prefix match {
+            case pr: PackageRef => pr.symbol.fullName.toString == "scala"
+            case _              => false
+          })
         } catch { case _: Exception => false }
       case _ => false
     }
-  }
 }

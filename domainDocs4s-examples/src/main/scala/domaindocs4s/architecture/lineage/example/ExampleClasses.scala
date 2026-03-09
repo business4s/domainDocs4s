@@ -271,6 +271,96 @@ class TraitRepoEntryPoint(val consumer: TraitRepoConsumer) {
     consumer.readAndWrite(id)
 }
 
+/** Demonstrates nested case class inside companion object (factory pattern).
+  *
+  * The sealed trait defines abstract methods. The companion contains a case class `Impl`
+  * with constructor fields that have doobie queries. A consumer creates `Impl` locally
+  * via the case class constructor (which TASTy may represent as companion `apply`).
+  *
+  * The call graph must:
+  *  1. Discover the nested `Impl` class inside the companion object
+  *  2. Detect constructor calls to nested case classes
+  *  3. Trace field.method() calls inside `Impl` to `UserRepo`
+  */
+sealed trait NestedImplService {
+  def fetchBalance(userId: Long): ConnectionIO[BigDecimal]
+}
+
+object NestedImplService {
+  case class Impl(val repo: UserRepo) extends NestedImplService {
+    def fetchBalance(userId: Long): ConnectionIO[BigDecimal] =
+      repo.getBalance(userId)
+  }
+}
+
+/** Consumer that creates NestedImplService.Impl locally.
+  * Mimics `dumpOperatorAssetsJob.generateStatement` creating `OperatorLedgerStatement.Impl(...)`.
+  */
+class NestedImplConsumer {
+  def run(userId: Long): ConnectionIO[BigDecimal] = {
+    val svc = NestedImplService.Impl(new UserRepo)
+    svc.fetchBalance(userId)
+  }
+}
+
+/** Demonstrates type alias with intersection type for isOrInheritsFrom matching.
+  * Mimics the Pekko ReadJournal pattern where a type alias combines multiple query traits:
+  *   type JournalRead = ReadJournal & CurrentEventsByPersistenceIdQuery & EventsByTagQuery
+  * The TypeMatcher.isOrInheritsFrom("BaseQueryTrait") must resolve the type alias,
+  * decompose the intersection type (represented as AppliedType(scala.&) in TASTy),
+  * and find the matching component.
+  */
+trait BaseQueryTrait {
+  def runQuery(id: Long): String
+}
+
+trait ExtendedQueryTrait {
+  def runExtended(id: Long): String
+}
+
+object TypeAliasService {
+  type CombinedQuery = BaseQueryTrait & ExtendedQueryTrait
+}
+
+class TypeAliasConsumer(val queryApi: TypeAliasService.CombinedQuery) {
+  def doQuery(id: Long): String = queryApi.runQuery(id)
+  def doExtended(id: Long): String = queryApi.runExtended(id)
+}
+
+/** Demonstrates no-arg method/property call detection.
+  * `provider.allTransactions` is a parameterless def — in TASTy it produces
+  * Select(Ident(field), method) without an Apply wrapper.
+  * The call graph should detect this bare Select pattern.
+  */
+trait StreamProvider {
+  def allTransactions: ConnectionIO[List[Transaction]]
+}
+class NoArgCallConsumer(val provider: StreamProvider) {
+  def getAll: ConnectionIO[List[Transaction]] = provider.allTransactions
+}
+
+/** Demonstrates imported function calls from nested objects.
+  *
+  * The outer object imports methods from a nested inner object and calls them.
+  * The call graph must:
+  *  1. Discover nested module classes (objects inside objects)
+  *  2. Detect imported function calls (Apply(Ident(name), args))
+  *  3. Trace parameter.method() calls inside the nested object methods
+  */
+object ImportedCallJob {
+  import ImportedCallJob.Helpers.processBalance
+
+  def run(userId: Long): ConnectionIO[BigDecimal] = {
+    val svc = new UserService(new UserRepo)
+    processBalance(svc, userId)
+  }
+
+  object Helpers {
+    def processBalance(svc: UserService, userId: Long): ConnectionIO[BigDecimal] =
+      svc.getBalance(userId)
+  }
+}
+
 /** gRPC API — entry point, delegates to service.
   *
   * Implements UserServiceFs2Grpc (server exposure) and consumes

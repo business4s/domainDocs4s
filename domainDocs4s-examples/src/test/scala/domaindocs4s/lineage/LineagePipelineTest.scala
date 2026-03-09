@@ -111,6 +111,63 @@ class LineagePipelineTest extends AnyFreeSpec {
       calledMethods should contain(("TraitRepoConsumer", "readAndWrite"))
     }
 
+    "discovers nested case class inside companion object (NestedImplService.Impl)" in {
+      val classNames = callGraph.map(_.className).distinct
+      classNames should contain("Impl")
+    }
+
+    "extracts call graph from NestedImplService.Impl to UserRepo" in {
+      val implCalls = callGraph.filter(m => m.className == "Impl" && m.packageName == pkg)
+      implCalls should not be empty
+      val calledMethods = implCalls.flatMap(_.calls).map(r => (r.className, r.methodName))
+      calledMethods should contain(("UserRepo", "getBalance"))
+    }
+
+    "extracts local var method calls from NestedImplConsumer via type tracking" in {
+      val consumerCalls = callGraph.filter(_.className == "NestedImplConsumer")
+      consumerCalls should not be empty
+      val calledMethods = consumerCalls.flatMap(_.calls).map(r => (r.className, r.methodName))
+      // Local var `svc` typed as Impl — svc.fetchBalance() resolves to Impl.fetchBalance
+      calledMethods should contain(("Impl", "fetchBalance"))
+    }
+
+    "lineage follows through nested Impl — NestedImplConsumer → Impl → UserRepo → users" in {
+      val chains = result.lineageChains.filter(c => c.path.exists(_.className == "NestedImplConsumer"))
+      chains should not be empty
+      chains.exists(_.integration.target == "users") shouldBe true
+    }
+
+    "detects no-arg method calls — NoArgCallConsumer.getAll → StreamProvider.allTransactions" in {
+      val consumerCalls = callGraph.filter(_.className == "NoArgCallConsumer")
+      consumerCalls should not be empty
+      val calledMethods = consumerCalls.flatMap(_.calls).map(r => (r.className, r.methodName))
+      calledMethods should contain(("StreamProvider", "allTransactions"))
+    }
+
+    "discovers nested module classes (objects inside objects) — ImportedCallJob.Helpers" in {
+      val classNames = callGraph.map(_.className).distinct
+      classNames should contain("Helpers")
+    }
+
+    "detects imported function calls — ImportedCallJob.run → Helpers.processBalance" in {
+      val jobCalls = callGraph.filter(_.className == "ImportedCallJob")
+      val calledMethods = jobCalls.flatMap(_.calls).map(r => (r.className, r.methodName))
+      calledMethods should contain(("Helpers", "processBalance"))
+    }
+
+    "extracts parameter method calls inside nested module — Helpers.processBalance → UserService.getBalance" in {
+      val helperCalls = callGraph.filter(_.className == "Helpers")
+      helperCalls should not be empty
+      val calledMethods = helperCalls.flatMap(_.calls).map(r => (r.className, r.methodName))
+      calledMethods should contain(("UserService", "getBalance"))
+    }
+
+    "lineage follows through imported calls — ImportedCallJob → Helpers → UserService → UserRepo → users" in {
+      val chains = result.lineageChains.filter(c => c.path.exists(_.className == "ImportedCallJob"))
+      chains should not be empty
+      chains.exists(_.integration.target == "users") shouldBe true
+    }
+
     "lineage follows through trait+companion pattern — TraitRepoEntryPoint → TraitRepoConsumer → TraitRepo → trait_repo_table" in {
       val chains = result.lineageChains.filter(c => c.path.exists(_.className == "TraitRepoEntryPoint"))
       chains should not be empty
