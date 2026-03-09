@@ -1,7 +1,7 @@
 package domaindocs4s.lineage
 
 import domaindocs4s.architecture.lineage.*
-import domaindocs4s.architecture.lineage.example.{EventPublisher, UserRepo}
+import domaindocs4s.architecture.lineage.example.{EventPublisher, TraitRepoEntryPoint, UserRepo}
 import domaindocs4s.collector.TastyContext
 import org.scalatest.freespec.AnyFreeSpec
 import org.scalatest.matchers.should.Matchers.*
@@ -93,6 +93,33 @@ class LineagePipelineTest extends AnyFreeSpec {
       val factoryChains = result.lineageChains.filter(c => c.path.exists(_.className == "ServiceFactory"))
       factoryChains should not be empty
       factoryChains.exists(_.integration.target == "users") shouldBe true
+    }
+
+    "extracts call graph from TraitRepoConsumer to TraitRepo (non-val parameter, local def)" in {
+      val consumerCalls = callGraph.filter(_.className == "TraitRepoConsumer")
+      val calledMethods = consumerCalls.flatMap(_.calls).map(r => (r.className, r.methodName))
+
+      // getItem called directly
+      calledMethods should contain(("TraitRepo", "getItem"))
+      // upsertItem called through local def updateAbpCache
+      calledMethods should contain(("TraitRepo", "upsertItem"))
+    }
+
+    "extracts call graph from TraitRepoEntryPoint to TraitRepoConsumer" in {
+      val entryCalls = callGraph.filter(_.className == "TraitRepoEntryPoint")
+      val calledMethods = entryCalls.flatMap(_.calls).map(r => (r.className, r.methodName))
+      calledMethods should contain(("TraitRepoConsumer", "readAndWrite"))
+    }
+
+    "lineage follows through trait+companion pattern — TraitRepoEntryPoint → TraitRepoConsumer → TraitRepo → trait_repo_table" in {
+      val chains = result.lineageChains.filter(c => c.path.exists(_.className == "TraitRepoEntryPoint"))
+      chains should not be empty
+      chains.exists(_.integration.target == "trait_repo_table") shouldBe true
+      // Should have both Read and Write chains
+      val reads = chains.filter(c => c.integration.target == "trait_repo_table" && c.integration.accessType == DataAccessType.Read)
+      val writes = chains.filter(c => c.integration.target == "trait_repo_table" && c.integration.accessType == DataAccessType.Write)
+      reads should not be empty
+      writes should not be empty
     }
   }
 
@@ -414,6 +441,35 @@ class LineagePipelineTest extends AnyFreeSpec {
 
       diagram should include(""""Internal"""")
       diagram should include(""""Persistence"""")
+    }
+  }
+
+  "ShowClass promotion for trait+companion pattern" - {
+
+    "promotes both Read and Write integrations through hidden intermediaries" in {
+      // Only show TraitRepoEntryPoint, hide TraitRepoConsumer and TraitRepo
+      val adj = LineageAdjustments.builder
+        .cls[TraitRepoEntryPoint].show
+        .build
+      val (adjMethods, adjInteg) = adj.apply(callGraph, doobieIntegrations)
+      val adjResult = LineageBuilder.build(adjMethods, adjInteg)
+      val diagram = MermaidRenderer.renderClassLevel(adjResult)
+
+      // TraitRepoEntryPoint should be visible
+      diagram should include("TraitRepoEntryPoint")
+
+      // TraitRepoConsumer and TraitRepo should be hidden
+      diagram should not include "TraitRepoConsumer"
+      diagram should not include regex("TraitRepo[^E]") // TraitRepo but not TraitRepoEntryPoint
+
+      // Both Read and Write to trait_repo_table should be promoted to TraitRepoEntryPoint
+      diagram should include("trait_repo_table")
+
+      // Verify both Read and Write edges exist
+      val entryInteg = adjInteg.filter(_.method.className == "TraitRepoEntryPoint")
+      val targets = entryInteg.filter(_.target == "trait_repo_table")
+      targets.map(_.accessType).toSet should contain(DataAccessType.Read)
+      targets.map(_.accessType).toSet should contain(DataAccessType.Write)
     }
   }
 

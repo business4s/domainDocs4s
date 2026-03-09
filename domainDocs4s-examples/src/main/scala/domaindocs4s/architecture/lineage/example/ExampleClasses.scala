@@ -190,6 +190,87 @@ class UnnestQueryRepo {
       .query[BigDecimal].unique
 }
 
+/** Demonstrates doobie detection with fr"..." Fragment interpolator.
+  * The fr"..." interpolator produces a Fragment (not Fragment0 like sql"...").
+  * The scanner should detect fr"...".update.run as Write and fr"...".query[T] as Read.
+  * Also tests .stripMargin chaining: fr"""...""".stripMargin.update.run.
+  */
+class FragmentRepo {
+
+  def upsert(userId: Long, amount: BigDecimal): ConnectionIO[Int] =
+    fr"""INSERT INTO fr_test_table (user_id, amount)
+        |VALUES ($userId, $amount)
+        |ON CONFLICT (user_id) DO UPDATE SET amount = $amount""".stripMargin.update.run
+
+  def deleteUser(userId: Long): ConnectionIO[Int] =
+    fr"DELETE FROM fr_test_table WHERE user_id = $userId".update.run
+
+  def getAmount(userId: Long): ConnectionIO[Option[BigDecimal]] =
+    fr"SELECT amount FROM fr_test_table WHERE user_id = $userId".query[BigDecimal].option
+
+  /** SQL keyword on a subsequent line after `|` margin character.
+    * Without stripMargin in SqlUtils.sqlFrom, the `|` blocks regex matching.
+    */
+  def upsertMargin(userId: Long, amount: BigDecimal): ConnectionIO[Int] =
+    fr"""
+        |INSERT INTO
+        |  fr_test_table (user_id, amount)
+        |VALUES ($userId, $amount)
+        |ON CONFLICT (user_id) DO UPDATE SET amount = $amount
+        |""".stripMargin.update.run
+}
+
+/** Demonstrates trait + companion object with anonymous class containing doobie queries.
+  * Mimics the pattern: trait with abstract methods, companion object `apply()` creates
+  * anonymous class implementing the trait. Both sql"..." (Read) and fr"..." (Write) are
+  * used in the anonymous class. The scanner should find both, attributed to `TraitRepo`.
+  *
+  * Also demonstrates:
+  *  - Non-val constructor parameter in the consumer class (`TraitRepoConsumer`)
+  *  - Write call going through a local def
+  *  - The call graph and ShowClass promotion should propagate both Read and Write
+  */
+trait TraitRepo {
+  def getItem(id: Long): ConnectionIO[Option[BigDecimal]]
+  def upsertItem(id: Long, value: BigDecimal): ConnectionIO[Int]
+}
+
+object TraitRepo {
+  def apply(): TraitRepo = new TraitRepo {
+    override def getItem(id: Long): ConnectionIO[Option[BigDecimal]] =
+      sql"SELECT value FROM trait_repo_table WHERE id = $id".query[BigDecimal].option
+
+    override def upsertItem(id: Long, value: BigDecimal): ConnectionIO[Int] =
+      fr"""INSERT INTO trait_repo_table (id, value)
+          |VALUES ($id, $value)
+          |ON CONFLICT (id) DO UPDATE SET value = $value""".stripMargin.update.run
+  }
+}
+
+/** Consumer that takes TraitRepo as a non-val constructor parameter.
+  * Calls getItem directly and upsertItem through a local def.
+  * Mimics AdvancedPortfolioReader → AbpCacheRepository pattern.
+  */
+class TraitRepoConsumer(traitRepo: TraitRepo) {
+  def readAndWrite(id: Long): ConnectionIO[Option[BigDecimal]] = {
+    def doUpsert(v: BigDecimal): ConnectionIO[Int] =
+      traitRepo.upsertItem(id, v)
+    for {
+      existing <- traitRepo.getItem(id)
+      _        <- doUpsert(existing.getOrElse(BigDecimal(0)))
+    } yield existing
+  }
+}
+
+/** Entry point that uses TraitRepoConsumer. Mimics LedgerServiceAPIImpl.
+  * When ShowClass is used and only TraitRepoEntryPoint is shown,
+  * integrations from TraitRepo should be promoted here.
+  */
+class TraitRepoEntryPoint(val consumer: TraitRepoConsumer) {
+  def handle(id: Long): ConnectionIO[Option[BigDecimal]] =
+    consumer.readAndWrite(id)
+}
+
 /** gRPC API — entry point, delegates to service.
   *
   * Implements UserServiceFs2Grpc (server exposure) and consumes

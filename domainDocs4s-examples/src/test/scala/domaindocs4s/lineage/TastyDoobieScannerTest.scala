@@ -111,10 +111,51 @@ class TastyDoobieScannerTest extends AnyFreeSpec {
       unnestMethods.head.target shouldBe "keyword_test_table"
     }
 
+    "detects fr\"...\" Fragment interpolator with .update.run as Write" in {
+      val frMethods = doobieIntegrations.filter(_.method.className == "FragmentRepo")
+      val writes = frMethods.filter(_.accessType == DataAccessType.Write)
+      writes should have size 3
+      writes.map(_.method.methodName).toSet shouldBe Set("upsert", "deleteUser", "upsertMargin")
+      writes.foreach(_.target shouldBe "fr_test_table")
+    }
+
+    "detects fr\"\"\"...stripMargin with SQL keyword on subsequent margin line" in {
+      val frMethods = doobieIntegrations.filter(_.method.className == "FragmentRepo")
+      val marginMethod = frMethods.filter(_.method.methodName == "upsertMargin")
+      marginMethod should have size 1
+      marginMethod.head.accessType shouldBe DataAccessType.Write
+      marginMethod.head.target shouldBe "fr_test_table"
+    }
+
+    "detects fr\"...\" Fragment interpolator with .query[T] as Read" in {
+      val frMethods = doobieIntegrations.filter(_.method.className == "FragmentRepo")
+      val reads = frMethods.filter(_.accessType == DataAccessType.Read)
+      reads should have size 1
+      reads.head.method.methodName shouldBe "getAmount"
+      reads.head.target shouldBe "fr_test_table"
+    }
+
     "enriched doobie integrations have group user-db" in {
       val enrichedDoobie = integrations.filter(i => i.scanner == "doobie" && i.method.className == "UserRepo")
       enrichedDoobie should not be empty
       enrichedDoobie.foreach(_.group shouldBe Some("user-db"))
+    }
+
+    "detects doobie queries in anonymous class inside companion object (trait+companion pattern)" in {
+      val traitRepoIntegrations = doobieIntegrations.filter(_.method.className == "TraitRepo")
+      traitRepoIntegrations should not be empty
+
+      // Read via sql"..." in getItem
+      val reads = traitRepoIntegrations.filter(_.accessType == DataAccessType.Read)
+      reads should have size 1
+      reads.head.method.methodName shouldBe "getItem"
+      reads.head.target shouldBe "trait_repo_table"
+
+      // Write via fr"...".stripMargin.update.run in upsertItem
+      val writes = traitRepoIntegrations.filter(_.accessType == DataAccessType.Write)
+      writes should have size 1
+      writes.head.method.methodName shouldBe "upsertItem"
+      writes.head.target shouldBe "trait_repo_table"
     }
   }
 

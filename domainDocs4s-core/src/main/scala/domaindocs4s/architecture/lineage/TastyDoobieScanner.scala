@@ -140,6 +140,7 @@ private[lineage] object SqlUtils {
     "(?i)\\bINTO\\s+(\\w+)".r,
     "(?i)\\bUPDATE\\s+(\\w+)".r,
     "(?i)\\bDELETE\\s+FROM\\s+(\\w+)".r,
+    "(?i)\\bTRUNCATE\\s+(?:TABLE\\s+)?(\\w+)".r,
   )
 
   /** SQL keywords and PostgreSQL functions that should never be treated as table names. */
@@ -175,7 +176,7 @@ private[lineage] object SqlUtils {
   def sqlFrom(tree: Tree, valBindings: Map[String, Tree] = Map.empty): Option[String] = {
     val parts = ListBuffer.empty[String]
     collectStringLiterals(tree, parts, valBindings)
-    val sql = parts.mkString
+    val sql = parts.mkString.stripMargin
     if (sql.nonEmpty) Some(sql) else None
   }
 
