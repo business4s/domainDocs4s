@@ -2,10 +2,9 @@ package domaindocs4s.architecture.lineage
 
 import tastyquery.Contexts.Context
 import tastyquery.Symbols.*
+import tastyquery.Traversers.*
 import tastyquery.Trees.*
 import tastyquery.Types.*
-
-import scala.collection.mutable.ListBuffer
 
 // ============================================================================
 // TASTy-based Slick Scanner
@@ -17,23 +16,44 @@ import scala.collection.mutable.ListBuffer
 //   1. Pre-scan: build Table class → table name map (from parent constructor
 //      string literal) and TableQuery field → table name map.
 //      Handles both top-level classes and anonymous classes (factory pattern).
-//   2. Main scan: use SymbolUsageFinder.enumerateMethodBodies() to walk all
-//      method bodies (including anonymous classes uniformly), detect
-//      read/write operations, resolve table names.
+//   2. Main scan: use SymbolUsageFinder with type-based searches to detect
+//      Slick operations. Type resolution uses Strategy 4 (return-type
+//      propagation via SignedName signatures) for extension method chains.
 //
-// Lifted embedding detection:
-//   .result / .headOption after .result           → Read
-//   .insertOrUpdate / .++= / .delete              → Write
+// Lifted embedding detection (via extension method receiver types):
+//   BasicStreamingQueryActionExtensionMethodsImpl.result → Read
+//   InsertActionExtensionMethodsImpl.insertOrUpdate/++=  → Write
+//   DeleteActionExtensionMethodsImpl.delete               → Write
 //
 // Plain SQL detection:
-//   sql"...".as[T]                                → Read
-//   sqlu"..."                                     → Write
+//   SQLActionBuilder.as[T]                                → Read
+//   StringContext.sqlu                                     → Write
 // ============================================================================
 
 class TastySlickScanner(
-    dbioTypeNames: Set[String] = Set("DBIO", "DBIOAction"),
     tableBaseTypeName: String = "Table",
 )(using ctx: Context) extends IntegrationScanner {
+
+  // Type-based searches for Slick patterns
+  private val liftedReadSearch = SymbolSearch.MethodCall(
+    TypeMatcher.fqnEndsWith("BasicStreamingQueryActionExtensionMethodsImpl"),
+  )
+  private val liftedInsertSearch = SymbolSearch.MethodCall(
+    TypeMatcher.fqnEndsWith("InsertActionExtensionMethodsImpl"),
+  )
+  private val liftedDeleteSearch = SymbolSearch.MethodCall(
+    TypeMatcher.fqnEndsWith("DeleteActionExtensionMethodsImpl"),
+  )
+  private val plainSqlReadSearch = SymbolSearch.MethodCall(
+    TypeMatcher.fqnEndsWith("SQLActionBuilder"),
+  )
+  private val plainSqlWriteSearch = SymbolSearch.MethodCall(
+    TypeMatcher.fqnEndsWith("StringContext"),
+  )
+
+  private val readMethods = Set("result")
+  private val insertWriteMethods = Set("insertOrUpdate", "insertOrUpdateAll", "++=", "+=", "update", "forceInsert", "forceInsertAll")
+  private val deleteMethods = Set("delete")
 
   def scan(packages: List[String]): List[DiscoveredIntegration] =
     packages.flatMap(scanPackage)
@@ -49,16 +69,52 @@ class TastySlickScanner(
     val anonFieldToTableName = buildAnonFieldToTableMap(modulesWithPkg)
     val fieldToTableName = topLevelFieldToTableName ++ anonFieldToTableName
 
-    // Phase 2: use enumerateMethodBodies for uniform method enumeration
-    // (handles both top-level and anonymous class methods)
-    //> Can we somehow get rid of thie enumerate? Maybe similarly to what I suggested for doobie?
-    val methods = SymbolUsageFinder.enumerateMethodBodies(List(packageName))
-    methods.flatMap { mb =>
-      // Top-level methods: filter by DBIO return type
-      // Anonymous class methods: scan all (they often return Future wrapping DBIO)
-      if (mb.declaredType.exists(returnsDBIO) || mb.declaredType.isEmpty) {
-        findSlickOps(mb.ref, mb.rhs, fieldToTableName)
-      } else Nil
+    // Phase 2: find Slick operations via SymbolUsageFinder
+    val finder = new SymbolUsageFinder(
+      Seq(liftedReadSearch, liftedInsertSearch, liftedDeleteSearch, plainSqlReadSearch, plainSqlWriteSearch),
+    )
+    val usages = finder.findAll(List(packageName))
+
+    usages.collect { case u: FoundUsage.MethodCallResult => u }.flatMap { u =>
+      classifyUsage(u).flatMap { accessType =>
+        u.search match {
+          // Lifted embedding: resolve table name from receiver tree
+          case `liftedReadSearch` | `liftedInsertSearch` | `liftedDeleteSearch` =>
+            resolveTableName(u.receiverTree, fieldToTableName).map { table =>
+              val evidence = s"$table.${u.methodName}"
+              mkIntegration(u.path.toMethodRef, accessType, table, evidence)
+            }
+          // Plain SQL: extract SQL from the tree
+          case `plainSqlReadSearch` | `plainSqlWriteSearch` =>
+            val sql = SqlUtils.sqlFrom(u.tree).orElse(SqlUtils.sqlFrom(u.receiverTree))
+            sql.filter(SqlUtils.looksLikeSql).map { s =>
+              mkIntegration(u.path.toMethodRef, accessType, SqlUtils.extractTableName(s), s)
+            }
+          case _ => None
+        }
+      }
+    }.distinct
+  }
+
+  private def classifyUsage(u: FoundUsage.MethodCallResult): Option[DataAccessType] = {
+    val method = u.methodName
+    u.search match {
+      case `liftedReadSearch` =>
+        if (readMethods.contains(method)) Some(DataAccessType.Read)
+        else None
+      case `liftedInsertSearch` =>
+        if (insertWriteMethods.contains(method)) Some(DataAccessType.Write)
+        else None
+      case `liftedDeleteSearch` =>
+        if (deleteMethods.contains(method)) Some(DataAccessType.Write)
+        else None
+      case `plainSqlReadSearch` =>
+        if (method == "as") Some(DataAccessType.Read)
+        else None
+      case `plainSqlWriteSearch` =>
+        if (method == "sqlu") Some(DataAccessType.Write)
+        else None
+      case _ => None
     }
   }
 
@@ -128,14 +184,24 @@ class TastySlickScanner(
     result.toMap
   }
 
-  private def collectAnonClassTableMappings(tree: Tree, result: scala.collection.mutable.Map[String, String]): Unit = tree match {
-    case Block(stats, expr) =>
-      val items = stats :+ expr
-      collectTableMappingsFromScope(items, result)
-      items.foreach(collectAnonClassTableMappings(_, result))
-    case classDef: ClassDef =>
-      collectTableMappingsFromScope(classDef.rhs.body, result)
-    case _ =>
+  private def collectAnonClassTableMappings(tree: Tree, result: scala.collection.mutable.Map[String, String]): Unit = {
+    new AnonTableMappingCollector(result).traverse(tree)
+  }
+
+  /** TreeTraverser that finds anonymous ClassDef and Block scopes containing
+    * Table subclass + TableQuery bindings inside all tree types.
+    */
+  private class AnonTableMappingCollector(result: scala.collection.mutable.Map[String, String]) extends TreeTraverser {
+    override def traverse(tree: Tree): Unit = tree match {
+      case Block(stats, expr) =>
+        val items = stats :+ expr
+        collectTableMappingsFromScope(items, result)
+        super.traverse(tree)
+      case classDef: ClassDef =>
+        collectTableMappingsFromScope(classDef.rhs.body, result)
+      case _ =>
+        super.traverse(tree)
+    }
   }
 
   private def collectTableMappingsFromScope(items: List[Tree], result: scala.collection.mutable.Map[String, String]): Unit = {
@@ -193,94 +259,6 @@ class TastySlickScanner(
     case _             => None
   }
 
-  // ── Return type matching ─────────────────────────────────────────────────
-
-  private def returnsDBIO(tpe: TypeOrMethodic): Boolean = tpe match {
-    case mt: MethodType  => returnsDBIO(mt.resultType)
-    case pt: PolyType    => returnsDBIO(pt.resultType)
-    case at: AppliedType => TastyUtils.extractTypeRef(at).exists(tr => dbioTypeNames.contains(tr.name.toString))
-    case tr: TypeRef     => dbioTypeNames.contains(tr.name.toString)
-    case _               => false
-  }
-
-  // ── Main scan: detect read/write operations ──────────────────────────────
-
-  private def findSlickOps(method: MethodRef, tree: Tree, fieldToTable: Map[String, String]): List[DiscoveredIntegration] = {
-    val out = ListBuffer.empty[DiscoveredIntegration]
-    walk(tree, out, method, fieldToTable)
-    out.toList
-  }
-
-  private val readTerminals = Set("result")
-  private val writeTerminals = Set("insertOrUpdate", "insertOrUpdateAll", "++=", "delete", "update", "forceInsert", "forceInsertAll", "+=")
-
-  private def walk(tree: Tree, out: ListBuffer[DiscoveredIntegration], method: MethodRef, fieldToTable: Map[String, String]): Unit = tree match {
-
-    // ── Plain SQL: sql"...".as[T](getResult) → Read
-    case Apply(TypeApply(Select(Apply(Select(interp, sqlName), _), asName), _), _)
-      if nm(sqlName, "sql") && nm(asName, "as") =>
-      SqlUtils.sqlFrom(interp).foreach { sql =>
-        out += mkIntegration(method, DataAccessType.Read, SqlUtils.extractTableName(sql), sql)
-      }
-
-    // ── Plain SQL: sql"...".as[T](getResult) without extra Apply
-    case TypeApply(Select(Apply(Select(interp, sqlName), _), asName), _)
-      if nm(sqlName, "sql") && nm(asName, "as") =>
-      SqlUtils.sqlFrom(interp).foreach { sql =>
-        out += mkIntegration(method, DataAccessType.Read, SqlUtils.extractTableName(sql), sql)
-      }
-
-    // ── Plain SQL: sqlu"..." → Write
-    case Apply(Select(interp, sqluName), _) if nm(sqluName, "sqlu") =>
-      SqlUtils.sqlFrom(interp).foreach { sql =>
-        out += mkIntegration(method, DataAccessType.Write, SqlUtils.extractTableName(sql), sql)
-      }
-
-    // ── Lifted embedding: .result (possibly chained with .headOption etc) → Read
-    case Select(inner, terminal) if nm(terminal, "headOption") || nm(terminal, "head") =>
-      inner match {
-        case Select(qual, r) if isReadTerminal(r) =>
-          resolveTableName(qual, fieldToTable).foreach { table =>
-            out += mkIntegration(method, DataAccessType.Read, table, s"$table.result")
-          }
-        case _ =>
-          walk(inner, out, method, fieldToTable)
-      }
-
-    case Select(qual, terminal) if isReadTerminal(terminal) =>
-      resolveTableName(qual, fieldToTable).foreach { table =>
-        out += mkIntegration(method, DataAccessType.Read, table, s"$table.result")
-      }
-
-    // ── Lifted embedding: write operations
-    case Apply(Select(qual, terminal), _) if isWriteTerminal(terminal) =>
-      resolveTableName(qual, fieldToTable).foreach { table =>
-        out += mkIntegration(method, DataAccessType.Write, table, s"$table.${TastyUtils.simpleName(terminal)}")
-      }
-
-    case Select(qual, terminal) if isWriteTerminal(terminal) =>
-      resolveTableName(qual, fieldToTable).foreach { table =>
-        out += mkIntegration(method, DataAccessType.Write, table, s"$table.${TastyUtils.simpleName(terminal)}")
-      }
-
-    // ── Recurse
-    case Apply(fun, args)    => walk(fun, out, method, fieldToTable); args.foreach(walk(_, out, method, fieldToTable))
-    case TypeApply(fun, _)   => walk(fun, out, method, fieldToTable)
-    case Block(stats, expr)  => stats.foreach(walk(_, out, method, fieldToTable)); walk(expr, out, method, fieldToTable)
-    case Select(qual, _)     => walk(qual, out, method, fieldToTable)
-    case t: ValDef           => t.rhs.foreach(walk(_, out, method, fieldToTable))
-    case t: DefDef           => t.rhs.foreach(walk(_, out, method, fieldToTable))
-    case l: Lambda           => walk(l.meth, out, method, fieldToTable)
-    case Inlined(body, _, _) => walk(body, out, method, fieldToTable)
-    case If(_, thenp, elsep) => walk(thenp, out, method, fieldToTable); walk(elsep, out, method, fieldToTable)
-    case Match(_, cases)     => cases.foreach(c => walk(c.body, out, method, fieldToTable))
-    case Try(body, catches, finalizer) =>
-      walk(body, out, method, fieldToTable)
-      catches.foreach(c => walk(c.body, out, method, fieldToTable))
-      finalizer.foreach(walk(_, out, method, fieldToTable))
-    case _                   => ()
-  }
-
   // ── Table name resolution ────────────────────────────────────────────────
 
   private def resolveTableName(tree: Tree, fieldToTable: Map[String, String]): Option[String] =
@@ -302,15 +280,6 @@ class TastySlickScanner(
   }
 
   // ── Helpers ──────────────────────────────────────────────────────────────
-
-  private def isReadTerminal(name: tastyquery.Names.Name): Boolean =
-    readTerminals.contains(TastyUtils.simpleName(name))
-
-  private def isWriteTerminal(name: tastyquery.Names.Name): Boolean =
-    writeTerminals.contains(TastyUtils.simpleName(name))
-
-  private def nm(name: tastyquery.Names.Name, target: String): Boolean =
-    TastyUtils.matchesName(name, target)
 
   private def forEachModuleMethodBody(mod: ClassSymbol)(f: Tree => Unit): Unit =
     for {

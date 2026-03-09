@@ -110,7 +110,7 @@ class DirectDbAccess(xa: Transactor[IO]) {
 
 /** Demonstrates doobie detection inside a val initializer.
   * The val body contains sql"...".query[T].unique — the scanner should find it
-  * now that enumerateMethodBodies includes val bodies.
+  * because SymbolUsageFinder walks val bodies in addition to def bodies.
   */
 class InlineQueryHolder {
   val activeUserCount: ConnectionIO[Long] =

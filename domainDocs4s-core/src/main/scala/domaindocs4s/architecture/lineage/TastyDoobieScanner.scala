@@ -3,130 +3,103 @@ package domaindocs4s.architecture.lineage
 import tastyquery.Contexts.Context
 import tastyquery.Trees.*
 
-import scala.collection.mutable.ListBuffer
-
 // ============================================================================
 // TASTy-based Doobie Scanner
 //
 // Scans compiled Scala code via TASTy to find doobie query invocations.
 // Output: "classA.methodB reads/writes tableC"
 //
-// Detection: walks all method/val bodies and matches AST patterns:
-//   sql"...".query[T].unique            → Read
-//   sql"...".query[T].to[F]             → Read
-//   sql"...".query[T].option            → Read
-//   sql"...".query[T].stream            → Read
-//   sql"...".update.run                  → Write
-//   Update[A](sql).updateMany(data)      → Write
-//   Update[A](sql).withGeneratedKeys(ks) → Write
+// Uses SymbolUsageFinder with type-based searches to detect doobie patterns:
+//   Fragment.query     → Read  (sql"...".query[T].unique/option/stream/to)
+//   Fragment.update    → Write (sql"...".update.run)
+//   Query0.unique/option/stream/to → Read
+//   Update.updateMany/withGeneratedKeys → Write
 //
-// No return-type filtering — a method that contains sql"...".update.run
-// writes to the table regardless of whether it returns ConnectionIO, IO,
-// or anything else (e.g. after .transact(xa)).
+// Type resolution uses Strategy 4 (return-type propagation via SignedName
+// signatures) which reliably resolves doobie expression types without
+// computing .tpe (which fails for doobie TASTy in tasty-query 1.7.0).
 //
 // SQL extraction: collects string literal parts from the sql"..." interpolator
 // (StringContext.apply("part1", "part2", ...)) and joins them to recover the
 // SQL template. Table names are extracted via regex from the joined SQL.
-//
-// Uses SymbolUsageFinder.enumerateMethodBodies() for uniform class/method
-// enumeration (including anonymous classes). Keeps custom tree matching for
-// doobie-specific chain patterns.
 // ============================================================================
 
 class TastyDoobieScanner()(using ctx: Context) extends IntegrationScanner {
 
-  //> This whole scanner looks a bit off. I especially dont like enumerateMethodBodies. Id rather look for anything using strign interpolator (sql/fr) through usual search and go from there
+  // Type-based searches for doobie patterns
+  private val fragmentSearch = SymbolSearch.MethodCall(TypeMatcher.fqnEndsWith("fragment$.Fragment"))
+  private val query0Search   = SymbolSearch.MethodCall(TypeMatcher.fqnEndsWith("query$.Query0"))
+  private val updateSearch   = SymbolSearch.MethodCall(TypeMatcher.fqnEndsWith("update$.Update"))
+
+  private val readMethods  = Set("unique", "option", "stream", "to")
+  private val writeMethods = Set("updateMany", "withGeneratedKeys")
+
   def scan(packages: List[String]): List[DiscoveredIntegration] = {
-    val methods = SymbolUsageFinder.enumerateMethodBodies(packages)
-    methods.flatMap(m => findDoobieOps(m.ref, m.rhs)).filter(_.target != "unknown")
-  }
+    val finder = new SymbolUsageFinder(Seq(fragmentSearch, query0Search, updateSearch))
+    val usages = finder.findAll(packages)
 
-  private def findDoobieOps(method: MethodRef, tree: Tree): List[DiscoveredIntegration] = {
-    val out = ListBuffer.empty[DiscoveredIntegration]
-    walk(tree, out, method)
-    out.toList
-  }
+    val classified = usages.collect { case u: FoundUsage.MethodCallResult => u }
 
-  // The walk method matches doobie query/update chains and extracts the fragment
-  // tree. With real doobie, .query[T] takes an implicit Read[T] argument, so the
-  // TASTy has an extra Apply wrapping the TypeApply:
-  //   .query[T](readInstance).unique       → Select(Apply(TypeApply(Select(frag, query), _), _), unique)
-  //   .query[T](readInstance).to[F](fc)    → Apply(TypeApply(Select(Apply(TypeApply(Select(frag, query), _), _), to), _), _)
-  //   .query[T](readInstance).option       → Select(Apply(TypeApply(Select(frag, query), _), _), option)
-  //   .update.run                          → Select(Select(frag, update), run)
-  //   Update[A](sql).updateMany(data)      → Apply(Select(receiver, updateMany), _)
-  //   Update[A](sql).withGeneratedKeys(ks) → Apply(Select(receiver, withGeneratedKeys), _)
-  private def walk(tree: Tree, out: ListBuffer[DiscoveredIntegration], method: MethodRef, valBindings: Map[String, Tree] = Map.empty): Unit = tree match {
-    // .query[T](read).unique / .query[T](read).option → Read
-    case Select(Apply(TypeApply(Select(frag, q), _), _), terminal) if nm(q, "query") && isReadTerminal(terminal) =>
-      SqlUtils.sqlFrom(frag, valBindings).foreach(sql => out += mkIntegration(method, DataAccessType.Read, sql))
+    // Pre-compute val bindings per enclosing method body (avoid repeated full-tree traversals
+    // when a single method body contains multiple doobie usages).
+    val valBindingsCache = scala.collection.mutable.Map.empty[Tree, Map[String, Tree]]
 
-    // .query[T](read).to[F](fc) → Read
-    case Apply(TypeApply(Select(Apply(TypeApply(Select(frag, q), _), _), t), _), _) if nm(q, "query") && nm(t, "to") =>
-      SqlUtils.sqlFrom(frag, valBindings).foreach(sql => out += mkIntegration(method, DataAccessType.Read, sql))
-
-    // .update.run → Write
-    case Select(Select(frag, u), r) if nm(u, "update") && nm(r, "run") =>
-      SqlUtils.sqlFrom(frag, valBindings).foreach(sql => out += mkIntegration(method, DataAccessType.Write, sql))
-
-    // Update[A](sql).updateMany(data) / Update[A](sql).withGeneratedKeys(...) → Write
-    // TASTy shape: Apply(Apply(TypeApply(Select(receiver, updateMany), _), _), _)
-    // We match Select(receiver, terminal) inside any nesting of Apply/TypeApply.
-    case UpdateTerminal(receiver) =>
-      SqlUtils.sqlFrom(receiver, valBindings).foreach { sql =>
-        if (SqlUtils.looksLikeSql(sql)) out += mkIntegration(method, DataAccessType.Write, sql)
+    classified.flatMap { u =>
+      classifyUsage(u).flatMap { accessType =>
+        val valBindings = enclosingMethodRhs(u.path) match {
+          case Some(rhs) => valBindingsCache.getOrElseUpdate(rhs, collectBlockBindings(rhs))
+          case None      => Map.empty[String, Tree]
+        }
+        val sql = SqlUtils.sqlFrom(u.tree, valBindings).orElse(SqlUtils.sqlFrom(u.receiverTree, valBindings))
+        sql.filter(SqlUtils.looksLikeSql).map { s =>
+          DiscoveredIntegration(
+            method = u.path.toMethodRef,
+            accessType = accessType,
+            resourceType = ResourceType.Database,
+            scanner = "doobie",
+            target = SqlUtils.extractTableName(s),
+            evidence = s,
+          )
+        }
       }
-
-    // Recurse
-    case Apply(fun, args)    => walk(fun, out, method, valBindings); args.foreach(walk(_, out, method, valBindings))
-    case TypeApply(fun, _)   => walk(fun, out, method, valBindings)
-    case Block(stats, expr)  =>
-      val newBindings = stats.foldLeft(valBindings) {
-        case (acc, vd: ValDef) => vd.rhs.fold(acc)(rhs => acc + (vd.name.toString -> rhs))
-        case (acc, _)          => acc
-      }
-      stats.foreach(walk(_, out, method, newBindings)); walk(expr, out, method, newBindings)
-    case t: ValDef           => t.rhs.foreach(walk(_, out, method, valBindings))
-    case Select(qual, _)     => walk(qual, out, method, valBindings)
-    case Inlined(body, _, _) => walk(body, out, method, valBindings)
-    case If(_, thenp, elsep) => walk(thenp, out, method, valBindings); walk(elsep, out, method, valBindings)
-    case Match(_, cases)     => cases.foreach(c => walk(c.body, out, method, valBindings))
-    case Try(body, catches, finalizer) =>
-      walk(body, out, method, valBindings)
-      catches.foreach(c => walk(c.body, out, method, valBindings))
-      finalizer.foreach(walk(_, out, method, valBindings))
-    case l: Lambda           => walk(l.meth, out, method, valBindings)
-    case _                   => ()
+    }.filter(_.target != "unknown")
+     .distinct
   }
 
-  private def isReadTerminal(name: tastyquery.Names.Name): Boolean =
-    nm(name, "unique") || nm(name, "option") || nm(name, "stream")
+  /** Find the RHS tree of the enclosing method from a NestingPath. */
+  private def enclosingMethodRhs(path: NestingPath): Option[Tree] =
+    path.nodes.reverse.collectFirst { case NestingNode.Method(_, Some(dd)) => dd }.flatMap(_.rhs)
 
-  private def isUpdateTerminal(name: tastyquery.Names.Name): Boolean =
-    nm(name, "updateMany") || nm(name, "withGeneratedKeys")
+  /** Recursively collect val bindings from all Block scopes in a tree. */
+  private def collectBlockBindings(tree: Tree): Map[String, Tree] = {
+    val bindings = scala.collection.mutable.Map.empty[String, Tree]
+    new tastyquery.Traversers.TreeTraverser {
+      override def traverse(tree: Tree): Unit = tree match {
+        case vd: ValDef =>
+          vd.rhs.foreach(rhs => bindings += (vd.name.toString -> rhs))
+          super.traverse(tree)
+        case _ => super.traverse(tree)
+      }
+    }.traverse(tree)
+    bindings.toMap
+  }
 
-  /** Custom extractor: unwrap Apply/TypeApply layers to find Select(receiver, updateMany|withGeneratedKeys). */
-  private object UpdateTerminal {
-    def unapply(tree: Tree): Option[Tree] = tree match {
-      case Select(receiver, name) if isUpdateTerminal(name) => Some(receiver)
-      case Apply(fun, _)    => unapply(fun)
-      case TypeApply(fun, _) => unapply(fun)
-      case _                 => None
+  private def classifyUsage(u: FoundUsage.MethodCallResult): Option[DataAccessType] = {
+    val method = u.methodName
+    u.search match {
+      case `fragmentSearch` =>
+        if (method == "query") Some(DataAccessType.Read)
+        else if (method == "update") Some(DataAccessType.Write)
+        else None
+      case `query0Search` =>
+        if (readMethods.contains(method)) Some(DataAccessType.Read)
+        else None
+      case `updateSearch` =>
+        if (writeMethods.contains(method)) Some(DataAccessType.Write)
+        else None
+      case _ => None
     }
   }
-
-  private def nm(name: tastyquery.Names.Name, target: String): Boolean =
-    TastyUtils.matchesName(name, target)
-
-  private def mkIntegration(method: MethodRef, access: DataAccessType, sql: String): DiscoveredIntegration =
-    DiscoveredIntegration(
-      method = method,
-      accessType = access,
-      resourceType = ResourceType.Database,
-      scanner = "doobie",
-      target = SqlUtils.extractTableName(sql),
-      evidence = sql,
-    )
 }
 
 private[lineage] object SqlUtils {

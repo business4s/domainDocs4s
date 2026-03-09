@@ -1,7 +1,9 @@
 package domaindocs4s.architecture.lineage
 
 import tastyquery.Contexts.Context
+import tastyquery.Names.*
 import tastyquery.Symbols.*
+import tastyquery.Traversers.*
 import tastyquery.Trees.*
 import tastyquery.Types.*
 
@@ -264,85 +266,104 @@ class SymbolUsageFinder(searches: Seq[SymbolSearch])(using ctx: Context) {
       fieldCtx: Map[String, TypeOrMethodic],
       results: ListBuffer[FoundUsage],
   ): Unit = {
-    // Check for method calls at this node
-    checkMethodCall(tree, path, fieldCtx, results)
+    val walker = new UsageWalker(path, fieldCtx, results)
+    walker.traverse(tree)
+  }
 
-    // Recurse into children — carefully avoiding double-matching of call patterns.
-    // When we match Apply(Select(receiver, method), args) as a method call,
-    // we must NOT recurse into the Select(receiver, method) as a standalone Select
-    // (which would produce a duplicate no-arg call match). Instead, recurse only
-    // into the receiver and args.
-    tree match {
-      // Nested class (anonymous classes in method bodies)
-      case classDef: ClassDef =>
-        val className = classDef.name.toString.stripSuffix("$")
-        val classNode = NestingNode.ClassOrObject(className, isModule = false, Some(classDef))
-        val classPath = path :+ classNode
+  /** TreeTraverser-based walker that visits all tree types exhaustively.
+    * Uses mutable state with save/restore for context threading (path, fieldCtx).
+    * Apply/Select patterns use manual recursion to avoid double-matching call patterns.
+    */
+  private class UsageWalker(
+      initialPath: List[NestingNode],
+      initialFieldCtx: Map[String, TypeOrMethodic],
+      results: ListBuffer[FoundUsage],
+  ) extends TreeTraverser {
+    private var currentPath: List[NestingNode]            = initialPath
+    private var currentFieldCtx: Map[String, TypeOrMethodic] = initialFieldCtx
 
-        // Check inheritance on nested class
-        if (inheritanceSearches.nonEmpty) {
-          checkNestedClassInheritance(classDef, classPath, results)
-        }
+    override def traverse(tree: Tree): Unit = {
+      // Check for method calls at this node
+      checkMethodCall(tree, currentPath, currentFieldCtx, results)
 
-        // Build extended field context with nested class's own fields
-        val nestedFieldCtx = fieldCtx ++ extractFieldsFromClassDef(classDef)
+      // Recurse into children — carefully avoiding double-matching of call patterns.
+      // When we match Apply(Select(receiver, method), args) as a method call,
+      // we must NOT recurse into the Select(receiver, method) as a standalone Select
+      // (which would produce a duplicate no-arg call match). Instead, recurse only
+      // into the receiver and args.
+      tree match {
+        // Nested class (anonymous classes in method bodies)
+        case classDef: ClassDef =>
+          val savedPath     = currentPath
+          val savedFieldCtx = currentFieldCtx
 
-        // Walk nested class method bodies
-        classDef.rhs.body.foreach {
-          case defDef: DefDef =>
-            val methodName = defDef.name.toString
-            if (!methodName.startsWith("<") && !methodName.startsWith("$")) {
-              val methodNode = NestingNode.Method(methodName, Some(defDef))
-              val methodPath = classPath :+ methodNode
-              defDef.rhs.foreach { rhs =>
-                walkTree(rhs, methodPath, nestedFieldCtx, results)
+          val className = classDef.name.toString.stripSuffix("$")
+          val classNode = NestingNode.ClassOrObject(className, isModule = false, Some(classDef))
+          currentPath = currentPath :+ classNode
+
+          // Check inheritance on nested class
+          if (inheritanceSearches.nonEmpty) {
+            checkNestedClassInheritance(classDef, currentPath, results)
+          }
+
+          // Build extended field context with nested class's own fields
+          currentFieldCtx = currentFieldCtx ++ extractFieldsFromClassDef(classDef)
+
+          // Walk nested class method bodies
+          classDef.rhs.body.foreach {
+            case defDef: DefDef =>
+              val methodName = defDef.name.toString
+              if (!methodName.startsWith("<") && !methodName.startsWith("$")) {
+                val savedMethodPath     = currentPath
+                val savedMethodFieldCtx = currentFieldCtx
+                currentPath = currentPath :+ NestingNode.Method(methodName, Some(defDef))
+                currentFieldCtx = currentFieldCtx ++ extractParamTypes(defDef)
+                traverse(defDef.rhs)
+                currentPath = savedMethodPath
+                currentFieldCtx = savedMethodFieldCtx
               }
-            }
-          case other          =>
-            // Walk non-method body items (e.g., ValDefs) for nested classes
-            walkTree(other, classPath, nestedFieldCtx, results)
-        }
+            case other =>
+              // Walk non-method body items (e.g., ValDefs) for nested classes
+              traverse(other)
+          }
 
-      case Block(stats, expr) =>
-        // Before recursing, collect local val types from this block for field context
-        val blockFieldCtx = fieldCtx ++ extractFieldsFromBlock(stats)
-        stats.foreach(walkTree(_, path, blockFieldCtx, results))
-        walkTree(expr, path, blockFieldCtx, results)
+          currentPath = savedPath
+          currentFieldCtx = savedFieldCtx
 
-      case t: ValDef           => t.rhs.foreach(walkTree(_, path, fieldCtx, results))
-      case t: DefDef           =>
-        val paramCtx = extractParamTypes(t)
-        t.rhs.foreach(walkTree(_, path, fieldCtx ++ paramCtx, results))
-      case l: Lambda           => walkTree(l.meth, path, fieldCtx, results)
-      case Inlined(body, _, _) => walkTree(body, path, fieldCtx, results)
-      case If(_, thenp, elsep) =>
-        walkTree(thenp, path, fieldCtx, results); walkTree(elsep, path, fieldCtx, results)
-      case Match(_, cases) =>
-        cases.foreach(c => walkTree(c.body, path, fieldCtx, results))
-      case Try(body, catches, finalizer) =>
-        walkTree(body, path, fieldCtx, results)
-        catches.foreach(c => walkTree(c.body, path, fieldCtx, results))
-        finalizer.foreach(walkTree(_, path, fieldCtx, results))
+        case block: Block =>
+          // Before recursing, collect local val types from this block for field context
+          val saved = currentFieldCtx
+          currentFieldCtx = currentFieldCtx ++ extractFieldsFromBlock(block.stats)
+          super.traverse(tree)
+          currentFieldCtx = saved
 
-      // Apply(Select(receiver, method), args) — recurse into receiver + args, skip Select
-      case Apply(Select(qual, _), args)               =>
-        walkTree(qual, path, fieldCtx, results)
-        args.foreach(walkTree(_, path, fieldCtx, results))
-      // Apply(TypeApply(Select(receiver, method), _), args) — recurse into receiver + args
-      case Apply(TypeApply(Select(qual, _), _), args) =>
-        walkTree(qual, path, fieldCtx, results)
-        args.foreach(walkTree(_, path, fieldCtx, results))
-      case Apply(fun, args)                           =>
-        walkTree(fun, path, fieldCtx, results)
-        args.foreach(walkTree(_, path, fieldCtx, results))
-      case TypeApply(Select(qual, _), _)              =>
-        walkTree(qual, path, fieldCtx, results)
-      case TypeApply(fun, _)                          =>
-        walkTree(fun, path, fieldCtx, results)
-      case Select(qual, _)                            =>
-        walkTree(qual, path, fieldCtx, results)
+        case defDef: DefDef =>
+          val saved = currentFieldCtx
+          currentFieldCtx = currentFieldCtx ++ extractParamTypes(defDef)
+          super.traverse(tree)
+          currentFieldCtx = saved
 
-      case _ => ()
+        // Apply(Select(receiver, method), args) — recurse into receiver + args, skip Select
+        case Apply(Select(qual, _), args) =>
+          traverse(qual)
+          args.foreach(traverse)
+        // Apply(TypeApply(Select(receiver, method), _), args) — recurse into receiver + args
+        case Apply(TypeApply(Select(qual, _), _), args) =>
+          traverse(qual)
+          args.foreach(traverse)
+        case Apply(fun, args) =>
+          traverse(fun)
+          args.foreach(traverse)
+        case TypeApply(Select(qual, _), _) =>
+          traverse(qual)
+        case TypeApply(fun, _) =>
+          traverse(fun)
+        case Select(qual, _) =>
+          traverse(qual)
+
+        case _ =>
+          super.traverse(tree)
+      }
     }
   }
 
@@ -400,6 +421,18 @@ class SymbolUsageFinder(searches: Seq[SymbolSearch])(using ctx: Context) {
     case Apply(TypeApply(ident: Ident, _), args) =>
       tryMatchIdent(ident, args, tree, path, results)
 
+    // No-arg method call / property access: Select(receiver, method)
+    // Handles chains like .unique, .option, .stream, .run, .result, .headOption
+    case Select(receiver, methodName) if !receiver.isInstanceOf[New] =>
+      val name = TastyUtils.simpleName(methodName)
+      tryMatchReceiver(receiver, name, Nil, tree, path, fieldCtx, results)
+
+    // No-arg method call via TypeApply: TypeApply(Select(receiver, method), _)
+    // Handles chains like .query[T] without explicit args
+    case TypeApply(Select(receiver, methodName), _) if !receiver.isInstanceOf[New] =>
+      val name = TastyUtils.simpleName(methodName)
+      tryMatchReceiver(receiver, name, Nil, tree, path, fieldCtx, results)
+
     // Standalone Ident (no-arg imported reference)
     case ident: Ident =>
       tryMatchIdent(ident, Nil, tree, path, results)
@@ -417,6 +450,9 @@ class SymbolUsageFinder(searches: Seq[SymbolSearch])(using ctx: Context) {
       fieldCtx: Map[String, TypeOrMethodic],
       results: ListBuffer[FoundUsage],
   ): Unit = {
+    val beforeSize = results.size
+    lazy val literalArgs = extractLiteralArgs(args)
+
     // Strategy 1: Field pre-scan (Ident or Select(This, field))
     val fieldType = receiver match {
       case Ident(name)           => fieldCtx.get(TastyUtils.simpleName(name))
@@ -437,7 +473,7 @@ class SymbolUsageFinder(searches: Seq[SymbolSearch])(using ctx: Context) {
               ownerFqn = ownerFqn,
               ownerSimpleName = simpleName,
               methodName = methodName,
-              args = extractLiteralArgs(args),
+              args = literalArgs,
               receiverTree = receiver,
             )
           }
@@ -456,6 +492,90 @@ class SymbolUsageFinder(searches: Seq[SymbolSearch])(using ctx: Context) {
         }
       } catch { case _: Exception => }
     }
+
+    // Strategy 3: Expression type resolution via TermTree.tpe (for method-call results, etc.)
+    // Only tried when strategies 1-2 produced no matches.
+    if (results.size == beforeSize) {
+      try {
+        receiver match {
+          case tt: TermTree =>
+            tt.tpe match {
+              case tpe: TypeOrMethodic =>
+                val fqn = TastyUtils.extractFqn(tpe)
+                fqn.foreach { ownerFqn =>
+                  methodCallSearches.foreach { search =>
+                    if (TypeMatcherResolver.matches(search.ownerType, tpe)) {
+                      val simpleName = TastyUtils.extractTypeName(tpe).getOrElse(ownerFqn.split('.').last)
+                      results += FoundUsage.MethodCallResult(
+                        search = search,
+                        path = NestingPath(path),
+                        tree = fullTree,
+                        ownerFqn = ownerFqn,
+                        ownerSimpleName = simpleName,
+                        methodName = methodName,
+                        args = literalArgs,
+                        receiverTree = receiver,
+                      )
+                    }
+                  }
+                }
+              case _ =>
+            }
+          case _ =>
+        }
+      } catch { case _: Exception => }
+    }
+
+    // Strategy 4: Return-type propagation via method signature.
+    // When the receiver is a method call result (Apply/TypeApply chain), extract the
+    // return type FQN from the innermost SignedName in the chain. This avoids computing
+    // .tpe (which fails for some library types) by using the signature metadata that
+    // the compiler embeds in parameterized method names.
+    if (results.size == beforeSize) {
+      extractReturnTypeFqn(receiver).foreach { ownerFqn =>
+        methodCallSearches.foreach { search =>
+          if (TypeMatcherResolver.matchesFqn(search.ownerType, ownerFqn)) {
+            val simpleName = ownerFqn.split('.').last.stripSuffix("$")
+            results += FoundUsage.MethodCallResult(
+              search = search,
+              path = NestingPath(path),
+              tree = fullTree,
+              ownerFqn = ownerFqn,
+              ownerSimpleName = simpleName,
+              methodName = methodName,
+              args = literalArgs,
+              receiverTree = receiver,
+            )
+          }
+        }
+      }
+    }
+  }
+
+  /** Extract the return type FQN from a receiver expression by unwrapping Apply/TypeApply
+    * layers until a Select with a SignedName is found. The SignedName's resSig encodes the
+    * method's return type as an erased FQN, which is the type of the receiver expression.
+    *
+    * For example, in `sql"...".query[T](read).unique`:
+    *   receiver of `.unique` = Apply(TypeApply(Select(frag, "query[sig:Query0]"), _), _)
+    *   → unwrap Apply → unwrap TypeApply → Select with SignedName "query"
+    *   → resSig = "doobie.util.query$.Query0"
+    */
+  private def extractReturnTypeFqn(tree: Tree): Option[String] = tree match {
+    case Apply(fun, _)     => extractReturnTypeFqn(fun)
+    case TypeApply(fun, _) => extractReturnTypeFqn(fun)
+    case Select(qual, name) =>
+      name match {
+        case sn: SignedName =>
+          val resSig = sn.sig.resSig.toString
+          if (resSig.nonEmpty) Some(resSig) else extractReturnTypeFqn(qual)
+        case _ =>
+          // SimpleName — look at the qualifier's return type instead.
+          // This handles chains like fragment.stripMargin.update where .stripMargin
+          // is a SimpleName but the qualifier resolves to Fragment via a SignedName deeper in the chain.
+          extractReturnTypeFqn(qual)
+      }
+    case _ => None
   }
 
   /** Walk the TermRef chain checking each level against MethodCall searches. */
@@ -661,115 +781,5 @@ class SymbolUsageFinder(searches: Seq[SymbolSearch])(using ctx: Context) {
         case _          => None
       }
     case _          => None
-  }
-}
-
-object SymbolUsageFinder {
-
-  /** An enumerated method body with its ref, rhs tree, and declared return type (if available). */
-  case class MethodBody(
-      ref: MethodRef,
-      rhs: Tree,
-      declaredType: Option[TypeOrMethodic],
-  )
-
-  /** Enumerate all method bodies uniformly (including anonymous classes). Returns MethodBody entries for each method body found. Top-level methods
-    * include their declared type; anonymous class methods have None.
-    */
-  def enumerateMethodBodies(packages: List[String])(using ctx: Context): List[MethodBody] =
-    packages.flatMap(enumeratePackage)
-
-  private def enumeratePackage(packageName: String)(using ctx: Context): List[MethodBody] = {
-    val pkg           = ctx.findPackage(packageName)
-    val userWithPkg   = TastyUtils.userClassesRecursive(pkg)
-    val moduleWithPkg = TastyUtils.moduleClassesRecursive(pkg)
-    val allWithPkg    = userWithPkg ++ moduleWithPkg
-    allWithPkg.flatMap { case (ownerPkg, cls) =>
-      val pkgName   = ownerPkg.fullName.toString
-      val className = cls.name.toString.stripSuffix("$")
-      enumerateClassMethods(pkgName, className, cls) ++
-        enumerateAnonymousClassMethods(pkgName, className, cls)
-    }
-  }
-
-  private def enumerateClassMethods(
-      pkgName: String,
-      className: String,
-      cls: ClassSymbol,
-  )(using Context): List[MethodBody] = {
-    val defMethods = cls.declarations.collect {
-      case ts: TermSymbol if ts.tree.exists(_.isInstanceOf[DefDef]) =>
-        val methodName = ts.name.toString
-        val declType   =
-          try Some(ts.declaredType)
-          catch { case _: Exception => None }
-        ts.tree.toList.flatMap {
-          case defDef: DefDef =>
-            defDef.rhs.toList.map(rhs => MethodBody(MethodRef(pkgName, className, methodName), rhs, declType))
-          case _              => Nil
-        }
-    }.flatten
-
-    // Also enumerate val bodies — val initializers can contain doobie/scanner patterns
-    val valMethods = cls.declarations.collect {
-      case ts: TermSymbol if !ts.isSynthetic && !ts.name.toString.startsWith("<") && ts.tree.exists(_.isInstanceOf[ValDef]) && !ts.tree.exists(_.isInstanceOf[DefDef]) =>
-        val valName  = ts.name.toString
-        val declType =
-          try Some(ts.declaredType)
-          catch { case _: Exception => None }
-        ts.tree.toList.flatMap {
-          case valDef: ValDef =>
-            valDef.rhs.toList.map(rhs => MethodBody(MethodRef(pkgName, className, valName), rhs, declType))
-          case _              => Nil
-        }
-    }.flatten
-
-    defMethods ++ valMethods
-  }
-
-  /** Walk method bodies looking for anonymous ClassDef nodes and enumerate their methods. */
-  private def enumerateAnonymousClassMethods(
-      pkgName: String,
-      className: String,
-      cls: ClassSymbol,
-  )(using Context): List[MethodBody] = {
-    val results = ListBuffer.empty[MethodBody]
-    cls.declarations.foreach {
-      case ts: TermSymbol =>
-        ts.tree.foreach {
-          case defDef: DefDef =>
-            defDef.rhs.foreach { rhs =>
-              collectAnonClassMethods(rhs, pkgName, className, results)
-            }
-          case _              =>
-        }
-      case _              =>
-    }
-    results.toList
-  }
-
-  private def collectAnonClassMethods(
-      tree: Tree,
-      pkgName: String,
-      className: String,
-      results: ListBuffer[MethodBody],
-  ): Unit = tree match {
-    case Block(stats, expr) =>
-      stats.foreach(collectAnonClassMethods(_, pkgName, className, results))
-      collectAnonClassMethods(expr, pkgName, className, results)
-
-    case classDef: ClassDef =>
-      classDef.rhs.body.foreach {
-        case defDef: DefDef =>
-          val methodName = defDef.name.toString
-          if (!methodName.startsWith("<") && !methodName.startsWith("$")) {
-            defDef.rhs.foreach { rhs =>
-              results += MethodBody(MethodRef(pkgName, className, methodName), rhs, None)
-            }
-          }
-        case _              =>
-      }
-
-    case _ =>
   }
 }

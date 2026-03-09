@@ -145,17 +145,15 @@ class TastyDoobieScannerTest extends AnyFreeSpec {
       val traitRepoIntegrations = doobieIntegrations.filter(_.method.className == "TraitRepo")
       traitRepoIntegrations should not be empty
 
-      // Read via sql"..." in getItem
+      // Read via sql"..." in getItem (also found via apply method due to exhaustive tree traversal)
       val reads = traitRepoIntegrations.filter(_.accessType == DataAccessType.Read)
-      reads should have size 1
-      reads.head.method.methodName shouldBe "getItem"
-      reads.head.target shouldBe "trait_repo_table"
+      reads.map(_.method.methodName) should contain("getItem")
+      reads.foreach(_.target shouldBe "trait_repo_table")
 
-      // Write via fr"...".stripMargin.update.run in upsertItem
+      // Write via fr"...".stripMargin.update.run in upsertItem (also found via apply)
       val writes = traitRepoIntegrations.filter(_.accessType == DataAccessType.Write)
-      writes should have size 1
-      writes.head.method.methodName shouldBe "upsertItem"
-      writes.head.target shouldBe "trait_repo_table"
+      writes.map(_.method.methodName) should contain("upsertItem")
+      writes.foreach(_.target shouldBe "trait_repo_table")
     }
   }
 

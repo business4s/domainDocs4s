@@ -185,55 +185,6 @@ class SymbolUsageFinderTest extends AnyFreeSpec {
       }
     }
 
-    "enumerateMethodBodies" - {
-
-      "finds top-level class methods" in {
-        val methods = SymbolUsageFinder.enumerateMethodBodies(List(pkg))
-        val userRepoMethods = methods.filter(_.ref.className == "UserRepo")
-        userRepoMethods should not be empty
-        userRepoMethods.map(_.ref.methodName).toSet should contain allOf ("getBalance", "getTransactions", "insertTransaction", "updateBalance")
-      }
-
-      "finds anonymous class methods with correct parent class attribution" in {
-        val methods = SymbolUsageFinder.enumerateMethodBodies(List(slickPkg))
-        val factoryMethods = methods.filter(_.ref.className == "FactoryRepo")
-        factoryMethods should not be empty
-        factoryMethods.map(_.ref.methodName).toSet should contain allOf ("getOrders", "insertOrder", "getItems", "deleteItem")
-      }
-
-      "includes declared type for top-level methods" in {
-        val methods = SymbolUsageFinder.enumerateMethodBodies(List(pkg))
-        val userRepoMethods = methods.filter(_.ref.className == "UserRepo")
-        userRepoMethods.foreach { m =>
-          m.declaredType shouldBe defined
-        }
-      }
-
-      "includes val bodies in enumeration" in {
-        val methods = SymbolUsageFinder.enumerateMethodBodies(List(pkg))
-        // BalanceProjection.handler is a val, not a def — should be included
-        val projectionVals = methods.filter(m => m.ref.className == "BalanceProjection" && m.ref.methodName == "handler")
-        projectionVals should have size 1
-        // InlineQueryHolder.activeUserCount is also a val
-        val holderVals = methods.filter(m => m.ref.className == "InlineQueryHolder" && m.ref.methodName == "activeUserCount")
-        holderVals should have size 1
-        // CachedService.defaultBalance is also a val
-        val cachedVals = methods.filter(m => m.ref.className == "CachedService" && m.ref.methodName == "defaultBalance")
-        cachedVals should have size 1
-      }
-
-      "anonymous class methods have None declared type" in {
-        val methods = SymbolUsageFinder.enumerateMethodBodies(List(slickPkg))
-        val factoryMethods = methods.filter(m =>
-          m.ref.className == "FactoryRepo" &&
-          Set("getOrders", "insertOrder", "getItems", "deleteItem").contains(m.ref.methodName),
-        )
-        factoryMethods.foreach { m =>
-          m.declaredType shouldBe None
-        }
-      }
-    }
-
     "LiteralValue extraction" - {
 
       "extracts string literal from constructor args" in {
