@@ -106,9 +106,11 @@ class TastySlickScanner(
               u.path.nodes,
               collectValBindings(u.path),
             )
-            val sql = SqlUtils.sqlFromInterpolation(u.tree, valBindings)
+            val rawSql = SqlUtils.sqlFromInterpolation(u.tree, valBindings)
               .orElse(SqlUtils.sqlFrom(u.tree, valBindings))
               .orElse(SqlUtils.sqlFrom(u.receiverTree, valBindings))
+            // Strip Slick's # splice markers (e.g., #$tableName → tableName) before parsing
+            val sql = rawSql.map(_.replaceAll("#(?=\\w)", ""))
             sql.filter(SqlUtils.looksLikeSql).flatMap { s =>
               // For s"..." interpolations, require the string to actually start with a SQL keyword.
               // This avoids false positives from strings like s"Getting data from $source".

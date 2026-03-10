@@ -91,11 +91,9 @@ class TastyCallGraphExtractor(using ctx: Context) {
       defMethods ++ valMethods
     }
 
-    // Extract anonymous class method implementations from companion factory methods
-    // and attribute them to the parent trait. This handles the common pattern:
-    //   trait T { def method(): Unit }
-    //   object T { def apply(...): T = new T { override def method() = repo.doStuff() } }
-    // Without this, the trait method is abstract (no calls), breaking call graph propagation.
+    // Extract method implementations from anonymous classes found in any method body
+    // and attribute them to the parent type. Without this, trait/abstract methods have
+    // no calls, breaking call graph propagation.
     val anonTraitMethods = extractAnonymousTraitImpls(classesWithPkg, classMethodsIndex)
     val mergedMethods = mergeExtractedMethods(methods ++ anonTraitMethods)
 
@@ -260,18 +258,13 @@ class TastyCallGraphExtractor(using ctx: Context) {
     }
   }
 
-  /** For companion objects with factory methods (apply) that create anonymous trait
-    * implementations, extract each anonymous class method as a separate ExtractedMethod
-    * attributed to the parent trait.
+  /** Walk all method bodies across all classes and extract method implementations
+    * from anonymous classes, attributing them to the anonymous class's parent type.
     *
-    * Pattern:
-    *   trait MyTrait { def process(): Unit }
-    *   object MyTrait { def apply(repo: Repo): MyTrait = new MyTrait { def process() = repo.doStuff() } }
-    * Result:
-    *   ExtractedMethod("MyTrait", pkg, "process", [MethodRef(pkg, "Repo", "doStuff")])
-    *
-    * This bridges the gap where trait method calls resolve to abstract methods with no body,
-    * but the actual implementation is in an anonymous class inside the companion's factory.
+    * When a method body contains `new SomeTrait { override def foo() = ... }`,
+    * the anonymous class's `foo` implementation is extracted as an ExtractedMethod
+    * attributed to `SomeTrait`. This bridges the gap where trait methods are abstract
+    * (no body) but their actual implementations live in anonymous subclasses.
     */
   private def extractAnonymousTraitImpls(
       classesWithPkg: List[(PackageSymbol, ClassSymbol)],
@@ -282,37 +275,32 @@ class TastyCallGraphExtractor(using ctx: Context) {
       (pkg.fullName.toString, cls.name.toString.stripSuffix("$"))
     }.toSet
 
-    classesWithPkg
-      .filter(_._2.name.toString.endsWith("$")) // module classes (companion objects) only
-      .flatMap { case (ownerPkg, moduleCls) =>
-        val pkgName = ownerPkg.fullName.toString
-        val companionName = moduleCls.name.toString.stripSuffix("$")
-        val moduleFieldTypes = resolveFieldTypes(moduleCls)
+    classesWithPkg.flatMap { case (ownerPkg, cls) =>
+      val clsFieldTypes = resolveFieldTypes(cls)
 
-        // Find factory methods (apply) in the companion
-        moduleCls.declarations.collect {
-          case ts: TermSymbol if ts.name.toString == "apply" =>
-            ts.tree.toList.flatMap {
-              case defDef: DefDef =>
-                val factoryParamTypes = extractParamTypes(defDef)
-                val combinedFieldTypes = moduleFieldTypes ++ factoryParamTypes
+      // Scan all methods with bodies for anonymous ClassDef nodes
+      cls.declarations.collect {
+        case ts: TermSymbol if ts.tree.exists(_.isInstanceOf[DefDef]) && !ts.isSynthetic =>
+          ts.tree.toList.flatMap {
+            case defDef: DefDef =>
+              val methodParamTypes = extractParamTypes(defDef)
+              val combinedFieldTypes = clsFieldTypes ++ methodParamTypes
 
-                defDef.rhs.toList.flatMap { rhs =>
-                  findAnonymousClassDefs(rhs).flatMap { anonClassDef =>
-                    // Determine which parent trait/class the anonymous class implements
-                    val parentKey = resolveAnonymousClassParent(anonClassDef, knownClasses)
-                    parentKey.toList.flatMap { case (traitPkg, traitName) =>
-                      extractMethodsFromAnonymousClass(
-                        anonClassDef, traitPkg, traitName,
-                        combinedFieldTypes, factoryParamTypes, classMethodsIndex,
-                      )
-                    }
+              defDef.rhs.toList.flatMap { rhs =>
+                findAnonymousClassDefs(rhs).flatMap { anonClassDef =>
+                  val parentKey = resolveAnonymousClassParent(anonClassDef, knownClasses)
+                  parentKey.toList.flatMap { case (traitPkg, traitName) =>
+                    extractMethodsFromAnonymousClass(
+                      anonClassDef, traitPkg, traitName,
+                      combinedFieldTypes, methodParamTypes, classMethodsIndex,
+                    )
                   }
                 }
-              case _ => Nil
-            }
-        }.flatten
-      }
+              }
+            case _ => Nil
+          }
+      }.flatten
+    }
   }
 
   /** Find anonymous ClassDef nodes in a tree (searches through Blocks). */

@@ -156,18 +156,18 @@ private[lineage] object SqlUtils {
     if (sql.nonEmpty) Some(sql) else None
   }
 
-  /** Extract SQL from a string interpolation tree by properly interleaving StringContext parts
+  /** Reconstruct a string from a string interpolation tree by interleaving StringContext parts
     * with resolved interpolation arguments.
     *
     * Unlike `sqlFrom` which collects all string literals in tree traversal order (losing
-    * interleaving), this method reconstructs the original SQL by:
+    * interleaving), this method reconstructs the original string by:
     *   1. Extracting the StringContext literal parts from the receiver tree
     *   2. Extracting the interpolation arguments from the Apply args
     *   3. Resolving each argument to a string literal via val bindings where possible
     *   4. Interleaving: parts(0) + args(0) + parts(1) + args(1) + ...
     *
-    * After interleaving, Slick's `#` splice markers (e.g., `#$tableName` → `#resolvedName`)
-    * are stripped so that the SQL parses correctly.
+    * Returns the reconstructed string without SQL validation — callers should apply
+    * `looksLikeSql` and any framework-specific post-processing themselves.
     *
     * Falls back to `sqlFrom` if the tree doesn't match the interpolation pattern.
     */
@@ -205,8 +205,7 @@ private[lineage] object SqlUtils {
     }
 
     val sql = sb.toString.stripMargin
-      .replaceAll("#(?=\\w)", "") // Strip Slick's # splice markers before identifiers
-    if (sql.nonEmpty && looksLikeSql(sql)) Some(sql)
+    if (sql.nonEmpty) Some(sql)
     else sqlFrom(tree, valBindings)
   }
 

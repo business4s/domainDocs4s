@@ -8,3 +8,5 @@ annotated concepts from TASTy and transforming them into structured, business-fr
 
 See the [**Website**](https://business4s.github.io/domainDocs4s/) for details and join our [**Discord**](https://bit.ly/business4s-discord) for discussions.
 
+- prometheus scanner
+- typesafe packages, SymbolModule.requiredPackage
