@@ -232,29 +232,58 @@ case class LineageAdjustments(adjustments: List[LineageAdjustment] = Nil) {
     // Shared logic for HideClass and HidePackage: remove hidden methods,
     // reconnect callers → callees through the hidden set, and promote integrations.
     def hideRefs(hiddenRefs: Set[MethodRef]): Unit = if (hiddenRefs.nonEmpty) {
-      // Resolve external callees transitively through hidden methods
-      def resolveCallees(ref: MethodRef, visited: Set[MethodRef]): Set[MethodRef] =
-        if (visited.contains(ref)) Set.empty
-        else methods.find(_.ref == ref).map(_.calls).getOrElse(Nil).flatMap { callee =>
-          if (!hiddenRefs.contains(callee)) Set(callee)
-          else resolveCallees(callee, visited + ref)
-        }.toSet
+      // Build indexes for O(1) lookups instead of O(n) linear scans
+      val methodByRef: Map[MethodRef, ExtractedMethod] = methods.map(m => m.ref -> m).toMap
+      val callersByCallee: Map[MethodRef, List[MethodRef]] = {
+        val builder = scala.collection.mutable.Map.empty[MethodRef, ListBuffer[MethodRef]]
+        for (m <- methods; callee <- m.calls)
+          builder.getOrElseUpdate(callee, ListBuffer.empty) += m.ref
+        builder.view.mapValues(_.toList).toMap
+      }
+
+      // Resolve external callees transitively through hidden methods.
+      // Memoized: each hidden node is resolved once, giving O(V+E) total.
+      val calleeMemo = scala.collection.mutable.Map.empty[MethodRef, Set[MethodRef]]
+      val calleeInProgress = scala.collection.mutable.Set.empty[MethodRef]
+      def resolveCallees(ref: MethodRef): Set[MethodRef] = {
+        if (calleeInProgress.contains(ref)) return Set.empty // cycle
+        calleeMemo.getOrElse(ref, {
+          calleeInProgress += ref
+          val result = methodByRef.get(ref).map(_.calls).getOrElse(Nil).flatMap { callee =>
+            if (!hiddenRefs.contains(callee)) Set(callee)
+            else resolveCallees(callee)
+          }.toSet
+          calleeInProgress -= ref
+          calleeMemo(ref) = result
+          result
+        })
+      }
 
       val externalCallees: Map[MethodRef, Set[MethodRef]] =
-        hiddenRefs.map(r => r -> resolveCallees(r, Set.empty)).toMap
+        hiddenRefs.map(r => r -> resolveCallees(r)).toMap
 
-      // Find non-hidden callers transitively for integration promotion
-      def findNonHiddenCallers(ref: MethodRef, visited: Set[MethodRef]): Set[MethodRef] =
-        if (visited.contains(ref)) Set.empty
-        else methods.filter(_.calls.contains(ref)).map(_.ref).flatMap { c =>
-          if (!hiddenRefs.contains(c)) Set(c)
-          else findNonHiddenCallers(c, visited + ref)
-        }.toSet
+      // Find non-hidden callers transitively for integration promotion.
+      // Memoized: each hidden node is resolved once, giving O(V+E) total.
+      val callerMemo = scala.collection.mutable.Map.empty[MethodRef, Set[MethodRef]]
+      val callerInProgress = scala.collection.mutable.Set.empty[MethodRef]
+      def findNonHiddenCallers(ref: MethodRef): Set[MethodRef] = {
+        if (callerInProgress.contains(ref)) return Set.empty // cycle
+        callerMemo.getOrElse(ref, {
+          callerInProgress += ref
+          val result = callersByCallee.getOrElse(ref, Nil).flatMap { c =>
+            if (!hiddenRefs.contains(c)) Set(c)
+            else findNonHiddenCallers(c)
+          }.toSet
+          callerInProgress -= ref
+          callerMemo(ref) = result
+          result
+        })
+      }
 
       // Promote integrations from hidden methods to their non-hidden callers
       val hiddenIntegrations = integ.filter(di => hiddenRefs.contains(di.method))
       val promoted = hiddenIntegrations.flatMap { di =>
-        findNonHiddenCallers(di.method, Set.empty).map(caller => di.copy(method = caller))
+        findNonHiddenCallers(di.method).map(caller => di.copy(method = caller))
       }
 
       // Reconnect callers to bypass hidden nodes

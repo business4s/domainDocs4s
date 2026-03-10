@@ -30,7 +30,13 @@ import tastyquery.Types.*
 case class TypeMatcher(
     matchFqn: String => Boolean,
     checkAncestors: Boolean = false,
-)
+) {
+  /** Per-instance cache for ancestor resolution results, keyed by FQN.
+    * Only allocated when `checkAncestors` is true.
+    */
+  @transient private[lineage] val ancestorCache: java.util.HashMap[String, java.lang.Boolean] | Null =
+    if (checkAncestors) new java.util.HashMap() else null
+}
 
 object TypeMatcher {
 
@@ -58,7 +64,21 @@ private[lineage] object TypeMatcherResolver {
   /** Check if a TypeMatcher matches a given TASTy type. */
   def matches(matcher: TypeMatcher, tpe: TypeOrMethodic)(using Context): Boolean =
     fqnOf(tpe).exists(matcher.matchFqn) ||
-      (matcher.checkAncestors && hasMatchingAncestor(tpe, matcher.matchFqn, Set.empty))
+      (matcher.checkAncestors && cachedAncestorCheck(matcher, tpe))
+
+  private def cachedAncestorCheck(matcher: TypeMatcher, tpe: TypeOrMethodic)(using Context): Boolean = {
+    val cache = matcher.ancestorCache
+    val fqn = fqnOf(tpe).orNull
+    if (cache != null && fqn != null) {
+      val cached = cache.get(fqn)
+      if (cached != null) return cached.booleanValue()
+      val result = hasMatchingAncestor(tpe, matcher.matchFqn, Set.empty)
+      cache.put(fqn, result)
+      result
+    } else {
+      hasMatchingAncestor(tpe, matcher.matchFqn, Set.empty)
+    }
+  }
 
   /** Check if a TypeMatcher matches a FQN string directly (for tree reference matching). */
   def matchesFqn(matcher: TypeMatcher, fqn: String): Boolean =

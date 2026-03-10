@@ -137,7 +137,17 @@ class SymbolUsageFinder(searches: Seq[SymbolSearch])(using ctx: Context) {
     val pkg           = ctx.findPackage(packageName)
     val userWithPkg   = TastyUtils.userClassesRecursive(pkg)
     val moduleWithPkg = TastyUtils.moduleClassesRecursive(pkg)
-    val allWithPkg    = userWithPkg ++ moduleWithPkg
+    // Include nested classes/modules inside companion objects (e.g., object Foo { case class Journal(...) })
+    val knownNames = (userWithPkg ++ moduleWithPkg).map { case (p, c) =>
+      (p.fullName.toString, c.name.toString.stripSuffix("$"))
+    }.toSet
+    val nestedInModules = TastyUtils.nestedClassesInModules(pkg).filterNot { case (p, c) =>
+      knownNames.contains((p.fullName.toString, c.name.toString.stripSuffix("$")))
+    }
+    val nestedModules = TastyUtils.nestedModulesInModules(pkg).filterNot { case (p, c) =>
+      knownNames.contains((p.fullName.toString, c.name.toString.stripSuffix("$")))
+    }
+    val allWithPkg    = userWithPkg ++ moduleWithPkg ++ nestedInModules ++ nestedModules
     allWithPkg.flatMap { case (ownerPkg, cls) =>
       val pkgName   = ownerPkg.fullName.toString
       val className = cls.name.toString.stripSuffix("$")
@@ -705,13 +715,7 @@ class SymbolUsageFinder(searches: Seq[SymbolSearch])(using ctx: Context) {
   ): Unit = {
     classDef.rhs.parents.foreach { parentTree =>
       try {
-        val parentType = parentTree match {
-          case Apply(Select(New(typeTree), _), _)               => Some(typeTree.toType)
-          case Apply(TypeApply(Select(New(typeTree), _), _), _) => Some(typeTree.toType)
-          case typeTree: TypeTree                               => Some(typeTree.toType)
-          case _                                                => None
-        }
-        parentType.foreach { tpe =>
+        TastyUtils.resolveParentType(parentTree).foreach { tpe =>
           val fqn = TastyUtils.extractFqn(tpe)
           fqn.foreach { parentFqn =>
             inheritanceSearches.foreach { search =>

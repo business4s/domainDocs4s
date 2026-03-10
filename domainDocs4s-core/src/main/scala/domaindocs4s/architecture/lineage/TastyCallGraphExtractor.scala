@@ -1,6 +1,7 @@
 package domaindocs4s.architecture.lineage
 
 import tastyquery.Contexts.Context
+import tastyquery.Names.Name
 import tastyquery.Symbols.*
 import tastyquery.Trees.*
 import tastyquery.Traversers.*
@@ -24,11 +25,10 @@ class TastyCallGraphExtractor(using ctx: Context) {
     val pkg = ctx.findPackage(packageName)
     val userClasses = TastyUtils.userClassesRecursive(pkg)
     val userClassNames = userClasses.map { case (p, c) => (p.fullName.toString, c.name.toString.stripSuffix("$")) }.toSet
-    // Include module classes (singleton objects) that don't have a corresponding user class,
-    // so standalone objects like DailyBalanceChangeProjection are included.
-    val standaloneModules = TastyUtils.moduleClassesRecursive(pkg).filterNot { case (p, c) =>
-      userClassNames.contains((p.fullName.toString, c.name.toString.stripSuffix("$")))
-    }
+    // Include ALL module classes (singleton objects), including companion objects.
+    // Companion objects contain factory methods (apply) whose bodies create instances
+    // with important call chains — filtering them out breaks call graph propagation.
+    val moduleClasses = TastyUtils.moduleClassesRecursive(pkg)
     // Include classes nested inside companion objects (e.g., object Foo { case class Impl(...) })
     // Only include nested classes that have at least one user method — filters out ADT case classes,
     // protocol messages, etc. that would bloat the scan without contributing to the call graph.
@@ -42,10 +42,11 @@ class TastyCallGraphExtractor(using ctx: Context) {
     // Include module classes (objects) nested inside other module classes
     // (e.g., object OuterJob { object Helpers { def process(...) } })
     val nestedModules = TastyUtils.nestedModulesInModules(pkg).filter(hasUserMethods)
-    val classesWithPkg = userClasses ++ standaloneModules ++ nestedClasses ++ nestedModules
+    val classesWithPkg = userClasses ++ moduleClasses ++ nestedClasses ++ nestedModules
 
     // Build class→userMethods index for constructor call resolution.
     // When we see `new SomeClass(...)`, we link to all user methods of SomeClass.
+    // Uses groupMap to merge methods from trait + companion object (same simple name after $ strip).
     val classMethodsIndex: Map[(String, String), List[String]] = classesWithPkg.map { case (ownerPkg, cls) =>
       val cn = cls.name.toString.stripSuffix("$")
       val pn = ownerPkg.fullName.toString
@@ -53,7 +54,7 @@ class TastyCallGraphExtractor(using ctx: Context) {
         case ts: TermSymbol if isUserMethod(ts) => ts.name.toString
       }
       (pn, cn) -> methodNames
-    }.toMap
+    }.groupMap(_._1)(_._2).view.mapValues(_.flatten.distinct).toMap
 
     val methods = classesWithPkg.flatMap { case (ownerPkg, cls) =>
       val className = cls.name.toString.stripSuffix("$")
@@ -90,7 +91,15 @@ class TastyCallGraphExtractor(using ctx: Context) {
       defMethods ++ valMethods
     }
 
-    addInheritanceEdges(classesWithPkg, methods, classMethodsIndex)
+    // Extract anonymous class method implementations from companion factory methods
+    // and attribute them to the parent trait. This handles the common pattern:
+    //   trait T { def method(): Unit }
+    //   object T { def apply(...): T = new T { override def method() = repo.doStuff() } }
+    // Without this, the trait method is abstract (no calls), breaking call graph propagation.
+    val anonTraitMethods = extractAnonymousTraitImpls(classesWithPkg, classMethodsIndex)
+    val mergedMethods = mergeExtractedMethods(methods ++ anonTraitMethods)
+
+    addInheritanceEdges(classesWithPkg, mergedMethods, classMethodsIndex)
   }
 
   /** For each child class, add edges from parent methods to child methods.
@@ -221,20 +230,21 @@ class TastyCallGraphExtractor(using ctx: Context) {
       case Right(_) => Nil
     }.toMap
 
-  private def isUserMethod(ts: TermSymbol): Boolean = {
-    val name = ts.name.toString
-    !name.startsWith("<") &&
-    !name.startsWith("_") &&
-    !name.startsWith("copy") &&
-    !name.startsWith("product") &&
-    name != "equals" &&
-    name != "hashCode" &&
-    name != "toString" &&
-    name != "canEqual" &&
-    name != "writeReplace" &&
+  private def isExcludedMethodName(name: String): Boolean =
+    name.startsWith("<") ||
+    name.startsWith("_") ||
+    name.startsWith("copy") ||
+    name.startsWith("product") ||
+    name == "equals" ||
+    name == "hashCode" ||
+    name == "toString" ||
+    name == "canEqual" ||
+    name == "writeReplace"
+
+  private def isUserMethod(ts: TermSymbol): Boolean =
+    !isExcludedMethodName(ts.name.toString) &&
     ts.tree.exists(_.isInstanceOf[DefDef]) &&
     !ts.isSynthetic
-  }
 
   /** Check if a TermSymbol is a val with a non-trivial body (not a constructor param accessor). */
   private def isValWithBody(ts: TermSymbol): Boolean = {
@@ -249,6 +259,156 @@ class TastyCallGraphExtractor(using ctx: Context) {
       case _          => false
     }
   }
+
+  /** For companion objects with factory methods (apply) that create anonymous trait
+    * implementations, extract each anonymous class method as a separate ExtractedMethod
+    * attributed to the parent trait.
+    *
+    * Pattern:
+    *   trait MyTrait { def process(): Unit }
+    *   object MyTrait { def apply(repo: Repo): MyTrait = new MyTrait { def process() = repo.doStuff() } }
+    * Result:
+    *   ExtractedMethod("MyTrait", pkg, "process", [MethodRef(pkg, "Repo", "doStuff")])
+    *
+    * This bridges the gap where trait method calls resolve to abstract methods with no body,
+    * but the actual implementation is in an anonymous class inside the companion's factory.
+    */
+  private def extractAnonymousTraitImpls(
+      classesWithPkg: List[(PackageSymbol, ClassSymbol)],
+      classMethodsIndex: Map[(String, String), List[String]],
+  ): List[ExtractedMethod] = {
+    // Build lookup of known traits/classes by (pkg, name)
+    val knownClasses: Set[(String, String)] = classesWithPkg.map { case (pkg, cls) =>
+      (pkg.fullName.toString, cls.name.toString.stripSuffix("$"))
+    }.toSet
+
+    classesWithPkg
+      .filter(_._2.name.toString.endsWith("$")) // module classes (companion objects) only
+      .flatMap { case (ownerPkg, moduleCls) =>
+        val pkgName = ownerPkg.fullName.toString
+        val companionName = moduleCls.name.toString.stripSuffix("$")
+        val moduleFieldTypes = resolveFieldTypes(moduleCls)
+
+        // Find factory methods (apply) in the companion
+        moduleCls.declarations.collect {
+          case ts: TermSymbol if ts.name.toString == "apply" =>
+            ts.tree.toList.flatMap {
+              case defDef: DefDef =>
+                val factoryParamTypes = extractParamTypes(defDef)
+                val combinedFieldTypes = moduleFieldTypes ++ factoryParamTypes
+
+                defDef.rhs.toList.flatMap { rhs =>
+                  findAnonymousClassDefs(rhs).flatMap { anonClassDef =>
+                    // Determine which parent trait/class the anonymous class implements
+                    val parentKey = resolveAnonymousClassParent(anonClassDef, knownClasses)
+                    parentKey.toList.flatMap { case (traitPkg, traitName) =>
+                      extractMethodsFromAnonymousClass(
+                        anonClassDef, traitPkg, traitName,
+                        combinedFieldTypes, factoryParamTypes, classMethodsIndex,
+                      )
+                    }
+                  }
+                }
+              case _ => Nil
+            }
+        }.flatten
+      }
+  }
+
+  /** Find anonymous ClassDef nodes in a tree (searches through Blocks). */
+  private def findAnonymousClassDefs(tree: Tree): List[ClassDef] = {
+    val results = ListBuffer.empty[ClassDef]
+    new TreeTraverser {
+      override def traverse(tree: Tree): Unit = tree match {
+        case cd: ClassDef if cd.name.toString.contains("$anon") =>
+          results += cd
+          // Don't recurse into the ClassDef — we handle it separately
+        case _ =>
+          super.traverse(tree)
+      }
+    }.traverse(tree)
+    results.toList
+  }
+
+  /** Determine which parent trait/class an anonymous ClassDef implements.
+    * Returns the first parent that's in the known classes set.
+    */
+  private def resolveAnonymousClassParent(
+      classDef: ClassDef,
+      knownClasses: Set[(String, String)],
+  ): Option[(String, String)] =
+    classDef.rhs.parents.iterator.flatMap { parentTree =>
+      try {
+        TastyUtils.resolveParentType(parentTree).flatMap { t =>
+          TastyUtils.extractTypeRef(t).flatMap { tr =>
+            val pkg = TastyUtils.typeRefPackage(tr)
+            val name = tr.name.toString.stripSuffix("$")
+            if (knownClasses.contains((pkg, name))) Some((pkg, name))
+            else None
+          }
+        }
+      } catch { case NonFatal(_) => None }
+    }.nextOption()
+
+  /** Extract methods from an anonymous ClassDef and attribute them to the parent trait. */
+  private def extractMethodsFromAnonymousClass(
+      classDef: ClassDef,
+      traitPkg: String,
+      traitName: String,
+      combinedFieldTypes: Map[String, (String, String)],
+      factoryParamTypes: Map[String, (String, String)],
+      classMethodsIndex: Map[(String, String), List[String]],
+  ): List[ExtractedMethod] = {
+    // Also extract fields declared in the anonymous class body
+    val anonFields = classDef.rhs.body.collect {
+      case vd: ValDef =>
+        try {
+          TastyUtils.extractTypeRef(vd.symbol.declaredType).flatMap { tr =>
+            val pkg = TastyUtils.typeRefPackage(tr)
+            val clsName = tr.name.toString.stripSuffix("$")
+            if (pkg.nonEmpty) Some(vd.name.toString -> (pkg, clsName)) else None
+          }
+        } catch { case NonFatal(_) => None }
+    }.flatten.toMap
+
+    val allFieldTypes = combinedFieldTypes ++ anonFields
+
+    classDef.rhs.body.collect {
+      case defDef: DefDef if isUserDefDef(defDef) =>
+        val methodName = TastyUtils.simpleName(defDef.name)
+        val defParamTypes = extractParamTypes(defDef)
+        defDef.rhs.toList.flatMap { rhs =>
+          val collector = new MethodCallCollector(
+            allFieldTypes,
+            classMethodsIndex,
+            Some((traitPkg, traitName)),
+            defParamTypes ++ factoryParamTypes,
+          )
+          collector.traverse(rhs)
+          val calls = collector.calls.distinct.toList
+          if (calls.nonEmpty) List(ExtractedMethod(traitName, traitPkg, methodName, calls))
+          else Nil
+        }
+    }.flatten
+  }
+
+  /** Check if a DefDef tree node is a user method (not synthetic/special). */
+  private def isUserDefDef(defDef: DefDef): Boolean =
+    !isExcludedMethodName(TastyUtils.simpleName(defDef.name)) &&
+    defDef.rhs.isDefined
+
+  /** Merge ExtractedMethod entries with the same (pkg, class, method) key by combining calls. */
+  private def mergeExtractedMethods(methods: List[ExtractedMethod]): List[ExtractedMethod] =
+    methods
+      .groupBy(m => (m.packageName, m.className, m.methodName))
+      .values
+      .map {
+        case single :: Nil => single
+        case entries =>
+          val allCalls = entries.flatMap(_.calls).distinct
+          entries.head.copy(calls = allCalls)
+      }
+      .toList
 
   private class MethodCallCollector(
       fieldTypes: Map[String, (String, String)],
@@ -274,10 +434,11 @@ class TastyCallGraphExtractor(using ctx: Context) {
         case vd: ValDef =>
           trackLocalVarType(vd)
         // field.method(args) — constructor params and local vars referenced as Ident
-        case Apply(Select(Ident(fieldName), methodName), _) =>
-          addIfKnown(TastyUtils.simpleName(fieldName), TastyUtils.simpleName(methodName))
-        case Apply(TypeApply(Select(Ident(fieldName), methodName), _), _) =>
-          addIfKnown(TastyUtils.simpleName(fieldName), TastyUtils.simpleName(methodName))
+        // Falls back to module resolution for singleton object calls like ModuleName.method(args)
+        case Apply(Select(ident @ Ident(fieldName), methodName), _) =>
+          addFieldOrModuleCall(ident, fieldName, methodName)
+        case Apply(TypeApply(Select(ident @ Ident(fieldName), methodName), _), _) =>
+          addFieldOrModuleCall(ident, fieldName, methodName)
         // this.field.method(args) — class body vals referenced via This
         case Apply(Select(Select(_: This, fieldName), methodName), _) =>
           addIfKnown(TastyUtils.simpleName(fieldName), TastyUtils.simpleName(methodName))
@@ -297,8 +458,9 @@ class TastyCallGraphExtractor(using ctx: Context) {
         // No-arg method/property access: field.method (without Apply wrapper).
         // Handles patterns like `journalReader.currentOperatorTransactions` which produce
         // Select(Ident(fieldName), methodName) without an Apply wrapper.
-        case Select(Ident(fieldName), methodName) =>
-          addIfKnown(TastyUtils.simpleName(fieldName), TastyUtils.simpleName(methodName))
+        // Falls back to module resolution for singleton object property access.
+        case Select(ident @ Ident(fieldName), methodName) =>
+          addFieldOrModuleCall(ident, fieldName, methodName)
         case Select(Select(_: This, fieldName), methodName) =>
           addIfKnown(TastyUtils.simpleName(fieldName), TastyUtils.simpleName(methodName))
         case _ =>
@@ -321,6 +483,15 @@ class TastyCallGraphExtractor(using ctx: Context) {
         calls += MethodRef(pkg, className, methodName)
       }
 
+    /** Try field/local var resolution first; fall back to module call for singleton objects. */
+    private def addFieldOrModuleCall(ident: Ident, fieldName: Name, methodName: Name): Unit = {
+      val fn = TastyUtils.simpleName(fieldName)
+      val mn = TastyUtils.simpleName(methodName)
+      addIfKnown(fn, mn)
+      if (!fieldTypes.contains(fn) && !localVarTypes.contains(fn))
+        addModuleCall(ident, mn)
+    }
+
     private def addSelfCall(methodName: String): Unit =
       selfClass.foreach { case (pkg, className) =>
         calls += MethodRef(pkg, className, methodName)
@@ -329,6 +500,9 @@ class TastyCallGraphExtractor(using ctx: Context) {
     /** Resolve an imported function call (Apply(Ident(name), args)) to a MethodRef.
       * Walks the Ident's TermRef prefix chain to find the owning class.
       * Skips ThisType prefixes (local methods handled by addSelfCall).
+      * Handles both TermRef prefixes (imported members) and PackageRef prefixes
+      * (companion object factory calls like SomeClass(args)).
+      * Treats "apply" calls as constructors (links to all user methods).
       */
     private def addImportedCall(ident: Ident): Unit =
       try {
@@ -338,11 +512,14 @@ class TastyCallGraphExtractor(using ctx: Context) {
               case _: ThisType => () // local method, handled by addSelfCall
               case prefixTr: TermRef =>
                 val methodName = TastyUtils.simpleName(tr.name)
-                val pkg = TastyUtils.termRefPackage(prefixTr)
-                val className = prefixTr.name.toString.stripSuffix("$")
-                if (pkg.nonEmpty && classMethodsIndex.contains((pkg, className))) {
-                  calls += MethodRef(pkg, className, methodName)
-                }
+                addTermRefCall(prefixTr, methodName)
+              case pr: PackageRef =>
+                // PackageRef prefix: direct companion object factory call, e.g., SomeClass(args)
+                // TermRef name is the class/object name; the implicit method is "apply" (constructor).
+                val className = tr.name.toString.stripSuffix("$")
+                val pkgName = try pr.symbol.fullName.toString catch { case NonFatal(_) => "" }
+                if (pkgName.nonEmpty && classMethodsIndex.contains((pkgName, className)))
+                  addConstructorCallsForClass(pkgName, className)
               case _ =>
             }
           case _ =>
@@ -355,9 +532,37 @@ class TastyCallGraphExtractor(using ctx: Context) {
         TastyUtils.extractTypeRef(tpe).foreach { tr =>
           val pkg = TastyUtils.typeRefPackage(tr)
           val clsName = tr.name.toString.stripSuffix("$")
-          classMethodsIndex.get((pkg, clsName)).foreach { methodNames =>
-            methodNames.foreach(m => calls += MethodRef(pkg, clsName, m))
-          }
+          addConstructorCallsForClass(pkg, clsName)
+        }
+      } catch { case NonFatal(_) => }
+
+    /** Link to all user methods of a class by (package, className). */
+    private def addConstructorCallsForClass(pkg: String, className: String): Unit =
+      classMethodsIndex.get((pkg, className)).foreach { methodNames =>
+        methodNames.foreach(m => calls += MethodRef(pkg, className, m))
+      }
+
+    /** Resolve a TermRef to a known class and add a method call or constructor call. */
+    private def addTermRefCall(tr: TermRef, methodName: String): Unit = {
+      val pkg = TastyUtils.termRefPackage(tr)
+      val className = tr.name.toString.stripSuffix("$")
+      if (pkg.nonEmpty && classMethodsIndex.contains((pkg, className))) {
+        if (methodName == "apply")
+          addConstructorCallsForClass(pkg, className)
+        else
+          calls += MethodRef(pkg, className, methodName)
+      }
+    }
+
+    /** Resolve a module/companion object call: Ident("ModuleName").method(args).
+      * The Ident's TermRef prefix chain identifies the owning package.
+      * If the method is "apply", treat as a constructor call (link to all user methods).
+      */
+    private def addModuleCall(ident: Ident, methodName: String): Unit =
+      try {
+        ident.referenceType match {
+          case tr: TermRef => addTermRefCall(tr, methodName)
+          case _           =>
         }
       } catch { case NonFatal(_) => }
   }

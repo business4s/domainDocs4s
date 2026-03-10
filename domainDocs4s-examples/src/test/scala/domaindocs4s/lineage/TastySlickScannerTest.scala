@@ -81,8 +81,8 @@ class TastySlickScannerTest extends AnyFreeSpec {
       factoryIntegrations.map(_.target).toSet should contain("factory_orders")
     }
 
-    "factory pattern: produces unresolved placeholder for variable table name" in {
-      factoryIntegrations.map(_.target).toSet should contain("<unresolved:ItemTable>")
+    "factory pattern: resolves variable table name via val binding" in {
+      factoryIntegrations.map(_.target).toSet should contain("factory_items")
     }
 
     "factory pattern: classifies reads and writes correctly" in {
@@ -91,6 +91,65 @@ class TastySlickScannerTest extends AnyFreeSpec {
 
       reads.map(_.method.methodName).toSet should contain allOf ("getOrders", "getItems")
       writes.map(_.method.methodName).toSet should contain allOf ("insertOrder", "deleteItem")
+    }
+
+    // -- SimpleDBIO s"..." detection --
+
+    "detects s interpolation with INSERT as Write (SimpleDBIO pattern)" in {
+      val hits = slickIntegrations.filter(i =>
+        i.method.className == "SimpleDbioRepo" && i.method.methodName == "insertRow")
+      hits should have size 1
+      hits.head.accessType shouldBe DataAccessType.Write
+      hits.head.target shouldBe "simple_dbio_table"
+    }
+
+    "detects s interpolation with SELECT as Read (SimpleDBIO pattern)" in {
+      val hits = slickIntegrations.filter(i =>
+        i.method.className == "SimpleDbioRepo" && i.method.methodName == "selectRow")
+      hits should have size 1
+      hits.head.accessType shouldBe DataAccessType.Read
+      hits.head.target shouldBe "simple_dbio_read_table"
+    }
+
+    "ignores non-SQL s interpolation strings" in {
+      val hits = slickIntegrations.filter(i =>
+        i.method.className == "SimpleDbioRepo" && i.method.methodName == "nonSqlString")
+      hits shouldBe empty
+    }
+
+    // -- SQL variable resolution --
+
+    "resolves interpolation variables in sqlu via class-level val bindings" in {
+      val hits = slickIntegrations.filter(i =>
+        i.method.className == "SqlVarRepo" && i.method.methodName == "insertWithInterp")
+      hits should have size 1
+      hits.head.target shouldBe "interp_table"
+    }
+
+    // -- Val-bound table name --
+
+    "resolves val-bound table names instead of unresolved placeholder" in {
+      val hits = slickIntegrations.filter(i => i.method.className == "ValBoundTableRepo")
+      hits should not be empty
+      hits.head.target shouldBe "val_bound_table"
+    }
+
+    // -- Nested Table in companion object --
+
+    "detects table operations on nested Table in companion object" in {
+      val hits = slickIntegrations.filter(i => i.method.className == "NestedTableRepo")
+      hits should not be empty
+      hits.head.target shouldBe "nested_obj_table"
+    }
+
+    // -- InsertActionComposerImpl --
+
+    "detects InsertActionComposerImpl pattern as Write" in {
+      val hits = slickIntegrations.filter(i =>
+        i.method.className == "ComposerRepo" && i.method.methodName == "upsertViaComposer")
+      hits should have size 1
+      hits.head.accessType shouldBe DataAccessType.Write
+      hits.head.target shouldBe "account_balances"
     }
   }
 

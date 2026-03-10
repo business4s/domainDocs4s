@@ -361,6 +361,34 @@ object ImportedCallJob {
   }
 }
 
+/** Demonstrates module/singleton object call resolution.
+  * The MethodCallCollector's `addModuleCall` resolves `DataProcessor.processData()`
+  * and `DataProcessor.transformData()` via the Ident's TermRef, linking to the
+  * singleton object's methods in the call graph.
+  */
+object DataProcessor {
+  def processData(): Unit = ()
+  def transformData(): Unit = ()
+}
+
+class ModuleCallerService {
+  def runProcessing(): Unit = {
+    DataProcessor.processData()
+    DataProcessor.transformData()
+  }
+}
+
+/** Demonstrates SymbolUsageFinder scanning of nested classes inside companion objects.
+  * The `InnerDoobieRepo` is a class nested inside `CompanionWithNested` object.
+  * Without the nestedClassesInModules fix, the doobie query would not be detected.
+  */
+object CompanionWithNested {
+  class InnerDoobieRepo {
+    def findInner(id: Long): ConnectionIO[Option[BigDecimal]] =
+      sql"SELECT value FROM nested_finder_table WHERE id = $id".query[BigDecimal].option
+  }
+}
+
 /** gRPC API — entry point, delegates to service.
   *
   * Implements UserServiceFs2Grpc (server exposure) and consumes

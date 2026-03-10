@@ -3,6 +3,7 @@ package domaindocs4s.architecture.lineage
 import tastyquery.Contexts.Context
 import tastyquery.Names.{Name, SignedName}
 import tastyquery.Symbols.{ClassSymbol, PackageSymbol, Symbol}
+import tastyquery.Trees
 import tastyquery.Types.*
 
 private[lineage] object TastyUtils {
@@ -137,6 +138,16 @@ private[lineage] object TastyUtils {
           case _           => None
         }
     }
+
+  /** Extract the type from a parent tree in a ClassDef's parent list.
+    * Handles both `new ParentType(args)` (Apply/TypeApply wrapping New) and bare `TypeTree` references.
+    */
+  def resolveParentType(parentTree: Trees.Tree): Option[Type] = parentTree match {
+    case Trees.Apply(Trees.Select(Trees.New(typeTree), _), _)                        => Some(typeTree.toType)
+    case Trees.Apply(Trees.TypeApply(Trees.Select(Trees.New(typeTree), _), _), _)    => Some(typeTree.toType)
+    case typeTree: Trees.TypeTree                                                     => Some(typeTree.toType)
+    case _                                                                            => None
+  }
 
   /** Resolve a type to its symbol, safely handling TypeRef and AppliedType. */
   def resolveSymbol(tpe: TypeOrMethodic)(using Context): Option[Symbol] =

@@ -141,6 +141,13 @@ class TastyDoobieScannerTest extends AnyFreeSpec {
       enrichedDoobie.foreach(_.group shouldBe Some("user-db"))
     }
 
+    "detects doobie queries in classes nested inside companion objects" in {
+      val hits = doobieIntegrations.filter(i => i.target == "nested_finder_table")
+      hits should not be empty
+      hits.head.method.className shouldBe "InnerDoobieRepo"
+      hits.head.accessType shouldBe DataAccessType.Read
+    }
+
     "detects doobie queries in anonymous class inside companion object (trait+companion pattern)" in {
       val traitRepoIntegrations = doobieIntegrations.filter(_.method.className == "TraitRepo")
       traitRepoIntegrations should not be empty

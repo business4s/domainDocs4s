@@ -70,19 +70,8 @@ class TastyDoobieScanner()(using ctx: Context) extends IntegrationScanner {
   private def enclosingMethodRhs(path: NestingPath): Option[Tree] =
     path.nodes.reverse.collectFirst { case NestingNode.Method(_, Some(dd)) => dd }.flatMap(_.rhs)
 
-  /** Recursively collect val bindings from all Block scopes in a tree. */
-  private def collectBlockBindings(tree: Tree): Map[String, Tree] = {
-    val bindings = scala.collection.mutable.Map.empty[String, Tree]
-    new tastyquery.Traversers.TreeTraverser {
-      override def traverse(tree: Tree): Unit = tree match {
-        case vd: ValDef =>
-          vd.rhs.foreach(rhs => bindings += (vd.name.toString -> rhs))
-          super.traverse(tree)
-        case _ => super.traverse(tree)
-      }
-    }.traverse(tree)
-    bindings.toMap
-  }
+  private def collectBlockBindings(tree: Tree): Map[String, Tree] =
+    SqlUtils.collectTreeBindings(tree)
 
   private def classifyUsage(u: FoundUsage.MethodCallResult): Option[DataAccessType] = {
     val method = u.methodName
@@ -107,6 +96,20 @@ private[lineage] object SqlUtils {
   import tastyquery.Trees.*
 
   import scala.collection.mutable.ListBuffer
+
+  /** Recursively collect val bindings (name → RHS tree) from all scopes in a tree. */
+  def collectTreeBindings(tree: Tree): Map[String, Tree] = {
+    val bindings = scala.collection.mutable.Map.empty[String, Tree]
+    new tastyquery.Traversers.TreeTraverser {
+      override def traverse(tree: Tree): Unit = tree match {
+        case vd: ValDef =>
+          vd.rhs.foreach(rhs => bindings += (vd.name.toString -> rhs))
+          super.traverse(tree)
+        case _ => super.traverse(tree)
+      }
+    }.traverse(tree)
+    bindings.toMap
+  }
 
   private val tablePatterns = List(
     "(?i)\\bFROM\\s+(\\w+)".r,
@@ -151,6 +154,103 @@ private[lineage] object SqlUtils {
     collectStringLiterals(tree, parts, valBindings)
     val sql = parts.mkString.stripMargin
     if (sql.nonEmpty) Some(sql) else None
+  }
+
+  /** Extract SQL from a string interpolation tree by properly interleaving StringContext parts
+    * with resolved interpolation arguments.
+    *
+    * Unlike `sqlFrom` which collects all string literals in tree traversal order (losing
+    * interleaving), this method reconstructs the original SQL by:
+    *   1. Extracting the StringContext literal parts from the receiver tree
+    *   2. Extracting the interpolation arguments from the Apply args
+    *   3. Resolving each argument to a string literal via val bindings where possible
+    *   4. Interleaving: parts(0) + args(0) + parts(1) + args(1) + ...
+    *
+    * After interleaving, Slick's `#` splice markers (e.g., `#$tableName` → `#resolvedName`)
+    * are stripped so that the SQL parses correctly.
+    *
+    * Falls back to `sqlFrom` if the tree doesn't match the interpolation pattern.
+    */
+  def sqlFromInterpolation(tree: Tree, valBindings: Map[String, Tree] = Map.empty): Option[String] = {
+    // tree is typically: Apply(Select(receiver, "sqlu"/"sql"), [interpArgs])
+    val (receiverTree, interpArgs) = tree match {
+      case Apply(Select(recv, _), args)               => (recv, args)
+      case Apply(TypeApply(Select(recv, _), _), args)  => (recv, args)
+      case Apply(recv, args)                            => (recv, args)
+      case _                                            => return sqlFrom(tree, valBindings)
+    }
+
+    // Extract ordered StringContext literal parts from the receiver
+    val scParts = extractStringContextParts(receiverTree)
+    if (scParts.isEmpty) return sqlFrom(tree, valBindings)
+
+    // Unwrap Typed + SeqLiteral if present (Scala 3 varargs representation)
+    val flatArgs = interpArgs.flatMap {
+      case t: Typed => t.expr match {
+        case sl: SeqLiteral => sl.elems
+        case other          => List(other)
+      }
+      case sl: SeqLiteral => sl.elems
+      case other          => List(other)
+    }
+
+    // Resolve each interpolation arg to a string where possible
+    val resolvedArgs = flatArgs.map(resolveToString(_, valBindings))
+
+    // Interleave: parts(0) + args(0) + parts(1) + args(1) + ... + parts(n)
+    val sb = new StringBuilder
+    for (i <- scParts.indices) {
+      sb.append(scParts(i))
+      if (i < resolvedArgs.length) resolvedArgs(i).foreach(sb.append)
+    }
+
+    val sql = sb.toString.stripMargin
+      .replaceAll("#(?=\\w)", "") // Strip Slick's # splice markers before identifiers
+    if (sql.nonEmpty && looksLikeSql(sql)) Some(sql)
+    else sqlFrom(tree, valBindings)
+  }
+
+  /** Extract the ordered string literal parts from a StringContext expression tree.
+    * Walks through implicit conversions, Apply, Typed, and TypeApply wrappers to
+    * find the SeqLiteral containing the parts.
+    */
+  private def extractStringContextParts(tree: Tree): List[String] = tree match {
+    case Apply(_, args) =>
+      // Look for SeqLiteral (or Typed(SeqLiteral)) among args
+      val fromSeq = args.collectFirst {
+        case sl: SeqLiteral =>
+          sl.elems.collect { case Literal(c) if c.value.isInstanceOf[String] => c.value.asInstanceOf[String] }
+        case t: Typed => t.expr match {
+          case sl: SeqLiteral =>
+            sl.elems.collect { case Literal(c) if c.value.isInstanceOf[String] => c.value.asInstanceOf[String] }
+          case _ => Nil
+        }
+      }.filter(_.nonEmpty)
+      fromSeq.getOrElse {
+        // Recurse into args looking for the StringContext deeper in the tree
+        args.flatMap(extractStringContextParts)
+      }
+    case t: Typed           => extractStringContextParts(t.expr)
+    case Select(qual, _)    => extractStringContextParts(qual)
+    case TypeApply(fun, _)  => extractStringContextParts(fun)
+    case _                  => Nil
+  }
+
+  /** Try to resolve a tree to a string literal value, following val bindings.
+    * Unwraps implicit conversion wrappers (e.g., Slick's TypedParameter) and
+    * TypeApply nodes to reach the actual value reference.
+    */
+  def resolveToString(tree: Tree, valBindings: Map[String, Tree]): Option[String] = tree match {
+    case Literal(c) if c.value.isInstanceOf[String] => Some(c.value.asInstanceOf[String])
+    case Ident(name) if valBindings.contains(name.toString) => resolveToString(valBindings(name.toString), valBindings)
+    case Select(_: This, name) if valBindings.contains(name.toString) => resolveToString(valBindings(name.toString), valBindings)
+    // Unwrap implicit conversion wrappers: Apply(fun, args) — try fun first, then args
+    case Apply(fun, args) =>
+      resolveToString(fun, valBindings)
+        .orElse(args.flatMap(resolveToString(_, valBindings)).headOption)
+    // Unwrap TypeApply wrappers
+    case TypeApply(fun, _) => resolveToString(fun, valBindings)
+    case _ => None
   }
 
   private def collectStringLiterals(tree: Tree, parts: ListBuffer[String], valBindings: Map[String, Tree]): Unit = tree match {
