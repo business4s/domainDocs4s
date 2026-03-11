@@ -172,11 +172,12 @@ object FlywayMigrationScanner {
     * (e.g. PL/pgSQL procedural blocks with DO $$...$$ or CREATE PROCEDURE).
     */
   private def parseStatements(content: String): List[net.sf.jsqlparser.statement.Statement] = {
+    val preprocessed = stripUnsupportedClauses(content)
     Try {
-      CCJSqlParserUtil.parseStatements(content).asScala.toList
+      CCJSqlParserUtil.parseStatements(preprocessed).asScala.toList
     }.getOrElse {
       // If batch parse fails (e.g. PL/pgSQL blocks), try individual statements
-      content.split(";").toList.flatMap { s =>
+      preprocessed.split(";").toList.flatMap { s =>
         val trimmed = s.trim
         if (trimmed.isEmpty) None
         else Try(CCJSqlParserUtil.parse(trimmed)).toOption
@@ -203,6 +204,18 @@ object FlywayMigrationScanner {
     case t: Table => Some(t.getName)
     case _        => None
   }
+
+  /** Strip DDL clauses that JSqlParser cannot parse.
+    *
+    * PostgreSQL `CREATE TABLE ... PARTITION BY {RANGE|LIST|HASH} (cols)` is not
+    * supported by JSqlParser (as of 5.3). We remove the clause so that the
+    * CREATE TABLE itself can still be parsed and the table name discovered.
+    */
+  private val PartitionByPattern =
+    """(?i)\bPARTITION\s+BY\s+(?:RANGE|LIST|HASH)\s*\([^)]*\)""".r
+
+  private def stripUnsupportedClauses(sql: String): String =
+    PartitionByPattern.replaceAllIn(sql, "")
 
   def apply(dir: String, group: Option[String] = None): FlywayMigrationScanner =
     new FlywayMigrationScanner(Path.of(dir), group)

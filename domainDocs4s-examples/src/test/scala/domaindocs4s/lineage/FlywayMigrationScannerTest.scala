@@ -110,6 +110,12 @@ class FlywayMigrationScannerTest extends AnyFreeSpec {
       viewDeps should have size 2
     }
 
+    "discovers CREATE TABLE with PARTITION BY RANGE/LIST/HASH" in {
+      val partitioned = flywayIntegrations.filter(_.evidence == "V008__partitioned_table.sql")
+      partitioned.map(_.target).toSet shouldBe Set("daily_snapshots", "events", "metrics")
+      partitioned.foreach(_.accessType shouldBe DataAccessType.Write)
+    }
+
     "all flyway integrations have resourceType database and scanner flyway" in {
       flywayIntegrations should not be empty
       flywayIntegrations.foreach { di =>

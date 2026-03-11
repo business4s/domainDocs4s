@@ -15,6 +15,7 @@ object MermaidRenderer {
 
   private def renderInternal(result: ScanResult, dataFlow: Boolean): String = {
     val sb = new StringBuilder
+    sb.append("%%{init: {'flowchart': {'defaultRenderer': 'elk'}}}%%\n")
     sb.append("flowchart LR\n")
 
     // Class subgraphs with methods
@@ -106,6 +107,7 @@ object MermaidRenderer {
   private def renderClassLevelInternal(result: ScanResult, dataFlow: Boolean, config: ClassLevelConfig): String = {
     val sb         = new StringBuilder
     val foldByGroup = config.foldByGroup
+    sb.append("%%{init: {'flowchart': {'defaultRenderer': 'elk'}}}%%\n")
     sb.append("flowchart LR\n")
 
     val classNames = result.classes.map(_.name).toSet
