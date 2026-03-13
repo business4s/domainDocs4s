@@ -207,6 +207,8 @@ object ParamValueIndex {
       // ── Arg classification ───────────────────────────────────────────────
 
       private def classifyArg(arg: Tree): ArgSource = arg match {
+        case NamedArg(_, value) =>
+          classifyArg(value)
         case Literal(c) if c.value.isInstanceOf[String] =>
           ArgSource.Literal(c.value.asInstanceOf[String])
         case Ident(name) =>
