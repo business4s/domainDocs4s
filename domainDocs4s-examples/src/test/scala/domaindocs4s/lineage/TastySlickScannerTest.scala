@@ -151,6 +151,37 @@ class TastySlickScannerTest extends AnyFreeSpec {
       hits.head.accessType shouldBe DataAccessType.Write
       hits.head.target shouldBe "account_balances"
     }
+
+    // -- Parameterized factory: backward param propagation --
+    //
+    // SingleSiteRepo.apply(tableName) is called from:
+    //   SingleSiteUser  → "param_single"
+    //   MultiSiteUserA  → "param_multi_a"
+    //   MultiSiteUserB  → "param_multi_b"
+    //
+    // All three literals are discovered via ParamValueIndex and each produces
+    // its own DiscoveredIntegration attributed to SingleSiteRepo.
+
+    val paramIntegrations = slickIntegrations.filter(_.method.className == "SingleSiteRepo")
+    val paramTargets      = paramIntegrations.map(_.target).toSet
+
+    "parameterized factory: resolves all call-site literals" in {
+      paramIntegrations should not be empty
+      paramTargets should contain("param_single")
+      paramTargets should contain("param_multi_a")
+      paramTargets should contain("param_multi_b")
+    }
+
+    "parameterized factory: no unresolved sentinel in output" in {
+      paramTargets.filter(_.startsWith("<unresolved:")) shouldBe empty
+    }
+
+    "parameterized factory: classifies reads and writes correctly" in {
+      val reads  = paramIntegrations.filter(_.accessType == DataAccessType.Read)
+      val writes = paramIntegrations.filter(_.accessType == DataAccessType.Write)
+      reads.map(_.target).toSet  should contain("param_single")
+      writes.map(_.target).toSet should contain("param_single")
+    }
   }
 
 }

@@ -178,6 +178,52 @@ object NestedTableRepo {
   def readNested(): DBIO[Seq[(Int, String)]] = nestedQuery.result
 }
 
+// ── Parameterized factory: backward param propagation ───────────────────────
+//
+// A factory `apply(tableName: String)` creates an anonymous class whose inner
+// Table subclass uses the parameter as its table name.
+//
+// • SingleSiteUser calls the factory with a single literal "param_single".
+// • MultiSiteUserA and MultiSiteUserB each call it with a distinct literal.
+//
+// The scanner resolves all call-site literals via ParamValueIndex and emits
+// one integration per resolved table name.
+
+trait SingleSiteRepo {
+  def get(): DBIO[Seq[Int]]
+  def put(id: Int): DBIO[Int]
+}
+
+object SingleSiteRepo {
+  def apply(tableName: String): SingleSiteRepo = {
+    class DynTable(tag: Tag) extends Table[Int](tag, tableName) {
+      def id = column[Int]("id", O.PrimaryKey)
+      def * = id
+    }
+    val q = TableQuery[DynTable]
+    new SingleSiteRepo {
+      def get()        = q.result
+      def put(id: Int) = q.insertOrUpdate(id)
+    }
+  }
+}
+
+class SingleSiteUser {
+  private val repo = SingleSiteRepo("param_single")
+  def getRow()       = repo.get()
+  def putRow(id: Int) = repo.put(id)
+}
+
+class MultiSiteUserA {
+  private val repo = SingleSiteRepo("param_multi_a")
+  def getRow()       = repo.get()
+}
+
+class MultiSiteUserB {
+  private val repo = SingleSiteRepo("param_multi_b")
+  def getRow()       = repo.get()
+}
+
 // ── InsertActionComposerImpl pattern ────────────────────────────────────────
 //
 // Simulates the InsertActionComposerImpl type that slick-pg and Slick core use

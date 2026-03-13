@@ -238,6 +238,34 @@ case class ExtractedMethod(
   def ref: MethodRef = MethodRef(packageName, className, methodName)
 }
 
+/** Source of an argument at a call site.
+  *
+  * Used by [[ParamValueIndex]] to trace string literals backward through
+  * arbitrary-depth call chains.
+  */
+sealed trait ArgSource
+object ArgSource {
+  /** A string literal directly at the call site. */
+  case class Literal(value: String) extends ArgSource
+
+  /** The arg was the Nth term parameter of the enclosing method — follow callers. */
+  case class ForwardedParam(
+      callerPkg: String, callerCls: String, callerMethod: String,
+      paramIndex: Int,
+  ) extends ArgSource
+
+  /** A local val whose RHS was a known string literal at the time of collection. */
+  case class LocalLiteral(value: String) extends ArgSource
+
+  /** The arg was a local val that holds the result of calling `method` with these args. */
+  case class CallResult(
+      method: MethodRef,
+      argSources: IndexedSeq[ArgSource],
+  ) extends ArgSource
+
+  case object Unresolvable extends ArgSource
+}
+
 // ── Phase 1: Scanner output ──────────────────────────────────────────────────
 
 /** Common interface for integration scanners that require TASTy packages. */
