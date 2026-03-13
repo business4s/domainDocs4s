@@ -10,6 +10,7 @@ import net.sf.jsqlparser.statement.select.{FromItem, PlainSelect, Select, SetOpe
 
 import java.nio.file.{Files, Path}
 import scala.jdk.CollectionConverters.*
+import scala.math.Ordering.Implicits.seqOrdering
 import scala.util.{Try, Using}
 
 // ============================================================================
@@ -46,7 +47,7 @@ class FlywayMigrationScanner(
     val files = Using(Files.list(migrationDir)) { stream =>
       stream.iterator().asScala.toList
         .filter(p => MigrationFilePattern.matches(p.getFileName.toString))
-        .sortBy(_.getFileName.toString)
+        .sortBy(p => flywayVersionKey(p.getFileName.toString))
     }.getOrElse(Nil)
 
     files.flatMap(parseMigrationFile).filter {
@@ -141,6 +142,22 @@ object FlywayMigrationScanner {
   private case class DependencyEvent(dep: ResourceDependency)    extends MigrationEvent
 
   private val MigrationFilePattern = """[VR][\d._]*__.*\.sql""".r
+
+  /** Sort key for Flyway migration filenames.
+    *
+    * Flyway orders migrations by version number (numeric segments), not lexicographically.
+    * `V1_0_7` < `V1_0_11`, but lexicographic sort puts `V1_0_11` before `V1_0_7`.
+    * Repeatable migrations (R__*) sort after all versioned migrations.
+    */
+  private def flywayVersionKey(filename: String): (Int, List[Long], String) =
+    if (filename.startsWith("V")) {
+      val versionStr = filename.drop(1).takeWhile(c => c.isDigit || c == '_' || c == '.')
+      val segments   = versionStr.split("[_.]").toList.flatMap(s => scala.util.Try(s.toLong).toOption)
+      (0, segments, filename)
+    } else {
+      // Repeatable migrations (R__*) sort after versioned ones
+      (1, Nil, filename)
+    }
 
   /** SQL identifiers must start with a letter or underscore.
     * Filters out JSqlParser artifacts from dollar-quoting (DO $$...$$)
