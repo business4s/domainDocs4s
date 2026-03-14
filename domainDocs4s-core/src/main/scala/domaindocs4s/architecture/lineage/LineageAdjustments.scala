@@ -539,6 +539,20 @@ object LineageAdjustments {
 
   val empty: LineageAdjustments = LineageAdjustments()
 
+  class ClassCollector {
+    private val _refs = ListBuffer.empty[(String, String)]
+    def cls[T: ClassTag]: ClassCollector = {
+      val (pkg, name) = splitClassTag(summon[ClassTag[T]])
+      _refs += ((pkg, name))
+      this
+    }
+    def cls(pkg: String, name: String): ClassCollector = {
+      _refs += ((pkg, name))
+      this
+    }
+    def refs: Seq[(String, String)] = _refs.toSeq
+  }
+
   def builder: Builder = new Builder
 
   class Builder {
@@ -566,6 +580,14 @@ object LineageAdjustments {
     def cls[T: ClassTag]: ClassActions = {
       val (pkg, cls) = splitClassTag(summon[ClassTag[T]])
       new ClassActions(pkg, cls)
+    }
+
+    /** Select multiple classes at once; apply actions to all of them.
+      * Usage: `.classes(_.cls[A].cls[B].cls[C]).show.setGroup("Group")`
+      */
+    def classes(selector: ClassCollector => ClassCollector): MultiClassActions = {
+      val collector = selector(new ClassCollector)
+      new MultiClassActions(collector.refs)
     }
 
     // ── String-based selectors (for non-TASTy / external elements) ────────
@@ -661,6 +683,7 @@ object LineageAdjustments {
       def method(pkg: String, cls: String, method: String): MethodActions = Builder.this.method(pkg, cls, method)
       def cls[T: ClassTag]: ClassActions = Builder.this.cls[T]
       def cls(pkg: String, cls: String): ClassActions = Builder.this.cls(pkg, cls)
+      def classes(selector: ClassCollector => ClassCollector): MultiClassActions = Builder.this.classes(selector)
       def pkg(packagePrefix: String): PackageActions = Builder.this.pkg(packagePrefix)
       def resource(resourceType: ResourceType, target: String): ResourceActions = Builder.this.resource(resourceType, target)
       def build: LineageAdjustments = Builder.this.build
@@ -744,8 +767,45 @@ object LineageAdjustments {
       def method(pkg: String, cls: String, method: String): MethodActions = Builder.this.method(pkg, cls, method)
       def cls[T: ClassTag]: ClassActions = Builder.this.cls[T]
       def cls(pkg: String, cls: String): ClassActions = Builder.this.cls(pkg, cls)
+      def classes(selector: ClassCollector => ClassCollector): MultiClassActions = Builder.this.classes(selector)
       def pkg(packagePrefix: String): PackageActions = Builder.this.pkg(packagePrefix)
       def resource(resourceType: ResourceType, target: String): ResourceActions = Builder.this.resource(resourceType, target)
+      def build: LineageAdjustments = Builder.this.build
+    }
+
+    // ── Multi-class collector & actions ─────────────────────────────────
+
+    class MultiClassActions(refs: Seq[(String, String)]) {
+      def show: MultiClassActions = {
+        refs.foreach { (pkg, cls) => _adjustments += LineageAdjustment.ShowClass(pkg, cls) }
+        this
+      }
+      def setGroup(group: String): MultiClassActions = {
+        refs.foreach { (pkg, cls) => _adjustments += LineageAdjustment.SetClassGroup(pkg, cls, group) }
+        this
+      }
+      def renameTo(displayName: String): MultiClassActions = {
+        refs.foreach { (pkg, cls) => _adjustments += LineageAdjustment.RenameClass(pkg, cls, displayName) }
+        this
+      }
+      def remove: Builder = {
+        refs.foreach { (pkg, cls) => _adjustments += LineageAdjustment.HideClass(pkg, cls) }
+        Builder.this
+      }
+      def delete: Builder = {
+        refs.foreach { (pkg, cls) => _adjustments += LineageAdjustment.DeleteClass(pkg, cls) }
+        Builder.this
+      }
+
+      // Transitions to other selectors
+      inline def method[T](inline selector: T => Any): MethodActions = Builder.this.method[T](selector)
+      def method(pkg: String, cls: String, method: String): MethodActions = Builder.this.method(pkg, cls, method)
+      def cls[T: ClassTag]: ClassActions = Builder.this.cls[T]
+      def cls(pkg: String, cls: String): ClassActions = Builder.this.cls(pkg, cls)
+      def classes(selector: ClassCollector => ClassCollector): MultiClassActions = Builder.this.classes(selector)
+      def pkg(packagePrefix: String): PackageActions = Builder.this.pkg(packagePrefix)
+      def resource(resourceType: ResourceType, target: String): ResourceActions = Builder.this.resource(resourceType, target)
+      def resourceMatching(resourceType: ResourceType, pattern: String): ResourcePatternActions = Builder.this.resourceMatching(resourceType, pattern)
       def build: LineageAdjustments = Builder.this.build
     }
 
@@ -770,6 +830,7 @@ object LineageAdjustments {
       def method(pkg: String, cls: String, method: String): MethodActions = Builder.this.method(pkg, cls, method)
       def cls[T: ClassTag]: ClassActions = Builder.this.cls[T]
       def cls(pkg: String, cls: String): ClassActions = Builder.this.cls(pkg, cls)
+      def classes(selector: ClassCollector => ClassCollector): MultiClassActions = Builder.this.classes(selector)
       def pkg(packagePrefix: String): PackageActions = Builder.this.pkg(packagePrefix)
       def resource(resourceType: ResourceType, target: String): ResourceActions = Builder.this.resource(resourceType, target)
       def resourceMatching(resourceType: ResourceType, pattern: String): ResourcePatternActions = Builder.this.resourceMatching(resourceType, pattern)
@@ -802,6 +863,7 @@ object LineageAdjustments {
       def method(pkg: String, cls: String, method: String): MethodActions = Builder.this.method(pkg, cls, method)
       def cls[T: ClassTag]: ClassActions = Builder.this.cls[T]
       def cls(pkg: String, cls: String): ClassActions = Builder.this.cls(pkg, cls)
+      def classes(selector: ClassCollector => ClassCollector): MultiClassActions = Builder.this.classes(selector)
       def pkg(packagePrefix: String): PackageActions = Builder.this.pkg(packagePrefix)
       def resource(resourceType: ResourceType, target: String): ResourceActions = Builder.this.resource(resourceType, target)
       def build: LineageAdjustments = Builder.this.build
@@ -852,6 +914,7 @@ object LineageAdjustments {
       def method(pkg: String, cls: String, method: String): MethodActions = Builder.this.method(pkg, cls, method)
       def cls[T: ClassTag]: ClassActions = Builder.this.cls[T]
       def cls(pkg: String, cls: String): ClassActions = Builder.this.cls(pkg, cls)
+      def classes(selector: ClassCollector => ClassCollector): MultiClassActions = Builder.this.classes(selector)
       def pkg(packagePrefix: String): PackageActions = Builder.this.pkg(packagePrefix)
       def resource(resourceType: ResourceType, target: String): ResourceActions = Builder.this.resource(resourceType, target)
       def build: LineageAdjustments = Builder.this.build
@@ -884,6 +947,7 @@ object LineageAdjustments {
       def method(pkg: String, cls: String, method: String): MethodActions = Builder.this.method(pkg, cls, method)
       def cls[T: ClassTag]: ClassActions = Builder.this.cls[T]
       def cls(pkg: String, cls: String): ClassActions = Builder.this.cls(pkg, cls)
+      def classes(selector: ClassCollector => ClassCollector): MultiClassActions = Builder.this.classes(selector)
       def pkg(packagePrefix: String): PackageActions = Builder.this.pkg(packagePrefix)
       def resource(resourceType: ResourceType, target: String): ResourceActions = Builder.this.resource(resourceType, target)
       def resourceMatching(resourceType: ResourceType, pattern: String): ResourcePatternActions = Builder.this.resourceMatching(resourceType, pattern)
@@ -909,6 +973,7 @@ object LineageAdjustments {
       def method(pkg: String, cls: String, method: String): MethodActions = Builder.this.method(pkg, cls, method)
       def cls[T: ClassTag]: ClassActions = Builder.this.cls[T]
       def cls(pkg: String, cls: String): ClassActions = Builder.this.cls(pkg, cls)
+      def classes(selector: ClassCollector => ClassCollector): MultiClassActions = Builder.this.classes(selector)
       def pkg(packagePrefix: String): PackageActions = Builder.this.pkg(packagePrefix)
       def resource(resourceType: ResourceType, target: String): ResourceActions = Builder.this.resource(resourceType, target)
       def resourceMatching(resourceType: ResourceType, pattern: String): ResourcePatternActions = Builder.this.resourceMatching(resourceType, pattern)
