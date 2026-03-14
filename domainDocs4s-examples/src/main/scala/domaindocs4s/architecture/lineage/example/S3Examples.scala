@@ -40,16 +40,17 @@ class S3ConditionalExporter(val s3Client: S3Client) {
 
   def exportIfNonEmpty(key: String, data: String): Option[PutObjectResponse] =
     if (data.nonEmpty)
-      Some(s3Client.putObject(
-        PutObjectRequest.builder().bucket("my-bucket").key(key).build(),
-        RequestBody.fromString(data),
-      ))
+      Some(
+        s3Client.putObject(
+          PutObjectRequest.builder().bucket("my-bucket").key(key).build(),
+          RequestBody.fromString(data),
+        ),
+      )
     else None
 }
 
-/** S3 call via lambda parameter — tests extractParamTypes in SymbolUsageFinder.
-  * The S3Client is received as a lambda/callback parameter, not a class field.
-  * This mirrors the real-world Using(makeS3Client()) { s3Client => ... } pattern.
+/** S3 call via lambda parameter — tests extractParamTypes in SymbolUsageFinder. The S3Client is received as a lambda/callback parameter, not a class
+  * field. This mirrors the real-world Using(makeS3Client()) { s3Client => ... } pattern.
   */
 class S3LambdaExporter {
 

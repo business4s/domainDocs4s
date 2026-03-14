@@ -18,15 +18,18 @@ import tastyquery.Contexts.Context
 
 class TastyS3Scanner(
     group: Option[String] = Some("S3"),
-)(using ctx: Context) extends IntegrationScanner {
+)(using ctx: Context)
+    extends IntegrationScanner {
 
   private val writeMethods = Set("putObject", "uploadPart", "copyObject", "deleteObject", "deleteObjects")
-  private val readMethods = Set("getObject", "getObjectAsBytes", "headObject", "listObjects", "listObjectsV2")
+  private val readMethods  = Set("getObject", "getObjectAsBytes", "headObject", "listObjects", "listObjectsV2")
 
-  private val search = SymbolSearch.MethodCall(TypeMatcher.oneOf(
-    "software.amazon.awssdk.services.s3.S3Client",
-    "software.amazon.awssdk.services.s3.S3AsyncClient",
-  ))
+  private val search = SymbolSearch.MethodCall(
+    TypeMatcher.oneOf(
+      "software.amazon.awssdk.services.s3.S3Client",
+      "software.amazon.awssdk.services.s3.S3AsyncClient",
+    ),
+  )
 
   def scan(packages: List[String]): List[DiscoveredIntegration] = {
     val finder = new SymbolUsageFinder(Seq(search))
@@ -35,7 +38,7 @@ class TastyS3Scanner(
         if (writeMethods.contains(u.methodName)) Some(DataAccessType.Write)
         else if (readMethods.contains(u.methodName)) Some(DataAccessType.Read)
         else None
-      val ref = u.path.toMethodRef
+      val ref        = u.path.toMethodRef
       accessType.map { at =>
         DiscoveredIntegration(
           method = ref,

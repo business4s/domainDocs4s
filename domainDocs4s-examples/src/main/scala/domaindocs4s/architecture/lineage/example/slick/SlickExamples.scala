@@ -15,24 +15,24 @@ import slick.jdbc.H2Profile.api.*
 // ── Table definitions ────────────────────────────────────────────────────────
 
 class AccountBalanceTable(tag: Tag) extends Table[(Long, BigDecimal)](tag, "account_balances") {
-  def id = column[Long]("id", O.PrimaryKey)
+  def id      = column[Long]("id", O.PrimaryKey)
   def balance = column[BigDecimal]("balance")
-  def * = (id, balance)
+  def *       = (id, balance)
 }
 
 class TransactionTable(tag: Tag) extends Table[(Long, Long, BigDecimal, String)](tag, "slick_transactions") {
-  def id = column[Long]("id", O.PrimaryKey, O.AutoInc)
-  def userId = column[Long]("user_id")
-  def amount = column[BigDecimal]("amount")
+  def id          = column[Long]("id", O.PrimaryKey, O.AutoInc)
+  def userId      = column[Long]("user_id")
+  def amount      = column[BigDecimal]("amount")
   def description = column[String]("description")
-  def * = (id, userId, amount, description)
+  def *           = (id, userId, amount, description)
 }
 
 // ── TableQuery vals ──────────────────────────────────────────────────────────
 
 object SlickTables {
   val accountBalances = TableQuery[AccountBalanceTable]
-  val transactions = TableQuery[TransactionTable]
+  val transactions    = TableQuery[TransactionTable]
 }
 
 // ── Repository ───────────────────────────────────────────────────────────────
@@ -54,29 +54,29 @@ object FactoryRepo {
   def apply(): FactoryRepo = {
     // Table with string literal name → resolves to "factory_orders"
     class OrderTable(tag: Tag) extends Table[(Long, Long, String)](tag, "factory_orders") {
-      def id = column[Long]("id", O.PrimaryKey)
+      def id     = column[Long]("id", O.PrimaryKey)
       def userId = column[Long]("user_id")
-      def item = column[String]("item")
-      def * = (id, userId, item)
+      def item   = column[String]("item")
+      def *      = (id, userId, item)
     }
 
     // Table with variable name → resolves to "<unresolved:ItemTable>"
     val itemTableName = "factory_items"
     class ItemTable(tag: Tag) extends Table[(Long, Long, Int)](tag, itemTableName) {
-      def id = column[Long]("id", O.PrimaryKey)
-      def orderId = column[Long]("order_id")
+      def id       = column[Long]("id", O.PrimaryKey)
+      def orderId  = column[Long]("order_id")
       def quantity = column[Int]("quantity")
-      def * = (id, orderId, quantity)
+      def *        = (id, orderId, quantity)
     }
 
     val orders = TableQuery[OrderTable]
-    val items = TableQuery[ItemTable]
+    val items  = TableQuery[ItemTable]
 
     new FactoryRepo {
-      def getOrders(userId: Long) = orders.filter(_.userId === userId).result
+      def getOrders(userId: Long)                           = orders.filter(_.userId === userId).result
       def insertOrder(id: Long, userId: Long, item: String) = orders.insertOrUpdate((id, userId, item))
-      def getItems(orderId: Long) = items.filter(_.orderId === orderId).result
-      def deleteItem(itemId: Long) = items.filter(_.id === itemId).delete
+      def getItems(orderId: Long)                           = items.filter(_.orderId === orderId).result
+      def deleteItem(itemId: Long)                          = items.filter(_.id === itemId).delete
     }
   }
 }
@@ -123,11 +123,11 @@ class SlickRepo {
 // StringContext.s calls and infers Read/Write from the SQL's first keyword.
 
 class SimpleDbioRepo {
-  def insertRow(id: Int): Unit = {
+  def insertRow(id: Int): Unit           = {
     val sql = s"INSERT INTO simple_dbio_table VALUES ($id)"
     ()
   }
-  def selectRow(id: Int): Unit = {
+  def selectRow(id: Int): Unit           = {
     val sql = s"SELECT * FROM simple_dbio_read_table WHERE id = $id"
     ()
   }
@@ -143,7 +143,7 @@ class SimpleDbioRepo {
 // name. The scanner resolves it via collectValBindings + sqlFromInterpolation.
 
 class SqlVarRepo {
-  private val tableName = "interp_table"
+  private val tableName                    = "interp_table"
   def insertWithInterp(id: Int): DBIO[Int] =
     sqlu"INSERT INTO #$tableName VALUES ($id)"
 }
@@ -157,7 +157,7 @@ class ValBoundTableRepo {
   private val myTableName = "val_bound_table"
   class ValBoundTable(tag: Tag) extends Table[Int](tag, myTableName) {
     def id = column[Int]("id", O.PrimaryKey)
-    def * = id
+    def *  = id
   }
   val valBoundQuery = TableQuery[ValBoundTable]
   def readAll(): DBIO[Seq[Int]] = valBoundQuery.result
@@ -170,9 +170,9 @@ class ValBoundTableRepo {
 
 object NestedTableRepo {
   class NestedObjTable(tag: Tag) extends Table[(Int, String)](tag, "nested_obj_table") {
-    def id = column[Int]("id", O.PrimaryKey)
+    def id    = column[Int]("id", O.PrimaryKey)
     def value = column[String]("value")
-    def * = (id, value)
+    def *     = (id, value)
   }
   val nestedQuery = TableQuery[NestedObjTable]
   def readNested(): DBIO[Seq[(Int, String)]] = nestedQuery.result
@@ -198,7 +198,7 @@ object SingleSiteRepo {
   def apply(tableName: String): SingleSiteRepo = {
     class DynTable(tag: Tag) extends Table[Int](tag, tableName) {
       def id = column[Int]("id", O.PrimaryKey)
-      def * = id
+      def *  = id
     }
     val q = TableQuery[DynTable]
     new SingleSiteRepo {
@@ -209,19 +209,19 @@ object SingleSiteRepo {
 }
 
 class SingleSiteUser {
-  private val repo = SingleSiteRepo("param_single")
-  def getRow()       = repo.get()
+  private val repo    = SingleSiteRepo("param_single")
+  def getRow()        = repo.get()
   def putRow(id: Int) = repo.put(id)
 }
 
 class MultiSiteUserA {
   private val repo = SingleSiteRepo("param_multi_a")
-  def getRow()       = repo.get()
+  def getRow()     = repo.get()
 }
 
 class MultiSiteUserB {
   private val repo = SingleSiteRepo("param_multi_b")
-  def getRow()       = repo.get()
+  def getRow()     = repo.get()
 }
 
 // ── InsertActionComposerImpl pattern ────────────────────────────────────────

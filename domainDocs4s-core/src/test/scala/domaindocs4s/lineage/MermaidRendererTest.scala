@@ -16,14 +16,16 @@ class MermaidRendererTest extends AnyFreeSpec {
         directAccess = DataAccessType.Read,
         effectiveAccess = DataAccessType.Read,
         calls = Nil,
-        integrations = List(DiscoveredIntegration(
-          method = MethodRef(pkg, "MyClass", "doStuff"),
-          accessType = DataAccessType.Read,
-          resourceType = ResourceType.Database,
-          scanner = "test",
-          target = "<unresolved:SomeTable>",
-          evidence = "test",
-        )),
+        integrations = List(
+          DiscoveredIntegration(
+            method = MethodRef(pkg, "MyClass", "doStuff"),
+            accessType = DataAccessType.Read,
+            resourceType = ResourceType.Database,
+            scanner = "test",
+            target = "<unresolved:SomeTable>",
+            evidence = "test",
+          ),
+        ),
       )
       val result = ScanResult(
         classes = List(ScannedClass(name = "MyClass", packageName = pkg, methods = List(method))),
@@ -51,23 +53,25 @@ class MermaidRendererTest extends AnyFreeSpec {
         directAccess = DataAccessType.Read,
         effectiveAccess = DataAccessType.Read,
         calls = Nil,
-        integrations = List(DiscoveredIntegration(
-          method = MethodRef(pkg, "Service", "methodB"),
-          accessType = DataAccessType.Read,
-          resourceType = ResourceType.Database,
-          scanner = "test",
-          target = "my_table",
-          evidence = "test",
-        )),
+        integrations = List(
+          DiscoveredIntegration(
+            method = MethodRef(pkg, "Service", "methodB"),
+            accessType = DataAccessType.Read,
+            resourceType = ResourceType.Database,
+            scanner = "test",
+            target = "my_table",
+            evidence = "test",
+          ),
+        ),
       )
-      val result = ScanResult(
+      val result  = ScanResult(
         classes = List(ScannedClass(name = "Service", packageName = pkg, methods = List(methodA, methodB))),
         callGraph = List(CallEdge(methodA.ref, methodB.ref)),
         integrations = methodA.integrations ++ methodB.integrations,
         lineageChains = Nil,
       )
 
-      val mermaid = MermaidRenderer.renderClassLevel(result)
+      val mermaid   = MermaidRenderer.renderClassLevel(result)
       // The class-level diagram should NOT have a self-edge for Service → Service
       // Count arrows — there should be no "cls_X_Service --> cls_X_Service" line
       val selfEdges = mermaid.linesIterator.count { line =>

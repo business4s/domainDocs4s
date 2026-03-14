@@ -30,8 +30,11 @@ object RenderLineage {
         new TastyFs2KafkaScanner(),
       ),
       adjustments = LineageAdjustments.builder
-        .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
-        .cls[UserRepo].remove
+        .method[EventPublisher](_.publishDeposit)
+        .writes
+        .kafka("user.deposit-events")
+        .cls[UserRepo]
+        .remove
         .build,
       enrichment = IntegrationGroupConfig.builder
         .group[UserRepo]("user-db")

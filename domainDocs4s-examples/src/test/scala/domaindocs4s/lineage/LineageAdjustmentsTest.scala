@@ -15,9 +15,9 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
 
   private val pkg = "domaindocs4s.architecture.lineage.example"
 
-  private val callGraph = new TastyCallGraphExtractor().extract(pkg)
+  private val callGraph          = new TastyCallGraphExtractor().extract(pkg)
   private val doobieIntegrations = new TastyDoobieScanner().scan(List(pkg))
-  private val grpcIntegrations = new TastyFs2GrpcScanner().scan(List(pkg))
+  private val grpcIntegrations   = new TastyFs2GrpcScanner().scan(List(pkg))
 
   private val enrichment = IntegrationGroupConfig.builder
     .group[UserRepo]("user-db")
@@ -27,12 +27,14 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
 
     "produces kafka adjustments with correct fields" in {
       val adj = LineageAdjustments.builder
-        .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
+        .method[EventPublisher](_.publishDeposit)
+        .writes
+        .kafka("user.deposit-events")
         .build
 
       val (_, result) = adj.apply(Nil, Nil)
       result should have size 1
-      val e = result.head
+      val e           = result.head
       e.method.className shouldBe "EventPublisher"
       e.method.methodName shouldBe "publishDeposit"
       e.accessType shouldBe DataAccessType.Write
@@ -44,7 +46,9 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
 
     "kafka uses default Kafka group" in {
       val adj = LineageAdjustments.builder
-        .method[UserRepo](_.getBalance).reads.kafka("some.topic")
+        .method[UserRepo](_.getBalance)
+        .reads
+        .kafka("some.topic")
         .build
 
       val (_, result) = adj.apply(Nil, Nil)
@@ -53,7 +57,9 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
 
     "supports custom group via custom method" in {
       val adj = LineageAdjustments.builder
-        .method[UserRepo](_.getBalance).reads.custom(ResourceType.Kafka, "analytics.events", group = Some("Analytics"))
+        .method[UserRepo](_.getBalance)
+        .reads
+        .custom(ResourceType.Kafka, "analytics.events", group = Some("Analytics"))
         .build
 
       val (_, result) = adj.apply(Nil, Nil)
@@ -62,11 +68,13 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
 
     "supports generic custom resource type" in {
       val adj = LineageAdjustments.builder
-        .method[UserRepo](_.getBalance).writes.custom(ResourceType.S3, "my-bucket/exports", group = Some("S3"))
+        .method[UserRepo](_.getBalance)
+        .writes
+        .custom(ResourceType.S3, "my-bucket/exports", group = Some("S3"))
         .build
 
       val (_, result) = adj.apply(Nil, Nil)
-      val e = result.head
+      val e           = result.head
       e.resourceType shouldBe ResourceType.S3
       e.target shouldBe "my-bucket/exports"
       e.group shouldBe Some("S3")
@@ -74,12 +82,14 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
 
     "produces s3 adjustments with correct fields via .s3()" in {
       val adj = LineageAdjustments.builder
-        .method[S3Exporter](_.exportData).writes.s3("ledger-exports/assets")
+        .method[S3Exporter](_.exportData)
+        .writes
+        .s3("ledger-exports/assets")
         .build
 
       val (_, result) = adj.apply(Nil, Nil)
       result should have size 1
-      val e = result.head
+      val e           = result.head
       e.method.className shouldBe "S3Exporter"
       e.method.methodName shouldBe "exportData"
       e.accessType shouldBe DataAccessType.Write
@@ -90,16 +100,19 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
 
     "composes with automatic scanner results in LineageBuilder" in {
       val adj = LineageAdjustments.builder
-        .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
+        .method[EventPublisher](_.publishDeposit)
+        .writes
+        .kafka("user.deposit-events")
         .build
 
       val (adjCallGraph, adjIntegrations) = adj.apply(callGraph, doobieIntegrations ++ grpcIntegrations)
-      val allIntegrations = enrichment.enrich(adjIntegrations)
-      val resultWithManual = LineageBuilder.build(adjCallGraph, allIntegrations)
+      val allIntegrations                 = enrichment.enrich(adjIntegrations)
+      val resultWithManual                = LineageBuilder.build(adjCallGraph, allIntegrations)
 
-      val depositChains = resultWithManual.lineageForClass("UserGrpcApi")
+      val depositChains = resultWithManual
+        .lineageForClass("UserGrpcApi")
         .filter(_.path.exists(r => r.className == "UserGrpcApi" && r.methodName == "deposit"))
-      val kafkaChains = depositChains.filter(_.integration.resourceType == ResourceType.Kafka)
+      val kafkaChains   = depositChains.filter(_.integration.resourceType == ResourceType.Kafka)
       kafkaChains should not be empty
       kafkaChains.head.integration.target shouldBe "user.deposit-events"
       kafkaChains.head.integration.accessType shouldBe DataAccessType.Write
@@ -108,9 +121,15 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
 
     "supports multiple adjustments in a single builder" in {
       val adj = LineageAdjustments.builder
-        .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
-        .method[UserGrpcApi](_.getHistory).reads.custom(ResourceType.Kafka, "user.history-events", group = Some("Analytics"))
-        .method[UserService](_.deposit).writes.custom(ResourceType("audit"), "audit-log", group = Some("Audit"))
+        .method[EventPublisher](_.publishDeposit)
+        .writes
+        .kafka("user.deposit-events")
+        .method[UserGrpcApi](_.getHistory)
+        .reads
+        .custom(ResourceType.Kafka, "user.history-events", group = Some("Analytics"))
+        .method[UserService](_.deposit)
+        .writes
+        .custom(ResourceType("audit"), "audit-log", group = Some("Audit"))
         .build
 
       val (_, result) = adj.apply(Nil, Nil)
@@ -121,7 +140,10 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
 
     "cls builds class-level adjustments via chaining" in {
       val adj = LineageAdjustments.builder
-        .cls[KafkaFlexiFlowProducer].writes.kafka("topic.a").kafka("topic.b")
+        .cls[KafkaFlexiFlowProducer]
+        .writes
+        .kafka("topic.a")
+        .kafka("topic.b")
         .build
 
       adj.adjustments should have size 2
@@ -132,8 +154,12 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
 
     "transitions from IntegrationBuilder to new selector" in {
       val adj = LineageAdjustments.builder
-        .cls[KafkaFlexiFlowProducer].writes.kafka("topic.a")
-        .method[EventPublisher](_.publishDeposit).writes.kafka("topic.b")
+        .cls[KafkaFlexiFlowProducer]
+        .writes
+        .kafka("topic.a")
+        .method[EventPublisher](_.publishDeposit)
+        .writes
+        .kafka("topic.b")
         .build
 
       adj.adjustments should have size 2
@@ -143,10 +169,11 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
 
     "class-level calls adds call edges (resolves to matching method)" in {
       val adj = LineageAdjustments.builder
-        .cls[UserService].calls[EventPublisher](_.publishDeposit)
+        .cls[UserService]
+        .calls[EventPublisher](_.publishDeposit)
         .build
 
-      val methods = List(
+      val methods            = List(
         ExtractedMethod("UserService", pkg, "deposit", List(MethodRef(pkg, "EventPublisher", "someOther"))),
         ExtractedMethod("UserService", pkg, "getBalance", Nil),
         ExtractedMethod("EventPublisher", pkg, "publishDeposit", Nil),
@@ -154,19 +181,20 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
       )
       val (resultMethods, _) = adj.apply(methods, Nil)
       // Should resolve to deposit (already calls EventPublisher)
-      val deposit = resultMethods.find(_.ref == MethodRef(pkg, "UserService", "deposit")).get
+      val deposit            = resultMethods.find(_.ref == MethodRef(pkg, "UserService", "deposit")).get
       deposit.calls should contain(MethodRef(pkg, "EventPublisher", "publishDeposit"))
       // getBalance should not be affected
-      val getBalance = resultMethods.find(_.ref == MethodRef(pkg, "UserService", "getBalance")).get
+      val getBalance         = resultMethods.find(_.ref == MethodRef(pkg, "UserService", "getBalance")).get
       getBalance.calls shouldBe empty
     }
 
     "class-level removesCall removes from all methods" in {
       val adj = LineageAdjustments.builder
-        .cls[UserService].removesCall[UserRepo](_.getBalance)
+        .cls[UserService]
+        .removesCall[UserRepo](_.getBalance)
         .build
 
-      val methods = List(
+      val methods            = List(
         ExtractedMethod("UserService", pkg, "getBalance", List(MethodRef(pkg, "UserRepo", "getBalance"))),
         ExtractedMethod("UserService", pkg, "deposit", List(MethodRef(pkg, "UserRepo", "getBalance"), MethodRef(pkg, "UserRepo", "updateBalance"))),
         ExtractedMethod("UserRepo", pkg, "getBalance", Nil),
@@ -174,38 +202,40 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
       )
       val (resultMethods, _) = adj.apply(methods, Nil)
       // Both methods should have the call removed
-      val getBalance = resultMethods.find(_.ref == MethodRef(pkg, "UserService", "getBalance")).get
+      val getBalance         = resultMethods.find(_.ref == MethodRef(pkg, "UserService", "getBalance")).get
       getBalance.calls should not contain MethodRef(pkg, "UserRepo", "getBalance")
-      val deposit = resultMethods.find(_.ref == MethodRef(pkg, "UserService", "deposit")).get
+      val deposit            = resultMethods.find(_.ref == MethodRef(pkg, "UserService", "deposit")).get
       deposit.calls should not contain MethodRef(pkg, "UserRepo", "getBalance")
       deposit.calls should contain(MethodRef(pkg, "UserRepo", "updateBalance"))
     }
 
     "method-level calls adds call edges" in {
       val adj = LineageAdjustments.builder
-        .method[UserService](_.deposit).calls[EventPublisher](_.publishDeposit)
+        .method[UserService](_.deposit)
+        .calls[EventPublisher](_.publishDeposit)
         .build
 
-      val methods = List(
+      val methods            = List(
         ExtractedMethod("UserService", pkg, "deposit", Nil),
         ExtractedMethod("EventPublisher", pkg, "publishDeposit", Nil),
       )
       val (resultMethods, _) = adj.apply(methods, Nil)
-      val serviceMethod = resultMethods.find(_.ref == MethodRef(pkg, "UserService", "deposit"))
+      val serviceMethod      = resultMethods.find(_.ref == MethodRef(pkg, "UserService", "deposit"))
       serviceMethod.get.calls should contain(MethodRef(pkg, "EventPublisher", "publishDeposit"))
     }
 
     "method-level .remove hides method and reconnects callers to callees" in {
       val adj = LineageAdjustments.builder
-        .method[UserService](_.getBalance).remove
+        .method[UserService](_.getBalance)
+        .remove
         .build
 
-      val methods = List(
+      val methods                             = List(
         ExtractedMethod("UserGrpcApi", pkg, "getBalance", List(MethodRef(pkg, "UserService", "getBalance"))),
         ExtractedMethod("UserService", pkg, "getBalance", List(MethodRef(pkg, "UserRepo", "getBalance"))),
         ExtractedMethod("UserRepo", pkg, "getBalance", Nil),
       )
-      val existingIntegrations = List(
+      val existingIntegrations                = List(
         DiscoveredIntegration(MethodRef(pkg, "UserRepo", "getBalance"), DataAccessType.Read, ResourceType.Database, "doobie", "users", "SELECT"),
       )
       val (resultMethods, resultIntegrations) = adj.apply(methods, existingIntegrations)
@@ -221,14 +251,15 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
 
     "method-level .remove promotes integrations from hidden method to callers" in {
       val adj = LineageAdjustments.builder
-        .method[UserRepo](_.getBalance).remove
+        .method[UserRepo](_.getBalance)
+        .remove
         .build
 
-      val methods = List(
+      val methods                             = List(
         ExtractedMethod("UserService", pkg, "getBalance", List(MethodRef(pkg, "UserRepo", "getBalance"))),
         ExtractedMethod("UserRepo", pkg, "getBalance", Nil),
       )
-      val existingIntegrations = List(
+      val existingIntegrations                = List(
         DiscoveredIntegration(MethodRef(pkg, "UserRepo", "getBalance"), DataAccessType.Read, ResourceType.Database, "doobie", "users", "SELECT"),
       )
       val (resultMethods, resultIntegrations) = adj.apply(methods, existingIntegrations)
@@ -242,16 +273,17 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
 
     "class-level .remove hides class and reconnects callers to external callees" in {
       val adj = LineageAdjustments.builder
-        .cls[UserRepo].remove
+        .cls[UserRepo]
+        .remove
         .build
 
-      val methods = List(
+      val methods                             = List(
         ExtractedMethod("UserService", pkg, "getBalance", List(MethodRef(pkg, "UserRepo", "getBalance"))),
         ExtractedMethod("UserService", pkg, "deposit", List(MethodRef(pkg, "UserRepo", "updateBalance"))),
         ExtractedMethod("UserRepo", pkg, "getBalance", Nil),
         ExtractedMethod("UserRepo", pkg, "updateBalance", Nil),
       )
-      val existingIntegrations = List(
+      val existingIntegrations                = List(
         DiscoveredIntegration(MethodRef(pkg, "UserRepo", "getBalance"), DataAccessType.Read, ResourceType.Database, "doobie", "users", "SELECT"),
         DiscoveredIntegration(MethodRef(pkg, "UserRepo", "updateBalance"), DataAccessType.Write, ResourceType.Database, "doobie", "users", "UPDATE"),
       )
@@ -267,14 +299,15 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
 
     "method-level .delete hard-removes method and disconnects graph" in {
       val adj = LineageAdjustments.builder
-        .method[UserRepo](_.getBalance).delete
+        .method[UserRepo](_.getBalance)
+        .delete
         .build
 
-      val methods = List(
+      val methods                             = List(
         ExtractedMethod("UserService", pkg, "getBalance", List(MethodRef(pkg, "UserRepo", "getBalance"))),
         ExtractedMethod("UserRepo", pkg, "getBalance", Nil),
       )
-      val existingIntegrations = List(
+      val existingIntegrations                = List(
         DiscoveredIntegration(MethodRef(pkg, "UserRepo", "getBalance"), DataAccessType.Read, ResourceType.Database, "doobie", "users", "SELECT"),
       )
       val (resultMethods, resultIntegrations) = adj.apply(methods, existingIntegrations)
@@ -286,15 +319,16 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
 
     "class-level .delete hard-removes class and disconnects graph" in {
       val adj = LineageAdjustments.builder
-        .cls[UserRepo].delete
+        .cls[UserRepo]
+        .delete
         .build
 
-      val methods = List(
+      val methods                             = List(
         ExtractedMethod("UserService", pkg, "getBalance", List(MethodRef(pkg, "UserRepo", "getBalance"))),
         ExtractedMethod("UserRepo", pkg, "getBalance", Nil),
         ExtractedMethod("UserRepo", pkg, "updateBalance", Nil),
       )
-      val existingIntegrations = List(
+      val existingIntegrations                = List(
         DiscoveredIntegration(MethodRef(pkg, "UserRepo", "getBalance"), DataAccessType.Read, ResourceType.Database, "doobie", "users", "SELECT"),
         DiscoveredIntegration(MethodRef(pkg, "UserRepo", "updateBalance"), DataAccessType.Write, ResourceType.Database, "doobie", "users", "UPDATE"),
       )
@@ -307,12 +341,29 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
 
     "resource().renameTo renames target across integrations" in {
       val adj = LineageAdjustments.builder
-        .resource(ResourceType.Kafka, "old-topic").renameTo("new-topic")
+        .resource(ResourceType.Kafka, "old-topic")
+        .renameTo("new-topic")
         .build
 
-      val existing = List(
-        DiscoveredIntegration(MethodRef("", "A", "m"), DataAccessType.Write, ResourceType.Kafka, "pekko-kafka", "old-topic", "evidence", Some("Kafka")),
-        DiscoveredIntegration(MethodRef("", "B", "n"), DataAccessType.Write, ResourceType.Kafka, "pekko-kafka", "other-topic", "evidence", Some("Kafka")),
+      val existing    = List(
+        DiscoveredIntegration(
+          MethodRef("", "A", "m"),
+          DataAccessType.Write,
+          ResourceType.Kafka,
+          "pekko-kafka",
+          "old-topic",
+          "evidence",
+          Some("Kafka"),
+        ),
+        DiscoveredIntegration(
+          MethodRef("", "B", "n"),
+          DataAccessType.Write,
+          ResourceType.Kafka,
+          "pekko-kafka",
+          "other-topic",
+          "evidence",
+          Some("Kafka"),
+        ),
       )
       val (_, result) = adj.apply(Nil, existing)
       result.find(_.method.className == "A").get.target shouldBe "new-topic"
@@ -321,10 +372,11 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
 
     "resource().remove removes all integrations to target" in {
       val adj = LineageAdjustments.builder
-        .resource(ResourceType.Kafka, "old-topic").remove
+        .resource(ResourceType.Kafka, "old-topic")
+        .remove
         .build
 
-      val existing = List(
+      val existing    = List(
         DiscoveredIntegration(MethodRef("", "A", "m"), DataAccessType.Write, ResourceType.Kafka, "pekko-kafka", "old-topic", "evidence"),
         DiscoveredIntegration(MethodRef("", "B", "n"), DataAccessType.Read, ResourceType.Database, "doobie", "users", "SELECT"),
       )
@@ -335,10 +387,11 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
 
     "resource().setGroup changes group" in {
       val adj = LineageAdjustments.builder
-        .resource(ResourceType.Database, "users").setGroup("user-db")
+        .resource(ResourceType.Database, "users")
+        .setGroup("user-db")
         .build
 
-      val existing = List(
+      val existing    = List(
         DiscoveredIntegration(MethodRef("", "A", "m"), DataAccessType.Read, ResourceType.Database, "doobie", "users", "SELECT"),
       )
       val (_, result) = adj.apply(Nil, existing)
@@ -347,20 +400,25 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
 
     "class-level renameTo sets display name without affecting data" in {
       val adj = LineageAdjustments.builder
-        .cls[UserRepo].renameTo("User Repository")
+        .cls[UserRepo]
+        .renameTo("User Repository")
         .build
 
       adj.classRenames shouldBe Map((pkg, "UserRepo") -> "User Repository")
       // apply() does not modify data for renames
-      val methods = List(ExtractedMethod("UserRepo", pkg, "getBalance", Nil))
+      val methods            = List(ExtractedMethod("UserRepo", pkg, "getBalance", Nil))
       val (resultMethods, _) = adj.apply(methods, Nil)
       resultMethods.head.className shouldBe "UserRepo"
     }
 
     "supports database and grpc convenience methods" in {
       val adj = LineageAdjustments.builder
-        .method[UserRepo](_.getBalance).reads.database("users", group = Some("user-db"))
-        .method[UserGrpcApi](_.deposit).reads.grpc("RateService/getRate")
+        .method[UserRepo](_.getBalance)
+        .reads
+        .database("users", group = Some("user-db"))
+        .method[UserGrpcApi](_.deposit)
+        .reads
+        .grpc("RateService/getRate")
         .build
 
       val (_, result) = adj.apply(Nil, Nil)
@@ -373,8 +431,11 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
 
     "string-based selectors work like type-safe ones" in {
       val adj = LineageAdjustments.builder
-        .method("com.example", "ExternalService", "call").writes.kafka("events")
-        .cls("com.example", "InternalHelper").remove
+        .method("com.example", "ExternalService", "call")
+        .writes
+        .kafka("events")
+        .cls("com.example", "InternalHelper")
+        .remove
         .build
 
       adj.adjustments should have size 2
@@ -384,12 +445,14 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
       val existing = List(
         DiscoveredIntegration(MethodRef("", "Handler", "send"), DataAccessType.Write, ResourceType.Kafka, "pekko-kafka", "auto-topic", "evidence"),
       )
-      val methods = List(
+      val methods  = List(
         ExtractedMethod("Handler", "", "send", Nil),
       )
 
       val adj = LineageAdjustments.builder
-        .cls("", "Handler").writes.kafka("real-topic")
+        .cls("", "Handler")
+        .writes
+        .kafka("real-topic")
         .build
 
       val (_, result) = adj.apply(methods, existing)
@@ -402,14 +465,16 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
       val existing = List(
         DiscoveredIntegration(MethodRef("", "LowLevel", "write"), DataAccessType.Write, ResourceType.S3, "s3", "S3", "putObject"),
       )
-      val methods = List(
+      val methods  = List(
         ExtractedMethod("Handler", "", "handle", List(MethodRef("", "Middle", "process"))),
         ExtractedMethod("Middle", "", "process", List(MethodRef("", "LowLevel", "write"))),
         ExtractedMethod("LowLevel", "", "write", Nil),
       )
 
       val adj = LineageAdjustments.builder
-        .cls("", "Handler").writes.s3("exports-bucket")
+        .cls("", "Handler")
+        .writes
+        .s3("exports-bucket")
         .build
 
       // Should not throw — s3 detected on LowLevel, reachable from Handler
@@ -421,12 +486,14 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
       val existing = List(
         DiscoveredIntegration(MethodRef("", "Handler", "query"), DataAccessType.Read, ResourceType.Database, "doobie", "users", "SELECT"),
       )
-      val methods = List(
+      val methods  = List(
         ExtractedMethod("Handler", "", "query", Nil),
       )
 
       val adj = LineageAdjustments.builder
-        .cls("", "Handler").writes.kafka("topic")
+        .cls("", "Handler")
+        .writes
+        .kafka("topic")
         .build
 
       val ex = intercept[IllegalStateException] {
@@ -438,7 +505,9 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
 
     "strict by default — throws when class has no methods in call graph" in {
       val adj = LineageAdjustments.builder
-        .cls("", "Ghost").writes.s3("bucket")
+        .cls("", "Ghost")
+        .writes
+        .s3("bucket")
         .build
 
       val ex = intercept[IllegalStateException] {
@@ -452,15 +521,19 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
       val existing = List(
         DiscoveredIntegration(MethodRef("", "Handler", "query"), DataAccessType.Read, ResourceType.Database, "doobie", "users", "SELECT"),
       )
-      val methods = List(
+      val methods  = List(
         ExtractedMethod("Handler", "", "query", Nil),
       )
 
       // kafka is not auto-detected, but .undetected(ResourceType.Kafka) marks it as manual-only
       val adj = LineageAdjustments.builder
         .undetected(ResourceType.Kafka)
-        .cls("", "Handler").writes.kafka("topic")
-        .cls("", "Handler").reads.database("users")
+        .cls("", "Handler")
+        .writes
+        .kafka("topic")
+        .cls("", "Handler")
+        .reads
+        .database("users")
         .build
 
       // Should not throw — kafka is manual-only, database is detected
@@ -472,15 +545,20 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
       val existing = List(
         DiscoveredIntegration(MethodRef("", "Handler", "query"), DataAccessType.Read, ResourceType.Database, "doobie", "users", "SELECT"),
       )
-      val methods = List(
+      val methods  = List(
         ExtractedMethod("Handler", "", "query", Nil),
       )
 
       // First builder: .undetected — kafka not detected, manual-only
       // Second builder: default — database is detected, passes
       val adj = LineageAdjustments.builder
-        .cls("", "Handler").writes.kafka("topic").undetected
-        .cls("", "Handler").reads.database("users")
+        .cls("", "Handler")
+        .writes
+        .kafka("topic")
+        .undetected
+        .cls("", "Handler")
+        .reads
+        .database("users")
         .build
 
       val (_, result) = adj.apply(methods, existing)
@@ -495,8 +573,13 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
       // First builder: .undetected — kafka not detected, manual-only
       // Second builder: default — s3 not detected, should throw
       val adj = LineageAdjustments.builder
-        .cls("", "Handler").writes.kafka("topic").undetected
-        .cls("", "Handler").writes.s3("bucket")
+        .cls("", "Handler")
+        .writes
+        .kafka("topic")
+        .undetected
+        .cls("", "Handler")
+        .writes
+        .s3("bucket")
         .build
 
       val ex = intercept[IllegalStateException] {
@@ -509,14 +592,17 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
       val existing = List(
         DiscoveredIntegration(MethodRef("", "Handler", "send"), DataAccessType.Write, ResourceType.Kafka, "pekko-kafka", "auto-topic", "evidence"),
       )
-      val methods = List(
+      val methods  = List(
         ExtractedMethod("Handler", "", "send", Nil),
       )
 
       // Builder marks kafka as undetected, but .detected overrides for this entry
       val adj = LineageAdjustments.builder
         .undetected(ResourceType.Kafka)
-        .cls("", "Handler").writes.kafka("real-topic").detected
+        .cls("", "Handler")
+        .writes
+        .kafka("real-topic")
+        .detected
         .build
 
       // Should pass — kafka IS detected on Handler, and .detected requires it
@@ -532,7 +618,10 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
       // Builder marks kafka as undetected, but .detected overrides — and there's no detection
       val adj = LineageAdjustments.builder
         .undetected(ResourceType.Kafka)
-        .cls("", "Handler").writes.kafka("topic").detected
+        .cls("", "Handler")
+        .writes
+        .kafka("topic")
+        .detected
         .build
 
       val ex = intercept[IllegalStateException] {
@@ -558,7 +647,9 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
       )
 
       val adj = LineageAdjustments.builder
-        .method("", "OtherClass", "publish").writes.kafka("other-topic")
+        .method("", "OtherClass", "publish")
+        .writes
+        .kafka("other-topic")
         .build
 
       val (_, result) = adj.apply(Nil, existing)
@@ -573,7 +664,8 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
       )
 
       val adj = LineageAdjustments.builder
-        .method("", "MyProducer", "send").removeIntegration(ResourceType.Kafka, "topic-a")
+        .method("", "MyProducer", "send")
+        .removeIntegration(ResourceType.Kafka, "topic-a")
         .build
 
       val (_, result) = adj.apply(Nil, existing)
@@ -589,7 +681,8 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
       )
 
       val adj = LineageAdjustments.builder
-        .method("", "Handler", "m").removeIntegrations(ResourceType.Kafka)
+        .method("", "Handler", "m")
+        .removeIntegrations(ResourceType.Kafka)
         .build
 
       val (_, result) = adj.apply(Nil, existing)
@@ -605,7 +698,9 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
       )
 
       val adj = LineageAdjustments.builder
-        .cls("", "Handler").writes.kafka("actual-topic")
+        .cls("", "Handler")
+        .writes
+        .kafka("actual-topic")
         .build
 
       val (_, result) = adj.apply(Nil, existing)
@@ -619,17 +714,37 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
 
     "removeIntegrations + addClassIntegration = override pattern" in {
       val existing = List(
-        DiscoveredIntegration(MethodRef("", "Handler", "methodA"), DataAccessType.Write, ResourceType.Kafka, "pekko-kafka", "unknown-a", "evidence", Some("Kafka")),
-        DiscoveredIntegration(MethodRef("", "Handler", "methodB"), DataAccessType.Write, ResourceType.Kafka, "pekko-kafka", "unknown-b", "evidence", Some("Kafka")),
+        DiscoveredIntegration(
+          MethodRef("", "Handler", "methodA"),
+          DataAccessType.Write,
+          ResourceType.Kafka,
+          "pekko-kafka",
+          "unknown-a",
+          "evidence",
+          Some("Kafka"),
+        ),
+        DiscoveredIntegration(
+          MethodRef("", "Handler", "methodB"),
+          DataAccessType.Write,
+          ResourceType.Kafka,
+          "pekko-kafka",
+          "unknown-b",
+          "evidence",
+          Some("Kafka"),
+        ),
         DiscoveredIntegration(MethodRef("", "Handler", "query"), DataAccessType.Read, ResourceType.Database, "doobie", "users", "SELECT"),
       )
 
       val adj = LineageAdjustments.builder
-        .cls("", "Handler").removeIntegrations(ResourceType.Kafka)
-        .cls("", "Handler").writes.kafka("topic.a").kafka("topic.b")
+        .cls("", "Handler")
+        .removeIntegrations(ResourceType.Kafka)
+        .cls("", "Handler")
+        .writes
+        .kafka("topic.a")
+        .kafka("topic.b")
         .build
 
-      val (_, result) = adj.apply(Nil, existing)
+      val (_, result)  = adj.apply(Nil, existing)
       // 1 database + 4 kafka (2 methods x 2 topics)
       result should have size 5
       val kafkaResults = result.filter(_.resourceType == ResourceType.Kafka)
@@ -637,14 +752,15 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
       kafkaResults.map(_.target).toSet shouldBe Set("topic.a", "topic.b")
       kafkaResults.foreach(_.scanner shouldBe "manual")
       // database integration untouched
-      val dbResults = result.filter(_.resourceType == ResourceType.Database)
+      val dbResults    = result.filter(_.resourceType == ResourceType.Database)
       dbResults should have size 1
       dbResults.head.target shouldBe "users"
     }
 
     "addCall creates synthetic methods if needed" in {
       val adj = LineageAdjustments.builder
-        .method("pkg", "A", "handle").calls("pkg", "B", "process")
+        .method("pkg", "A", "handle")
+        .calls("pkg", "B", "process")
         .build
 
       val (methods, _) = adj.apply(Nil, Nil)
@@ -660,7 +776,8 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
       )
 
       val adj = LineageAdjustments.builder
-        .method("pkg", "A", "handle").removesCall("pkg", "B", "process")
+        .method("pkg", "A", "handle")
+        .removesCall("pkg", "B", "process")
         .build
 
       val (result, _) = adj.apply(methods, Nil)
@@ -669,13 +786,30 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
 
     "renameResource renames across all integrations" in {
       val existing = List(
-        DiscoveredIntegration(MethodRef("", "A", "m"), DataAccessType.Write, ResourceType.Kafka, "pekko-kafka", "old-topic", "evidence", Some("Kafka")),
-        DiscoveredIntegration(MethodRef("", "B", "n"), DataAccessType.Write, ResourceType.Kafka, "pekko-kafka", "old-topic", "evidence", Some("Kafka")),
+        DiscoveredIntegration(
+          MethodRef("", "A", "m"),
+          DataAccessType.Write,
+          ResourceType.Kafka,
+          "pekko-kafka",
+          "old-topic",
+          "evidence",
+          Some("Kafka"),
+        ),
+        DiscoveredIntegration(
+          MethodRef("", "B", "n"),
+          DataAccessType.Write,
+          ResourceType.Kafka,
+          "pekko-kafka",
+          "old-topic",
+          "evidence",
+          Some("Kafka"),
+        ),
         DiscoveredIntegration(MethodRef("", "C", "o"), DataAccessType.Read, ResourceType.Database, "doobie", "users", "SELECT"),
       )
 
       val adj = LineageAdjustments.builder
-        .resource(ResourceType.Kafka, "old-topic").renameTo("new-topic")
+        .resource(ResourceType.Kafka, "old-topic")
+        .renameTo("new-topic")
         .build
 
       val (_, result) = adj.apply(Nil, existing)
@@ -693,17 +827,23 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
     }
 
     "PekkoKafkaScanner + adjustments override" in {
-      val pekkoPkg = "domaindocs4s.architecture.lineage.example.pekko"
+      val pekkoPkg      = "domaindocs4s.architecture.lineage.example.pekko"
       val kafkaDetected = new TastyPekkoKafkaScanner().scan(List(pekkoPkg))
 
       val adj = LineageAdjustments.builder
-        .cls[KafkaFlexiFlowProducer].removeIntegrations(ResourceType.Kafka)
-        .cls[KafkaFlexiFlowProducer].writes.kafka("events.flexiflow-topic")
-        .cls[KafkaPlainSinkProducer].removeIntegrations(ResourceType.Kafka)
-        .cls[KafkaPlainSinkProducer].writes.kafka("events.plainsink-topic")
+        .cls[KafkaFlexiFlowProducer]
+        .removeIntegrations(ResourceType.Kafka)
+        .cls[KafkaFlexiFlowProducer]
+        .writes
+        .kafka("events.flexiflow-topic")
+        .cls[KafkaPlainSinkProducer]
+        .removeIntegrations(ResourceType.Kafka)
+        .cls[KafkaPlainSinkProducer]
+        .writes
+        .kafka("events.plainsink-topic")
         .build
 
-      val (_, result) = adj.apply(Nil, kafkaDetected)
+      val (_, result)      = adj.apply(Nil, kafkaDetected)
       val flexiFlowResults = result.filter(_.method.className == "KafkaFlexiFlowProducer")
       flexiFlowResults should have size 1
       flexiFlowResults.head.target shouldBe "events.flexiflow-topic"
@@ -721,7 +861,7 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
     "filters integrations on non-shown classes even when MethodRef is not in call graph" in {
       // Simulate a scanner-synthesized integration on a class whose method
       // was never extracted by the call graph (e.g., PersistentActor.receiveCommand)
-      val methods = List(
+      val methods      = List(
         ExtractedMethod("ShownService", pkg, "handle", List(MethodRef(pkg, "HiddenHelper", "doWork"))),
         ExtractedMethod("HiddenHelper", pkg, "doWork", Nil),
       )
@@ -730,11 +870,19 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
         DiscoveredIntegration(MethodRef(pkg, "HiddenHelper", "doWork"), DataAccessType.Write, ResourceType.Database, "doobie", "users", "INSERT"),
         // Scanner-synthesized integration on a class NOT in the call graph
         // (e.g., PekkoJournalScanner creates receiveCommand for PersistentActor subclasses)
-        DiscoveredIntegration(MethodRef(pkg, "OrphanActor", "receiveCommand"), DataAccessType.Write, ResourceType.Database, "pekko-journal", "journal", "extends PersistentActor"),
+        DiscoveredIntegration(
+          MethodRef(pkg, "OrphanActor", "receiveCommand"),
+          DataAccessType.Write,
+          ResourceType.Database,
+          "pekko-journal",
+          "journal",
+          "extends PersistentActor",
+        ),
       )
 
       val adj = LineageAdjustments.builder
-        .cls(pkg, "ShownService").show
+        .cls(pkg, "ShownService")
+        .show
         .build
 
       val (resultMethods, resultIntegrations) = adj.apply(methods, integrations)
@@ -751,7 +899,7 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
     }
 
     "preserves integrations on shown classes" in {
-      val methods = List(
+      val methods      = List(
         ExtractedMethod("ServiceA", pkg, "read", Nil),
         ExtractedMethod("ServiceB", pkg, "write", Nil),
       )
@@ -761,8 +909,10 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
       )
 
       val adj = LineageAdjustments.builder
-        .cls(pkg, "ServiceA").show
-        .cls(pkg, "ServiceB").show
+        .cls(pkg, "ServiceA")
+        .show
+        .cls(pkg, "ServiceB")
+        .show
         .build
 
       val (_, resultIntegrations) = adj.apply(methods, integrations)
@@ -779,7 +929,8 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
       )
 
       val adj = LineageAdjustments.builder
-        .cls(pkg, "SomeShownClass").show
+        .cls(pkg, "SomeShownClass")
+        .show
         .build
 
       // When called with empty methods (resource-only), integrations should survive
@@ -788,7 +939,7 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
     }
 
     "hides all non-shown classes and promotes integrations through chains" in {
-      val methods = List(
+      val methods      = List(
         ExtractedMethod("Visible", pkg, "entry", List(MethodRef(pkg, "Hidden1", "mid"))),
         ExtractedMethod("Hidden1", pkg, "mid", List(MethodRef(pkg, "Hidden2", "query"))),
         ExtractedMethod("Hidden2", pkg, "query", Nil),
@@ -798,7 +949,8 @@ class LineageAdjustmentsTest extends AnyFreeSpec {
       )
 
       val adj = LineageAdjustments.builder
-        .cls(pkg, "Visible").show
+        .cls(pkg, "Visible")
+        .show
         .build
 
       val (resultMethods, resultIntegrations) = adj.apply(methods, integrations)

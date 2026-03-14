@@ -14,9 +14,9 @@ class TastyDoobieScannerTest extends AnyFreeSpec {
   private val pkg = "domaindocs4s.architecture.lineage.example"
 
   private val doobieIntegrations = new TastyDoobieScanner().scan(List(pkg))
-  private val grpcIntegrations = new TastyFs2GrpcScanner().scan(List(pkg))
+  private val grpcIntegrations   = new TastyFs2GrpcScanner().scan(List(pkg))
 
-  private val enrichment = IntegrationGroupConfig.builder
+  private val enrichment   = IntegrationGroupConfig.builder
     .group[UserRepo]("user-db")
     .build
   private val integrations = enrichment.enrich(doobieIntegrations ++ grpcIntegrations)
@@ -43,7 +43,7 @@ class TastyDoobieScannerTest extends AnyFreeSpec {
     }
 
     "classifies reads and writes correctly" in {
-      val reads = doobieIntegrations.filter(_.accessType == DataAccessType.Read)
+      val reads  = doobieIntegrations.filter(_.accessType == DataAccessType.Read)
       val writes = doobieIntegrations.filter(_.accessType == DataAccessType.Write)
 
       reads.map(_.method.methodName).toSet should contain allOf ("getBalance", "getTransactions")
@@ -113,14 +113,14 @@ class TastyDoobieScannerTest extends AnyFreeSpec {
 
     "detects fr\"...\" Fragment interpolator with .update.run as Write" in {
       val frMethods = doobieIntegrations.filter(_.method.className == "FragmentRepo")
-      val writes = frMethods.filter(_.accessType == DataAccessType.Write)
+      val writes    = frMethods.filter(_.accessType == DataAccessType.Write)
       writes should have size 3
       writes.map(_.method.methodName).toSet shouldBe Set("upsert", "deleteUser", "upsertMargin")
       writes.foreach(_.target shouldBe "fr_test_table")
     }
 
     "detects fr\"\"\"...stripMargin with SQL keyword on subsequent margin line" in {
-      val frMethods = doobieIntegrations.filter(_.method.className == "FragmentRepo")
+      val frMethods    = doobieIntegrations.filter(_.method.className == "FragmentRepo")
       val marginMethod = frMethods.filter(_.method.methodName == "upsertMargin")
       marginMethod should have size 1
       marginMethod.head.accessType shouldBe DataAccessType.Write
@@ -129,7 +129,7 @@ class TastyDoobieScannerTest extends AnyFreeSpec {
 
     "detects fr\"...\" Fragment interpolator with .query[T] as Read" in {
       val frMethods = doobieIntegrations.filter(_.method.className == "FragmentRepo")
-      val reads = frMethods.filter(_.accessType == DataAccessType.Read)
+      val reads     = frMethods.filter(_.accessType == DataAccessType.Read)
       reads should have size 1
       reads.head.method.methodName shouldBe "getAmount"
       reads.head.target shouldBe "fr_test_table"

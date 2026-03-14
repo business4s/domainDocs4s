@@ -35,13 +35,14 @@ import tastyquery.Types.*
 
 class TastySlickScanner(
     tableBaseTypeName: String = "Table",
-)(using ctx: Context) extends IntegrationScanner {
+)(using ctx: Context)
+    extends IntegrationScanner {
 
   // Type-based searches for Slick patterns
-  private val liftedReadSearch = SymbolSearch.MethodCall(
+  private val liftedReadSearch           = SymbolSearch.MethodCall(
     TypeMatcher.fqnEndsWith("BasicStreamingQueryActionExtensionMethodsImpl"),
   )
-  private val liftedInsertSearch = SymbolSearch.MethodCall(
+  private val liftedInsertSearch         = SymbolSearch.MethodCall(
     TypeMatcher.fqnEndsWith("InsertActionExtensionMethodsImpl"),
   )
   // InsertActionComposerImpl provides insertOrUpdate/insertOrUpdateAll.
@@ -49,35 +50,35 @@ class TastySlickScanner(
   private val liftedInsertComposerSearch = SymbolSearch.MethodCall(
     TypeMatcher.fqnEndsWith("InsertActionComposerImpl"),
   )
-  private val liftedDeleteSearch = SymbolSearch.MethodCall(
+  private val liftedDeleteSearch         = SymbolSearch.MethodCall(
     TypeMatcher.fqnEndsWith("DeleteActionExtensionMethodsImpl"),
   )
-  private val plainSqlReadSearch = SymbolSearch.MethodCall(
+  private val plainSqlReadSearch         = SymbolSearch.MethodCall(
     TypeMatcher.fqnEndsWith("SQLActionBuilder"),
   )
-  private val plainSqlWriteSearch = SymbolSearch.MethodCall(
+  private val plainSqlWriteSearch        = SymbolSearch.MethodCall(
     TypeMatcher.fqnEndsWith("StringContext"),
   )
 
-  private val readMethods = Set("result")
+  private val readMethods        = Set("result")
   private val insertWriteMethods = Set("insertOrUpdate", "insertOrUpdateAll", "++=", "+=", "update", "forceInsert", "forceInsertAll")
-  private val deleteMethods = Set("delete")
+  private val deleteMethods      = Set("delete")
 
   def scan(packages: List[String]): List[DiscoveredIntegration] =
     packages.flatMap(scanPackage)
 
   private def scanPackage(packageName: String): List[DiscoveredIntegration] = {
-    val pkg = ctx.findPackage(packageName)
+    val pkg            = ctx.findPackage(packageName)
     val classesWithPkg = TastyUtils.userClassesRecursive(pkg)
     val modulesWithPkg = TastyUtils.moduleClassesRecursive(pkg)
 
     // Phase 1: build Table class → table name and field → table name maps
     // Include classes nested inside modules (e.g., object Foo { class MyTable extends Table(...) })
-    val nestedInModules = TastyUtils.nestedClassesInModules(pkg).map(_._2)
-    val nestedInClasses = classesWithPkg.flatMap { case (_, cls) =>
+    val nestedInModules          = TastyUtils.nestedClassesInModules(pkg).map(_._2)
+    val nestedInClasses          = classesWithPkg.flatMap { case (_, cls) =>
       cls.declarations.collect { case cs: ClassSymbol => cs }
     }
-    val allTableCandidates = classesWithPkg.map(_._2) ++ nestedInModules ++ nestedInClasses
+    val allTableCandidates       = classesWithPkg.map(_._2) ++ nestedInModules ++ nestedInClasses
     val topLevelTableClassToName = buildTableClassMap(allTableCandidates)
     val topLevelFieldToTableName = buildFieldToTableMap(modulesWithPkg.map(_._2), topLevelTableClassToName)
 
@@ -93,7 +94,10 @@ class TastySlickScanner(
         val index = ParamValueIndex.build(List(packageName))
         deferredFieldToFactory.flatMap { case (fieldName, (factoryRef, paramIdx)) =>
           val resolved = index.resolve(
-            factoryRef.packageName, factoryRef.className, factoryRef.methodName, paramIdx,
+            factoryRef.packageName,
+            factoryRef.className,
+            factoryRef.methodName,
+            paramIdx,
           )
           if (resolved.nonEmpty) Some(fieldName -> resolved) else None
         }.toMap
@@ -109,63 +113,70 @@ class TastySlickScanner(
     // for resolving variable references in plain SQL interpolations.
     val valBindingsCache = scala.collection.mutable.Map.empty[List[NestingNode], Map[String, Tree]]
 
-    usages.collect { case u: FoundUsage.MethodCallResult => u }.flatMap { u =>
-      classifyUsage(u) match {
-        case None => Nil
-        case Some(accessType) =>
-          u.search match {
-            // Lifted embedding: resolve table name(s) from receiver tree
-            case `liftedReadSearch` | `liftedInsertSearch` | `liftedInsertComposerSearch` | `liftedDeleteSearch` =>
-              val tables = resolveTableNames(u.receiverTree, fieldToTableName, fieldToTableMulti)
-              tables.toList.map { table =>
-                val evidence = s"$table.${u.methodName}"
-                mkIntegration(u.path.toMethodRef, accessType, table, evidence)
-              }
-            // Plain SQL: extract SQL from the tree, resolving interpolation variables where possible
-            case `plainSqlReadSearch` | `plainSqlWriteSearch` =>
-              val valBindings = valBindingsCache.getOrElseUpdate(
-                u.path.nodes,
-                collectValBindings(u.path),
-              )
-              val rawSql = SqlUtils.sqlFromInterpolation(u.tree, valBindings)
-                .orElse(SqlUtils.sqlFrom(u.tree, valBindings))
-                .orElse(SqlUtils.sqlFrom(u.receiverTree, valBindings))
-              // Strip Slick's # splice markers (e.g., #$tableName → tableName) before parsing
-              val sql = rawSql.map(_.replaceAll("#(?=\\w)", ""))
-              sql.filter(SqlUtils.looksLikeSql).flatMap { s =>
-                // For s"..." interpolations, require the string to actually start with a SQL keyword.
-                // This avoids false positives from strings like s"Getting data from $source".
-                val refinedAccess = if (u.methodName == "s") inferAccessTypeFromSql(s) else Some(accessType)
-                refinedAccess.map(at => mkIntegration(u.path.toMethodRef, at, SqlUtils.extractTableName(s), s))
-              }.toList
-            case _ => Nil
-          }
+    usages
+      .collect { case u: FoundUsage.MethodCallResult => u }
+      .flatMap { u =>
+        classifyUsage(u) match {
+          case None             => Nil
+          case Some(accessType) =>
+            u.search match {
+              // Lifted embedding: resolve table name(s) from receiver tree
+              case `liftedReadSearch` | `liftedInsertSearch` | `liftedInsertComposerSearch` | `liftedDeleteSearch` =>
+                val tables = resolveTableNames(u.receiverTree, fieldToTableName, fieldToTableMulti)
+                tables.toList.map { table =>
+                  val evidence = s"$table.${u.methodName}"
+                  mkIntegration(u.path.toMethodRef, accessType, table, evidence)
+                }
+              // Plain SQL: extract SQL from the tree, resolving interpolation variables where possible
+              case `plainSqlReadSearch` | `plainSqlWriteSearch`                                                    =>
+                val valBindings = valBindingsCache.getOrElseUpdate(
+                  u.path.nodes,
+                  collectValBindings(u.path),
+                )
+                val rawSql      = SqlUtils
+                  .sqlFromInterpolation(u.tree, valBindings)
+                  .orElse(SqlUtils.sqlFrom(u.tree, valBindings))
+                  .orElse(SqlUtils.sqlFrom(u.receiverTree, valBindings))
+                // Strip Slick's # splice markers (e.g., #$tableName → tableName) before parsing
+                val sql         = rawSql.map(_.replaceAll("#(?=\\w)", ""))
+                sql
+                  .filter(SqlUtils.looksLikeSql)
+                  .flatMap { s =>
+                    // For s"..." interpolations, require the string to actually start with a SQL keyword.
+                    // This avoids false positives from strings like s"Getting data from $source".
+                    val refinedAccess = if (u.methodName == "s") inferAccessTypeFromSql(s) else Some(accessType)
+                    refinedAccess.map(at => mkIntegration(u.path.toMethodRef, at, SqlUtils.extractTableName(s), s))
+                  }
+                  .toList
+              case _                                                                                               => Nil
+            }
+        }
       }
-    }.distinct
+      .distinct
   }
 
   private def classifyUsage(u: FoundUsage.MethodCallResult): Option[DataAccessType] = {
     val method = u.methodName
     u.search match {
-      case `liftedReadSearch` =>
+      case `liftedReadSearch`                                  =>
         if (readMethods.contains(method)) Some(DataAccessType.Read)
         else None
       case `liftedInsertSearch` | `liftedInsertComposerSearch` =>
         if (insertWriteMethods.contains(method)) Some(DataAccessType.Write)
         else None
-      case `liftedDeleteSearch` =>
+      case `liftedDeleteSearch`                                =>
         if (deleteMethods.contains(method)) Some(DataAccessType.Write)
         else None
-      case `plainSqlReadSearch` =>
+      case `plainSqlReadSearch`                                =>
         if (method == "as") Some(DataAccessType.Read)
         else None
-      case `plainSqlWriteSearch` =>
+      case `plainSqlWriteSearch`                               =>
         if (method == "sqlu") Some(DataAccessType.Write)
         // Standard s"..." interpolation — may contain raw SQL (e.g., SimpleDBIO patterns).
         // Access type is tentative; refined by inferAccessTypeFromSql after SQL extraction.
         else if (method == "s") Some(DataAccessType.Write)
         else None
-      case _ => None
+      case _                                                   => None
     }
   }
 
@@ -175,9 +186,9 @@ class TastySlickScanner(
   private def inferAccessTypeFromSql(sql: String): Option[DataAccessType] = {
     val firstWord = sql.trim.split("\\s+").headOption.map(_.toUpperCase).getOrElse("")
     firstWord match {
-      case "SELECT"   => Some(DataAccessType.Read)
+      case "SELECT"                                                         => Some(DataAccessType.Read)
       case "INSERT" | "UPDATE" | "DELETE" | "TRUNCATE" | "UPSERT" | "MERGE" => Some(DataAccessType.Write)
-      case _          => None
+      case _                                                                => None
     }
   }
 
@@ -187,8 +198,7 @@ class TastySlickScanner(
   private def buildTableClassMap(classes: List[ClassSymbol]): Map[String, String] =
     classes.flatMap { cls =>
       cls.tree.toList.flatMap { classDef =>
-        classDef.rhs.parents.flatMap(extractTableNameFromParent(_, cls.name.toString))
-          .headOption.map(cls.name.toString -> _)
+        classDef.rhs.parents.flatMap(extractTableNameFromParent(_, cls.name.toString)).headOption.map(cls.name.toString -> _)
       }
     }.toMap
 
@@ -208,16 +218,16 @@ class TastySlickScanner(
           }
       } else
         None
-    case _ => None
+    case _                => None
   }
 
   private def isTableInit(tree: Tree): Boolean = tree match {
-    case TypeApply(inner, _) => isTableInit(inner)
+    case TypeApply(inner, _)      => isTableInit(inner)
     case Select(New(typeTree), _) =>
       try {
         TastyUtils.extractTypeName(typeTree.toType).exists(_.contains(tableBaseTypeName))
       } catch { case _: Exception => false }
-    case _ => false
+    case _                        => false
   }
 
   /** If a Table constructor arg is a method parameter, return the flat parameter index. */
@@ -227,7 +237,7 @@ class TastySlickScanner(
         case Ident(name) if methodParams.contains(TastyUtils.simpleName(name)) =>
           methodParams(TastyUtils.simpleName(name))
       }
-    case _ => None
+    case _                                    => None
   }
 
   // ── Pre-scan: TableQuery field → table name ──────────────────────────────
@@ -250,9 +260,9 @@ class TastySlickScanner(
             case argRef: TypeRef => Some(argRef.name.toString)
             case _               => None
           }
-        case _ => None
+        case _                                            => None
       }
-    case _ => None
+    case _               => None
   }
 
   // ── Pre-scan: anonymous class Table/TableQuery discovery ──────────────────
@@ -273,7 +283,7 @@ class TastySlickScanner(
     }
     // Also scan regular user class bodies for nested Table + TableQuery patterns
     // (e.g., class Repo { class MyTable extends Table(...); val q = TableQuery[MyTable] })
-    for ((_, cls) <- classesWithPkg) {
+    for ((_, cls)        <- classesWithPkg) {
       cls.tree.toList.foreach { classDef =>
         collectTableMappingsFromScope(classDef.rhs.body, result)
       }
@@ -281,8 +291,7 @@ class TastySlickScanner(
     result.toMap
   }
 
-  /** TreeTraverser that finds anonymous ClassDef and Block scopes containing
-    * Table subclass + TableQuery bindings inside all tree types.
+  /** TreeTraverser that finds anonymous ClassDef and Block scopes containing Table subclass + TableQuery bindings inside all tree types.
     */
   private class AnonTableMappingCollector(
       result: scala.collection.mutable.Map[String, String],
@@ -297,7 +306,7 @@ class TastySlickScanner(
         super.traverse(tree)
       case classDef: ClassDef =>
         collectTableMappingsFromScope(classDef.rhs.body, result, enclosingMethod, methodParams, deferredFieldToFactory)
-      case _ =>
+      case _                  =>
         super.traverse(tree)
     }
   }
@@ -313,17 +322,23 @@ class TastySlickScanner(
     val tableClassDeferred = scala.collection.mutable.Map.empty[String, (MethodRef, Int)]
 
     // Collect val bindings from this scope for resolving Table constructor args
-    val scopeBindings: Map[String, Tree] = items.collect {
-      case vd: ValDef => vd.rhs.map(rhs => vd.name.toString -> rhs)
-    }.flatten.toMap
+    val scopeBindings: Map[String, Tree] = items
+      .collect { case vd: ValDef =>
+        vd.rhs.map(rhs => vd.name.toString -> rhs)
+      }
+      .flatten
+      .toMap
 
     items.foreach {
       case classDef: ClassDef =>
         // Also collect val bindings from the class body (for nested Table classes)
-        val classBindings: Map[String, Tree] = classDef.rhs.body.collect {
-          case vd: ValDef => vd.rhs.map(rhs => vd.name.toString -> rhs)
-        }.flatten.toMap
-        val allBindings = scopeBindings ++ classBindings
+        val classBindings: Map[String, Tree] = classDef.rhs.body
+          .collect { case vd: ValDef =>
+            vd.rhs.map(rhs => vd.name.toString -> rhs)
+          }
+          .flatten
+          .toMap
+        val allBindings                      = scopeBindings ++ classBindings
         classDef.rhs.parents.foreach { parent =>
           extractTableNameFromParent(parent, classDef.name.toString, allBindings) match {
             case Some(name) =>
@@ -332,17 +347,17 @@ class TastySlickScanner(
                 detectMethodParamInTableInit(parent, methodParams) match {
                   case Some(paramIdx) =>
                     tableClassDeferred(classDef.name.toString) = (enclosingMethod.get, paramIdx)
-                  case None =>
+                  case None           =>
                     // No method param found; keep the unresolved sentinel
                     tableClassToName(classDef.name.toString) = name
                 }
               } else {
                 tableClassToName(classDef.name.toString) = name
               }
-            case None =>
+            case None       =>
           }
         }
-      case _ =>
+      case _                  =>
     }
 
     items.foreach {
@@ -353,7 +368,7 @@ class TastySlickScanner(
             tableClassToName.get(tableClassName) match {
               case Some(tableName) =>
                 result += (fieldName -> tableName)
-              case None =>
+              case None            =>
                 tableClassDeferred.get(tableClassName).foreach { deferred =>
                   deferredFieldToFactory += (fieldName -> deferred)
                 }
@@ -367,16 +382,16 @@ class TastySlickScanner(
                 tableClassToName.get(tableClassName) match {
                   case Some(tableName) =>
                     result += (fieldName -> tableName)
-                  case None =>
+                  case None            =>
                     tableClassDeferred.get(tableClassName).foreach { deferred =>
                       deferredFieldToFactory += (fieldName -> deferred)
                     }
                 }
               }
-            case _ =>
+            case _               =>
           }
         } catch { case _: Exception => }
-      case _ =>
+      case _              =>
     }
   }
 
@@ -391,17 +406,16 @@ class TastySlickScanner(
           }
         } catch { case _: Exception => None }
       }
-    case Apply(fun, _) => extractTableQueryClassFromTree(fun)
-    case _             => None
+    case Apply(fun, _)          => extractTableQueryClassFromTree(fun)
+    case _                      => None
   }
 
   // ── Table name resolution ────────────────────────────────────────────────
 
   /** Resolve table name(s) from a usage receiver tree.
     *
-    * Returns a non-empty set of table names on success, or a singleton set with the
-    * `<unresolved:ClassName>` sentinel when the table is known but the name was not
-    * resolvable at compile time, or an empty set when nothing could be determined.
+    * Returns a non-empty set of table names on success, or a singleton set with the `<unresolved:ClassName>` sentinel when the table is known but the
+    * name was not resolvable at compile time, or an empty set when nothing could be determined.
     */
   private def resolveTableNames(
       tree: Tree,
@@ -412,7 +426,7 @@ class TastySlickScanner(
       case Some(name) if !name.startsWith("<unresolved:") =>
         // Common case: resolved via single-value map
         Set(name)
-      case singleResult =>
+      case singleResult                                   =>
         // Try multi-value map (deferred resolution result)
         val multiResult = findFirstTableRefSet(tree, fieldToTableMulti)
         if (multiResult.nonEmpty) multiResult
@@ -421,44 +435,48 @@ class TastySlickScanner(
   }
 
   private def findFirstTableRef(tree: Tree, fieldToTable: Map[String, String]): Option[String] = tree match {
-    case Ident(name) => fieldToTable.get(TastyUtils.simpleName(name))
+    case Ident(name)        => fieldToTable.get(TastyUtils.simpleName(name))
     case Select(qual, name) =>
       fieldToTable.get(TastyUtils.simpleName(name)).orElse(findFirstTableRef(qual, fieldToTable))
-    case Apply(fun, args) =>
+    case Apply(fun, args)   =>
       findFirstTableRef(fun, fieldToTable).orElse(
         args.iterator.map(findFirstTableRef(_, fieldToTable)).collectFirst { case Some(v) => v },
       )
-    case TypeApply(fun, _) => findFirstTableRef(fun, fieldToTable)
+    case TypeApply(fun, _)  => findFirstTableRef(fun, fieldToTable)
     case Block(stats, expr) =>
-      stats.iterator.map(findFirstTableRef(_, fieldToTable)).collectFirst { case Some(v) => v }
+      stats.iterator
+        .map(findFirstTableRef(_, fieldToTable))
+        .collectFirst { case Some(v) => v }
         .orElse(findFirstTableRef(expr, fieldToTable))
-    case _ => None
+    case _                  => None
   }
 
   /** Variant of findFirstTableRef that returns a Set[String] from the multi-value map. */
   private def findFirstTableRefSet(tree: Tree, fieldToTableMulti: Map[String, Set[String]]): Set[String] = tree match {
     case Ident(name)        => fieldToTableMulti.getOrElse(TastyUtils.simpleName(name), Set.empty)
     case Select(qual, name) =>
-      fieldToTableMulti.get(TastyUtils.simpleName(name))
+      fieldToTableMulti
+        .get(TastyUtils.simpleName(name))
         .getOrElse(findFirstTableRefSet(qual, fieldToTableMulti))
-    case Apply(fun, args) =>
+    case Apply(fun, args)   =>
       findFirstTableRefSet(fun, fieldToTableMulti) match {
         case empty if empty.isEmpty =>
           args.iterator.map(findFirstTableRefSet(_, fieldToTableMulti)).find(_.nonEmpty).getOrElse(Set.empty)
-        case found => found
+        case found                  => found
       }
     case TypeApply(fun, _)  => findFirstTableRefSet(fun, fieldToTableMulti)
     case Block(stats, expr) =>
-      stats.iterator.map(findFirstTableRefSet(_, fieldToTableMulti)).find(_.nonEmpty)
+      stats.iterator
+        .map(findFirstTableRefSet(_, fieldToTableMulti))
+        .find(_.nonEmpty)
         .getOrElse(findFirstTableRefSet(expr, fieldToTableMulti))
-    case _ => Set.empty
+    case _                  => Set.empty
   }
 
   // ── Val binding collection ──────────────────────────────────────────────
 
-  /** Collect val bindings from both the enclosing class body and the enclosing method body.
-    * This allows resolution of interpolation variables like `#$tableName` where `tableName`
-    * is a class field assigned to a string literal.
+  /** Collect val bindings from both the enclosing class body and the enclosing method body. This allows resolution of interpolation variables like
+    * `#$tableName` where `tableName` is a class field assigned to a string literal.
     */
   private def collectValBindings(path: NestingPath): Map[String, Tree] = {
     val bindings = scala.collection.mutable.Map.empty[String, Tree]
@@ -469,7 +487,7 @@ class TastySlickScanner(
         classDef.rhs.body.foreach {
           case vd: ValDef =>
             vd.rhs.foreach(rhs => bindings += (vd.name.toString -> rhs))
-          case _ =>
+          case _          =>
         }
       }
     }
@@ -503,19 +521,20 @@ class TastySlickScanner(
           case Left(params) => params.map(p => TastyUtils.simpleName(p.name))
           case Right(_)     => Nil
         }
-        .toIndexedSeq.zipWithIndex
+        .toIndexedSeq
+        .zipWithIndex
         .map { case (name, i) => name -> i }
         .toMap
       f(methodRef, paramMap, rhs)
     }
   }
 
-  /** Traverse nested class declarations inside a module (e.g., case class Journal inside companion object).
-    * These are ClassSymbol declarations whose bodies contain inner Table subclasses and TableQuery fields.
+  /** Traverse nested class declarations inside a module (e.g., case class Journal inside companion object). These are ClassSymbol declarations whose
+    * bodies contain inner Table subclasses and TableQuery fields.
     */
   private def forEachNestedClassBody(mod: ClassSymbol)(f: Tree => Unit): Unit =
     for {
-      cs <- mod.declarations.collect { case cs: ClassSymbol => cs }
+      cs       <- mod.declarations.collect { case cs: ClassSymbol => cs }
       classDef <- cs.tree.toList
     } f(classDef)
 
@@ -532,12 +551,11 @@ class TastySlickScanner(
 
 object TastySlickScanner {
 
-  /** Construct the placeholder name used when a Slick Table class has a runtime (non-literal) table name.
-    * Use this in [[LineageAdjustments]] resource renames to stay in sync with the scanner output.
+  /** Construct the placeholder name used when a Slick Table class has a runtime (non-literal) table name. Use this in [[LineageAdjustments]] resource
+    * renames to stay in sync with the scanner output.
     *
-    * Prefer the `ClassTag` overload when the Table class is accessible as a type.
-    * The string overload is needed when the Table class is an inner class of an anonymous class
-    * (common with the `Repository.apply()` factory pattern).
+    * Prefer the `ClassTag` overload when the Table class is accessible as a type. The string overload is needed when the Table class is an inner
+    * class of an anonymous class (common with the `Repository.apply()` factory pattern).
     */
   def unresolvedTableName(className: String): String =
     s"<unresolved:$className>"

@@ -40,11 +40,11 @@ class LineageScanner(
     val resourceDeps = resourceScanners.flatMap(_.scanDependencies())
     logger.log(s"  resource dependencies: ${resourceDeps.size}")
 
-    val (callGraph, refined) = logger.timed("Adjustments (code)") {
+    val (callGraph, refined)  = logger.timed("Adjustments (code)") {
       adjustments.apply(rawCallGraph, codeIntegrations)
     }
     val (_, refinedResources) = adjustments.apply(Nil, resourceIntegrations)
-    val integrations         = enrichment.enrich(refined)
+    val integrations          = enrichment.enrich(refined)
 
     val result = logger.timed("Phase 2: Lineage building") {
       LineageBuilder
@@ -57,9 +57,11 @@ class LineageScanner(
         )
     }
 
-    logger.log(s"Result: ${result.classes.size} classes, ${result.allMethods.size} methods, " +
-      s"${result.integrations.size} integrations, ${result.lineageChains.size} lineage chains, " +
-      s"${result.resources.size} resources")
+    logger.log(
+      s"Result: ${result.classes.size} classes, ${result.allMethods.size} methods, " +
+        s"${result.integrations.size} integrations, ${result.lineageChains.size} lineage chains, " +
+        s"${result.resources.size} resources",
+    )
 
     result
   }

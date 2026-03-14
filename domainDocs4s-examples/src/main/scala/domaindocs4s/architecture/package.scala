@@ -33,7 +33,7 @@ object Artifacts {
     val category = NodeCategory.Api
     val matchKey = s"grpc:$serviceName/$methodName"
   }
-  case class HttpEndpoint(method: String, path: String) extends Artifact {
+  case class HttpEndpoint(method: String, path: String)            extends Artifact {
     val category = NodeCategory.Api
     val matchKey = s"http:$method:$path"
   }
@@ -49,25 +49,25 @@ object Artifacts {
     val category = NodeCategory.Dataset
     val matchKey = s"db:$database.$schema.$tableName"
   }
-  case class S3Location(bucket: String, prefix: String = "") extends Artifact {
+  case class S3Location(bucket: String, prefix: String = "")                    extends Artifact {
     val category = NodeCategory.Dataset
     val matchKey = s"s3:$bucket/$prefix"
   }
-  case class Spreadsheet(provider: String, id: String = "") extends Artifact {
+  case class Spreadsheet(provider: String, id: String = "")                     extends Artifact {
     val category = NodeCategory.Dataset
     val matchKey = s"sheet:$provider:$id"
   }
-  case class DataWarehouse(system: String, table: String) extends Artifact {
+  case class DataWarehouse(system: String, table: String)                       extends Artifact {
     val category = NodeCategory.Dataset
     val matchKey = s"dw:$system:$table"
   }
-  case class Journal(name: String) extends Artifact {
+  case class Journal(name: String)                                              extends Artifact {
     val category = NodeCategory.Dataset
     val matchKey = s"journal:$name"
   }
 
   // Compute
-  case class Component(name: String) extends Artifact {
+  case class Component(name: String)  extends Artifact {
     val category = NodeCategory.Compute
     val matchKey = s"component:$name"
   }
@@ -75,11 +75,11 @@ object Artifacts {
     val category = NodeCategory.Compute
     val matchKey = s"projection:$name"
   }
-  case class Job(name: String) extends Artifact {
+  case class Job(name: String)        extends Artifact {
     val category = NodeCategory.Compute
     val matchKey = s"job:$name"
   }
-  case class Cache(name: String) extends Artifact {
+  case class Cache(name: String)      extends Artifact {
     val category = NodeCategory.Compute
     val matchKey = s"cache:$name"
   }
@@ -88,7 +88,7 @@ object Artifacts {
 // ── Core model ──────────────────────────────────────────────────────────────
 
 case class Node(label: String, artifact: Artifact, internal: Boolean = true) {
-  def id: String = artifact.matchKey
+  def id: String    = artifact.matchKey
   def exposed: Node = copy(internal = false)
 }
 
@@ -197,8 +197,8 @@ case class ViewBuilder(name: String, source: FlowChart, includeIds: Option[Set[S
     copy(excludeIds = excludeIds ++ nodes.map(_.id))
 
   def build: FlowChart = {
-    val allowedIds = includeIds.getOrElse(source.nodes.map(_.id).toSet) -- excludeIds
-    val filteredEdges = source.edges.filter(e => allowedIds.contains(e.from.id) && allowedIds.contains(e.to.id))
+    val allowedIds        = includeIds.getOrElse(source.nodes.map(_.id).toSet) -- excludeIds
+    val filteredEdges     = source.edges.filter(e => allowedIds.contains(e.from.id) && allowedIds.contains(e.to.id))
     val filteredSubgraphs = source.subgraphs.map(sg => sg.copy(nodes = sg.nodes.filter(n => allowedIds.contains(n.id)))).filter(_.nodes.nonEmpty)
     FlowChart(filteredEdges, filteredSubgraphs)
   }

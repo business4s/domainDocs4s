@@ -49,7 +49,9 @@ object ControllingServiceFlow {
   // A legitimate integration pattern — not every dependency goes through an API.
 
   val ledgerOperatorClosingTable = dbTable(
-    "operational_projections", "ledger", "operator_closing_of_account",
+    "operational_projections",
+    "ledger",
+    "operator_closing_of_account",
   ).exposed
 
   // ── Consumed: Google Sheets (treasury operations) ─────────────────────────

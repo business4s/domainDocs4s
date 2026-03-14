@@ -10,7 +10,7 @@ class TastyPekkoJournalScannerTest extends AnyFreeSpec {
 
   given ctx: Context = TastyContext.fromCurrentProcess()
 
-  private val pekkoPkg = "domaindocs4s.architecture.lineage.example.pekko"
+  private val pekkoPkg          = "domaindocs4s.architecture.lineage.example.pekko"
   private val pekkoIntegrations = new TastyPekkoJournalScanner().scan(List(pekkoPkg))
 
   "TastyPekkoJournalScanner" - {
@@ -73,7 +73,7 @@ class TastyPekkoJournalScannerTest extends AnyFreeSpec {
 
     "composes with LineageBuilder" in {
       val pekkoCallGraph = new TastyCallGraphExtractor().extract(pekkoPkg)
-      val pekkoResult = LineageBuilder.build(pekkoCallGraph, pekkoIntegrations)
+      val pekkoResult    = LineageBuilder.build(pekkoCallGraph, pekkoIntegrations)
 
       pekkoResult.integrations should have size pekkoIntegrations.size
       val output = pekkoResult.prettyPrint

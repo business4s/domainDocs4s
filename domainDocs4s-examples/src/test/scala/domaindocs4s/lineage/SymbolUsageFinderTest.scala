@@ -10,7 +10,7 @@ class SymbolUsageFinderTest extends AnyFreeSpec {
 
   given ctx: Context = TastyContext.fromCurrentProcess()
 
-  private val pkg = "domaindocs4s.architecture.lineage.example"
+  private val pkg      = "domaindocs4s.architecture.lineage.example"
   private val slickPkg = "domaindocs4s.architecture.lineage.example.slick"
 
   "SymbolUsageFinder" - {
@@ -18,12 +18,16 @@ class SymbolUsageFinderTest extends AnyFreeSpec {
     "MethodCall on class field" - {
 
       "finds S3Client method calls with owner FQN and method name" in {
-        val searches = Seq(SymbolSearch.MethodCall(TypeMatcher.oneOf(
-          "software.amazon.awssdk.services.s3.S3Client",
-          "software.amazon.awssdk.services.s3.S3AsyncClient",
-        )))
-        val finder = new SymbolUsageFinder(searches)
-        val usages = finder.findAll(List(pkg))
+        val searches = Seq(
+          SymbolSearch.MethodCall(
+            TypeMatcher.oneOf(
+              "software.amazon.awssdk.services.s3.S3Client",
+              "software.amazon.awssdk.services.s3.S3AsyncClient",
+            ),
+          ),
+        )
+        val finder   = new SymbolUsageFinder(searches)
+        val usages   = finder.findAll(List(pkg))
 
         val s3Usages = usages.collect { case u: FoundUsage.MethodCallResult => u }
         s3Usages should not be empty
@@ -44,11 +48,13 @@ class SymbolUsageFinderTest extends AnyFreeSpec {
 
       "finds Pekko Kafka Producer calls via Select" in {
         val pekkoPkg = "domaindocs4s.architecture.lineage.example.pekko"
-        val searches = Seq(SymbolSearch.MethodCall(
-          TypeMatcher("org.apache.pekko.kafka.scaladsl.Producer"),
-        ))
-        val finder = new SymbolUsageFinder(searches)
-        val usages = finder.findAll(List(pekkoPkg))
+        val searches = Seq(
+          SymbolSearch.MethodCall(
+            TypeMatcher("org.apache.pekko.kafka.scaladsl.Producer"),
+          ),
+        )
+        val finder   = new SymbolUsageFinder(searches)
+        val usages   = finder.findAll(List(pekkoPkg))
 
         val producerUsages = usages.collect { case u: FoundUsage.MethodCallResult => u }
         producerUsages should not be empty
@@ -61,14 +67,17 @@ class SymbolUsageFinderTest extends AnyFreeSpec {
 
       "finds imported member calls (Ident with TermRef prefix)" in {
         val pekkoPkg = "domaindocs4s.architecture.lineage.example.pekko"
-        val searches = Seq(SymbolSearch.MethodCall(
-          TypeMatcher("org.apache.pekko.kafka.scaladsl.Producer"),
-        ))
-        val finder = new SymbolUsageFinder(searches)
-        val usages = finder.findAll(List(pekkoPkg))
+        val searches = Seq(
+          SymbolSearch.MethodCall(
+            TypeMatcher("org.apache.pekko.kafka.scaladsl.Producer"),
+          ),
+        )
+        val finder   = new SymbolUsageFinder(searches)
+        val usages   = finder.findAll(List(pekkoPkg))
 
         // KafkaImportedFlexiFlowProducer uses `importedFlexiFlow(settings)` via import
-        val importedUsages = usages.collect { case u: FoundUsage.MethodCallResult => u }
+        val importedUsages = usages
+          .collect { case u: FoundUsage.MethodCallResult => u }
           .filter(u => u.path.toMethodRef.className == "KafkaImportedFlexiFlowProducer")
         importedUsages should not be empty
       }
@@ -77,13 +86,18 @@ class SymbolUsageFinderTest extends AnyFreeSpec {
     "MethodCall inside if/else branches" - {
 
       "finds S3Client calls inside if branches" in {
-        val searches = Seq(SymbolSearch.MethodCall(TypeMatcher.oneOf(
-          "software.amazon.awssdk.services.s3.S3Client",
-        )))
-        val finder = new SymbolUsageFinder(searches)
-        val usages = finder.findAll(List(pkg))
+        val searches = Seq(
+          SymbolSearch.MethodCall(
+            TypeMatcher.oneOf(
+              "software.amazon.awssdk.services.s3.S3Client",
+            ),
+          ),
+        )
+        val finder   = new SymbolUsageFinder(searches)
+        val usages   = finder.findAll(List(pkg))
 
-        val conditionalUsages = usages.collect { case u: FoundUsage.MethodCallResult => u }
+        val conditionalUsages = usages
+          .collect { case u: FoundUsage.MethodCallResult => u }
           .filter(_.path.toMethodRef.className == "S3ConditionalExporter")
         conditionalUsages should have size 1
         conditionalUsages.head.methodName shouldBe "putObject"
@@ -93,13 +107,18 @@ class SymbolUsageFinderTest extends AnyFreeSpec {
     "MethodCall on lambda parameter (not class field)" - {
 
       "finds S3Client calls when receiver is a lambda parameter" in {
-        val searches = Seq(SymbolSearch.MethodCall(TypeMatcher.oneOf(
-          "software.amazon.awssdk.services.s3.S3Client",
-        )))
-        val finder = new SymbolUsageFinder(searches)
-        val usages = finder.findAll(List(pkg))
+        val searches = Seq(
+          SymbolSearch.MethodCall(
+            TypeMatcher.oneOf(
+              "software.amazon.awssdk.services.s3.S3Client",
+            ),
+          ),
+        )
+        val finder   = new SymbolUsageFinder(searches)
+        val usages   = finder.findAll(List(pkg))
 
-        val lambdaUsages = usages.collect { case u: FoundUsage.MethodCallResult => u }
+        val lambdaUsages = usages
+          .collect { case u: FoundUsage.MethodCallResult => u }
           .filter(u => u.path.toMethodRef.className == "S3LambdaExporter" && u.methodName == "putObject")
         lambdaUsages should have size 1
         // The putObject call is inside the lambda, but attributed to exportViaCallback
@@ -110,13 +129,16 @@ class SymbolUsageFinderTest extends AnyFreeSpec {
     "MethodCall with type alias intersection" - {
 
       "isOrInheritsFrom resolves type aliases with intersection types (AppliedType scala.&)" in {
-        val searches = Seq(SymbolSearch.MethodCall(
-          TypeMatcher.isOrInheritsFrom(s"$pkg.BaseQueryTrait"),
-        ))
-        val finder = new SymbolUsageFinder(searches)
-        val usages = finder.findAll(List(pkg))
+        val searches = Seq(
+          SymbolSearch.MethodCall(
+            TypeMatcher.isOrInheritsFrom(s"$pkg.BaseQueryTrait"),
+          ),
+        )
+        val finder   = new SymbolUsageFinder(searches)
+        val usages   = finder.findAll(List(pkg))
 
-        val callUsages = usages.collect { case u: FoundUsage.MethodCallResult => u }
+        val callUsages = usages
+          .collect { case u: FoundUsage.MethodCallResult => u }
           .filter(_.path.toMethodRef.className == "TypeAliasConsumer")
 
         // TypeAliasConsumer.queryApi has type CombinedQuery = BaseQueryTrait & ExtendedQueryTrait
@@ -130,11 +152,13 @@ class SymbolUsageFinderTest extends AnyFreeSpec {
     "ClassInheritance" - {
 
       "finds Fs2Grpc parent types with inherited methods" in {
-        val searches = Seq(SymbolSearch.ClassInheritance(
-          TypeMatcher.fqnEndsWith("Fs2Grpc"),
-        ))
-        val finder = new SymbolUsageFinder(searches)
-        val usages = finder.findAll(List(pkg))
+        val searches = Seq(
+          SymbolSearch.ClassInheritance(
+            TypeMatcher.fqnEndsWith("Fs2Grpc"),
+          ),
+        )
+        val finder   = new SymbolUsageFinder(searches)
+        val usages   = finder.findAll(List(pkg))
 
         val inheritanceUsages = usages.collect { case u: FoundUsage.InheritanceResult => u }
         inheritanceUsages should not be empty
@@ -152,14 +176,19 @@ class SymbolUsageFinderTest extends AnyFreeSpec {
     "NestingPath" - {
 
       "toMethodRef extracts correct package, class, and method" in {
-        val searches = Seq(SymbolSearch.MethodCall(TypeMatcher.oneOf(
-          "software.amazon.awssdk.services.s3.S3Client",
-          "software.amazon.awssdk.services.s3.S3AsyncClient",
-        )))
-        val finder = new SymbolUsageFinder(searches)
-        val usages = finder.findAll(List(pkg))
+        val searches = Seq(
+          SymbolSearch.MethodCall(
+            TypeMatcher.oneOf(
+              "software.amazon.awssdk.services.s3.S3Client",
+              "software.amazon.awssdk.services.s3.S3AsyncClient",
+            ),
+          ),
+        )
+        val finder   = new SymbolUsageFinder(searches)
+        val usages   = finder.findAll(List(pkg))
 
-        val exporterUsages = usages.collect { case u: FoundUsage.MethodCallResult => u }
+        val exporterUsages = usages
+          .collect { case u: FoundUsage.MethodCallResult => u }
           .filter(_.path.toMethodRef.className == "S3Exporter")
         exporterUsages should not be empty
 
@@ -170,11 +199,15 @@ class SymbolUsageFinderTest extends AnyFreeSpec {
       }
 
       "path includes Package and ClassOrObject nodes" in {
-        val searches = Seq(SymbolSearch.MethodCall(TypeMatcher.oneOf(
-          "software.amazon.awssdk.services.s3.S3Client",
-        )))
-        val finder = new SymbolUsageFinder(searches)
-        val usages = finder.findAll(List(pkg))
+        val searches = Seq(
+          SymbolSearch.MethodCall(
+            TypeMatcher.oneOf(
+              "software.amazon.awssdk.services.s3.S3Client",
+            ),
+          ),
+        )
+        val finder   = new SymbolUsageFinder(searches)
+        val usages   = finder.findAll(List(pkg))
 
         val usage = usages.collect { case u: FoundUsage.MethodCallResult => u }.head
         val nodes = usage.path.nodes
@@ -190,11 +223,13 @@ class SymbolUsageFinderTest extends AnyFreeSpec {
       "extracts string literal from constructor args" in {
         // Slick Table constructor: new Table[(Long, BigDecimal)](tag, "account_balances")
         // We use MethodCall to find constructor calls
-        val searches = Seq(SymbolSearch.MethodCall(
-          TypeMatcher.fqnEndsWith("Table"),
-        ))
-        val finder = new SymbolUsageFinder(searches)
-        val usages = finder.findAll(List(slickPkg))
+        val searches = Seq(
+          SymbolSearch.MethodCall(
+            TypeMatcher.fqnEndsWith("Table"),
+          ),
+        )
+        val finder   = new SymbolUsageFinder(searches)
+        val usages   = finder.findAll(List(slickPkg))
 
         val constructorCalls = usages.collect { case u: FoundUsage.MethodCallResult if u.methodName == "<init>" => u }
         // May or may not find constructor calls depending on TASTy representation

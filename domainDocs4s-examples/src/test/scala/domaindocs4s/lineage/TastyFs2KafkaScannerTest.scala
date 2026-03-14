@@ -63,11 +63,14 @@ class TastyFs2KafkaScannerTest extends AnyFreeSpec {
 
     "LineageAdjustments .kafka(topic) overrides auto-detected targets" in {
       val adj = LineageAdjustments.builder
-        .cls[Fs2KafkaEventPublisher].removeIntegrations(ResourceType.Kafka)
-        .cls[Fs2KafkaEventPublisher].writes.kafka("user.events")
+        .cls[Fs2KafkaEventPublisher]
+        .removeIntegrations(ResourceType.Kafka)
+        .cls[Fs2KafkaEventPublisher]
+        .writes
+        .kafka("user.events")
         .build
 
-      val (_, result) = adj.apply(Nil, integrations)
+      val (_, result)      = adj.apply(Nil, integrations)
       val publisherResults = result.filter(_.method.className == "Fs2KafkaEventPublisher")
       publisherResults should have size 1
       publisherResults.head.target shouldBe "user.events"

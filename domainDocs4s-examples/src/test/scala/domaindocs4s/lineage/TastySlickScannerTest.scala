@@ -10,7 +10,7 @@ class TastySlickScannerTest extends AnyFreeSpec {
 
   given ctx: Context = TastyContext.fromCurrentProcess()
 
-  private val slickPkg = "domaindocs4s.architecture.lineage.example.slick"
+  private val slickPkg          = "domaindocs4s.architecture.lineage.example.slick"
   private val slickIntegrations = new TastySlickScanner().scan(List(slickPkg))
 
   "TastySlickScanner" - {
@@ -33,7 +33,7 @@ class TastySlickScannerTest extends AnyFreeSpec {
     }
 
     "classifies reads and writes correctly" in {
-      val reads = slickIntegrations.filter(_.accessType == DataAccessType.Read)
+      val reads  = slickIntegrations.filter(_.accessType == DataAccessType.Read)
       val writes = slickIntegrations.filter(_.accessType == DataAccessType.Write)
 
       reads.map(_.method.methodName).toSet should contain allOf ("getBalance", "listTransactions")
@@ -60,7 +60,7 @@ class TastySlickScannerTest extends AnyFreeSpec {
 
     "composes with LineageBuilder" in {
       val slickCallGraph = new TastyCallGraphExtractor().extract(slickPkg)
-      val slickResult = LineageBuilder.build(slickCallGraph, slickIntegrations)
+      val slickResult    = LineageBuilder.build(slickCallGraph, slickIntegrations)
 
       slickResult.integrations should have size slickIntegrations.size
       val output = slickResult.prettyPrint
@@ -86,7 +86,7 @@ class TastySlickScannerTest extends AnyFreeSpec {
     }
 
     "factory pattern: classifies reads and writes correctly" in {
-      val reads = factoryIntegrations.filter(_.accessType == DataAccessType.Read)
+      val reads  = factoryIntegrations.filter(_.accessType == DataAccessType.Read)
       val writes = factoryIntegrations.filter(_.accessType == DataAccessType.Write)
 
       reads.map(_.method.methodName).toSet should contain allOf ("getOrders", "getItems")
@@ -96,32 +96,28 @@ class TastySlickScannerTest extends AnyFreeSpec {
     // -- SimpleDBIO s"..." detection --
 
     "detects s interpolation with INSERT as Write (SimpleDBIO pattern)" in {
-      val hits = slickIntegrations.filter(i =>
-        i.method.className == "SimpleDbioRepo" && i.method.methodName == "insertRow")
+      val hits = slickIntegrations.filter(i => i.method.className == "SimpleDbioRepo" && i.method.methodName == "insertRow")
       hits should have size 1
       hits.head.accessType shouldBe DataAccessType.Write
       hits.head.target shouldBe "simple_dbio_table"
     }
 
     "detects s interpolation with SELECT as Read (SimpleDBIO pattern)" in {
-      val hits = slickIntegrations.filter(i =>
-        i.method.className == "SimpleDbioRepo" && i.method.methodName == "selectRow")
+      val hits = slickIntegrations.filter(i => i.method.className == "SimpleDbioRepo" && i.method.methodName == "selectRow")
       hits should have size 1
       hits.head.accessType shouldBe DataAccessType.Read
       hits.head.target shouldBe "simple_dbio_read_table"
     }
 
     "ignores non-SQL s interpolation strings" in {
-      val hits = slickIntegrations.filter(i =>
-        i.method.className == "SimpleDbioRepo" && i.method.methodName == "nonSqlString")
+      val hits = slickIntegrations.filter(i => i.method.className == "SimpleDbioRepo" && i.method.methodName == "nonSqlString")
       hits shouldBe empty
     }
 
     // -- SQL variable resolution --
 
     "resolves interpolation variables in sqlu via class-level val bindings" in {
-      val hits = slickIntegrations.filter(i =>
-        i.method.className == "SqlVarRepo" && i.method.methodName == "insertWithInterp")
+      val hits = slickIntegrations.filter(i => i.method.className == "SqlVarRepo" && i.method.methodName == "insertWithInterp")
       hits should have size 1
       hits.head.target shouldBe "interp_table"
     }
@@ -145,8 +141,7 @@ class TastySlickScannerTest extends AnyFreeSpec {
     // -- InsertActionComposerImpl --
 
     "detects InsertActionComposerImpl pattern as Write" in {
-      val hits = slickIntegrations.filter(i =>
-        i.method.className == "ComposerRepo" && i.method.methodName == "upsertViaComposer")
+      val hits = slickIntegrations.filter(i => i.method.className == "ComposerRepo" && i.method.methodName == "upsertViaComposer")
       hits should have size 1
       hits.head.accessType shouldBe DataAccessType.Write
       hits.head.target shouldBe "account_balances"
@@ -179,7 +174,7 @@ class TastySlickScannerTest extends AnyFreeSpec {
     "parameterized factory: classifies reads and writes correctly" in {
       val reads  = paramIntegrations.filter(_.accessType == DataAccessType.Read)
       val writes = paramIntegrations.filter(_.accessType == DataAccessType.Write)
-      reads.map(_.target).toSet  should contain("param_single")
+      reads.map(_.target).toSet should contain("param_single")
       writes.map(_.target).toSet should contain("param_single")
     }
   }

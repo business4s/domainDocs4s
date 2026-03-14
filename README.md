@@ -10,3 +10,13 @@ See the [**Website**](https://business4s.github.io/domainDocs4s/) for details an
 
 - prometheus scanner
 - typesafe packages, SymbolModule.requiredPackage
+- stricter resource identification - db cluster, db, schema
+- limit to non-test code somehow?
+
+
+rich ui:
+- focus on node, see all its connections
+- fold/unfold a group
+- fold unfold a class?
+- export view setings?
+- fold unfold all classes? 

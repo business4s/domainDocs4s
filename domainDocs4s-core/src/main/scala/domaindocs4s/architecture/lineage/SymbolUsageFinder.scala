@@ -134,20 +134,20 @@ class SymbolUsageFinder(searches: Seq[SymbolSearch])(using ctx: Context) {
     packages.flatMap(findInPackage)
 
   private def findInPackage(packageName: String): List[FoundUsage] = {
-    val pkg           = ctx.findPackage(packageName)
-    val userWithPkg   = TastyUtils.userClassesRecursive(pkg)
-    val moduleWithPkg = TastyUtils.moduleClassesRecursive(pkg)
+    val pkg             = ctx.findPackage(packageName)
+    val userWithPkg     = TastyUtils.userClassesRecursive(pkg)
+    val moduleWithPkg   = TastyUtils.moduleClassesRecursive(pkg)
     // Include nested classes/modules inside companion objects (e.g., object Foo { case class Journal(...) })
-    val knownNames = (userWithPkg ++ moduleWithPkg).map { case (p, c) =>
+    val knownNames      = (userWithPkg ++ moduleWithPkg).map { case (p, c) =>
       (p.fullName.toString, c.name.toString.stripSuffix("$"))
     }.toSet
     val nestedInModules = TastyUtils.nestedClassesInModules(pkg).filterNot { case (p, c) =>
       knownNames.contains((p.fullName.toString, c.name.toString.stripSuffix("$")))
     }
-    val nestedModules = TastyUtils.nestedModulesInModules(pkg).filterNot { case (p, c) =>
+    val nestedModules   = TastyUtils.nestedModulesInModules(pkg).filterNot { case (p, c) =>
       knownNames.contains((p.fullName.toString, c.name.toString.stripSuffix("$")))
     }
-    val allWithPkg    = userWithPkg ++ moduleWithPkg ++ nestedInModules ++ nestedModules
+    val allWithPkg      = userWithPkg ++ moduleWithPkg ++ nestedInModules ++ nestedModules
     allWithPkg.flatMap { case (ownerPkg, cls) =>
       val pkgName   = ownerPkg.fullName.toString
       val className = cls.name.toString.stripSuffix("$")
@@ -254,7 +254,9 @@ class SymbolUsageFinder(searches: Seq[SymbolSearch])(using ctx: Context) {
           case _              =>
         }
       // Also walk val bodies — val initializers can contain scanner-relevant patterns
-      case ts: TermSymbol if !ts.isSynthetic && !ts.name.toString.startsWith("<") && ts.tree.exists(_.isInstanceOf[ValDef]) && !ts.tree.exists(_.isInstanceOf[DefDef]) =>
+      case ts: TermSymbol
+          if !ts.isSynthetic && !ts.name.toString.startsWith("<") && ts.tree
+            .exists(_.isInstanceOf[ValDef]) && !ts.tree.exists(_.isInstanceOf[DefDef]) =>
         val valName = ts.name.toString
         ts.tree.foreach {
           case valDef: ValDef =>
@@ -280,8 +282,7 @@ class SymbolUsageFinder(searches: Seq[SymbolSearch])(using ctx: Context) {
     walker.traverse(tree)
   }
 
-  /** TreeTraverser-based walker that visits all tree types exhaustively.
-    * Uses mutable state with save/restore for context threading (path, fieldCtx).
+  /** TreeTraverser-based walker that visits all tree types exhaustively. Uses mutable state with save/restore for context threading (path, fieldCtx).
     * Apply/Select patterns use manual recursion to avoid double-matching call patterns.
     */
   private class UsageWalker(
@@ -289,7 +290,7 @@ class SymbolUsageFinder(searches: Seq[SymbolSearch])(using ctx: Context) {
       initialFieldCtx: Map[String, TypeOrMethodic],
       results: ListBuffer[FoundUsage],
   ) extends TreeTraverser {
-    private var currentPath: List[NestingNode]            = initialPath
+    private var currentPath: List[NestingNode]               = initialPath
     private var currentFieldCtx: Map[String, TypeOrMethodic] = initialFieldCtx
 
     override def traverse(tree: Tree): Unit = {
@@ -332,7 +333,7 @@ class SymbolUsageFinder(searches: Seq[SymbolSearch])(using ctx: Context) {
                 currentPath = savedMethodPath
                 currentFieldCtx = savedMethodFieldCtx
               }
-            case other =>
+            case other          =>
               // Walk non-method body items (e.g., ValDefs) for nested classes
               traverse(other)
           }
@@ -354,21 +355,21 @@ class SymbolUsageFinder(searches: Seq[SymbolSearch])(using ctx: Context) {
           currentFieldCtx = saved
 
         // Apply(Select(receiver, method), args) — recurse into receiver + args, skip Select
-        case Apply(Select(qual, _), args) =>
+        case Apply(Select(qual, _), args)               =>
           traverse(qual)
           args.foreach(traverse)
         // Apply(TypeApply(Select(receiver, method), _), args) — recurse into receiver + args
         case Apply(TypeApply(Select(qual, _), _), args) =>
           traverse(qual)
           args.foreach(traverse)
-        case Apply(fun, args) =>
+        case Apply(fun, args)                           =>
           traverse(fun)
           args.foreach(traverse)
-        case TypeApply(Select(qual, _), _) =>
+        case TypeApply(Select(qual, _), _)              =>
           traverse(qual)
-        case TypeApply(fun, _) =>
+        case TypeApply(fun, _)                          =>
           traverse(fun)
-        case Select(qual, _) =>
+        case Select(qual, _)                            =>
           traverse(qual)
 
         case _ =>
@@ -460,7 +461,7 @@ class SymbolUsageFinder(searches: Seq[SymbolSearch])(using ctx: Context) {
       fieldCtx: Map[String, TypeOrMethodic],
       results: ListBuffer[FoundUsage],
   ): Unit = {
-    val beforeSize = results.size
+    val beforeSize       = results.size
     lazy val literalArgs = extractLiteralArgs(args)
 
     // Strategy 1: Field pre-scan (Ident or Select(This, field))
@@ -529,9 +530,9 @@ class SymbolUsageFinder(searches: Seq[SymbolSearch])(using ctx: Context) {
                     }
                   }
                 }
-              case _ =>
+              case _                   =>
             }
-          case _ =>
+          case _            =>
         }
       } catch { case _: Exception => }
     }
@@ -562,30 +563,27 @@ class SymbolUsageFinder(searches: Seq[SymbolSearch])(using ctx: Context) {
     }
   }
 
-  /** Extract the return type FQN from a receiver expression by unwrapping Apply/TypeApply
-    * layers until a Select with a SignedName is found. The SignedName's resSig encodes the
-    * method's return type as an erased FQN, which is the type of the receiver expression.
+  /** Extract the return type FQN from a receiver expression by unwrapping Apply/TypeApply layers until a Select with a SignedName is found. The
+    * SignedName's resSig encodes the method's return type as an erased FQN, which is the type of the receiver expression.
     *
-    * For example, in `sql"...".query[T](read).unique`:
-    *   receiver of `.unique` = Apply(TypeApply(Select(frag, "query[sig:Query0]"), _), _)
-    *   → unwrap Apply → unwrap TypeApply → Select with SignedName "query"
-    *   → resSig = "doobie.util.query$.Query0"
+    * For example, in `sql"...".query[T](read).unique`: receiver of `.unique` = Apply(TypeApply(Select(frag, "query[sig:Query0]"), _), _) → unwrap
+    * Apply → unwrap TypeApply → Select with SignedName "query" → resSig = "doobie.util.query$.Query0"
     */
   private def extractReturnTypeFqn(tree: Tree): Option[String] = tree match {
-    case Apply(fun, _)     => extractReturnTypeFqn(fun)
-    case TypeApply(fun, _) => extractReturnTypeFqn(fun)
+    case Apply(fun, _)      => extractReturnTypeFqn(fun)
+    case TypeApply(fun, _)  => extractReturnTypeFqn(fun)
     case Select(qual, name) =>
       name match {
         case sn: SignedName =>
           val resSig = sn.sig.resSig.toString
           if (resSig.nonEmpty) Some(resSig) else extractReturnTypeFqn(qual)
-        case _ =>
+        case _              =>
           // SimpleName — look at the qualifier's return type instead.
           // This handles chains like fragment.stripMargin.update where .stripMargin
           // is a SimpleName but the qualifier resolves to Fragment via a SignedName deeper in the chain.
           extractReturnTypeFqn(qual)
       }
-    case _ => None
+    case _                  => None
   }
 
   /** Walk the TermRef chain checking each level against MethodCall searches. */
@@ -749,8 +747,8 @@ class SymbolUsageFinder(searches: Seq[SymbolSearch])(using ctx: Context) {
   private def extractParamTypes(defDef: DefDef): Map[String, TypeOrMethodic] =
     extractValDefTypes(defDef.paramLists.collect { case Left(termParams) => termParams }.flatten, filterSynthetic = false)
 
-  /** Extract (name → declaredType) entries from a list of trees, keeping only ValDef nodes.
-    * When `filterSynthetic` is true (default), names starting with `<` or `$` are skipped.
+  /** Extract (name → declaredType) entries from a list of trees, keeping only ValDef nodes. When `filterSynthetic` is true (default), names starting
+    * with `<` or `$` are skipped.
     */
   private def extractValDefTypes(trees: List[Tree], filterSynthetic: Boolean = true): Map[String, TypeOrMethodic] = {
     val fields = scala.collection.mutable.Map.empty[String, TypeOrMethodic]

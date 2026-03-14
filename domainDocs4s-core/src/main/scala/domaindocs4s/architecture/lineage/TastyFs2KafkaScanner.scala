@@ -18,12 +18,15 @@ import tastyquery.Contexts.Context
 
 class TastyFs2KafkaScanner(
     group: Option[String] = Some("Kafka"),
-)(using ctx: Context) extends IntegrationScanner {
+)(using ctx: Context)
+    extends IntegrationScanner {
 
-  private val producerSearch = SymbolSearch.MethodCall(TypeMatcher.oneOf(
-    "fs2.kafka.KafkaProducer",
-    "fs2.kafka.TransactionalKafkaProducer",
-  ))
+  private val producerSearch = SymbolSearch.MethodCall(
+    TypeMatcher.oneOf(
+      "fs2.kafka.KafkaProducer",
+      "fs2.kafka.TransactionalKafkaProducer",
+    ),
+  )
   private val consumerSearch = SymbolSearch.MethodCall(
     TypeMatcher("fs2.kafka.KafkaConsumer"),
   )
@@ -40,17 +43,19 @@ class TastyFs2KafkaScanner(
         val accessType = u.search match {
           case s if s == producerSearch => DataAccessType.Write
           case s if s == consumerSearch => DataAccessType.Read
-          case _                       => return Nil
+          case _                        => return Nil
         }
-        Some(DiscoveredIntegration(
-          method = ref,
-          accessType = accessType,
-          resourceType = ResourceType.Kafka,
-          scanner = "fs2-kafka",
-          target = s"kafka from ${ref.className}.${ref.methodName}",
-          evidence = s"calls ${u.receiverName}.${u.methodName}",
-          group = group,
-        ))
+        Some(
+          DiscoveredIntegration(
+            method = ref,
+            accessType = accessType,
+            resourceType = ResourceType.Kafka,
+            scanner = "fs2-kafka",
+            target = s"kafka from ${ref.className}.${ref.methodName}",
+            evidence = s"calls ${u.receiverName}.${u.methodName}",
+            group = group,
+          ),
+        )
       } else None
     }
   }

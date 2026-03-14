@@ -43,7 +43,7 @@ object MermaidRenderer {
     for (case (Some(groupName), entries) <- resourcesByGroup) {
       // Disambiguate from class subgraphs that share the same name
       val safeId = extGroupNodeId(groupName)
-      val label = if (classNames.contains(groupName)) s"$groupName (ext)" else groupName
+      val label  = if (classNames.contains(groupName)) s"$groupName (ext)" else groupName
       sb.append(s"""  subgraph $safeId ["$label"]\n""")
       for ((target, rtype, _) <- entries) {
         renderTargetNode(sb, targetNodeId(target), target.split("/").last, rtype, indent = "    ")
@@ -61,7 +61,7 @@ object MermaidRenderer {
     // Call graph edges
     for (edge <- result.callGraph) {
       val from = nodeId(edge.caller)
-      val to = nodeId(edge.callee)
+      val to   = nodeId(edge.callee)
       sb.append(s"  $from --> $to\n")
     }
 
@@ -105,7 +105,7 @@ object MermaidRenderer {
     renderClassLevelInternal(result, dataFlow = true, config)
 
   private def renderClassLevelInternal(result: ScanResult, dataFlow: Boolean, config: ClassLevelConfig): String = {
-    val sb         = new StringBuilder
+    val sb          = new StringBuilder
     val foldByGroup = config.foldByGroup
     sb.append("%%{init: {'flowchart': {'defaultRenderer': 'elk'}}}%%\n")
     sb.append("flowchart LR\n")
@@ -115,25 +115,24 @@ object MermaidRenderer {
     // Class nodes — one node per visible class, optionally grouped into subgraphs
     // classGroups (from adjustments) override config-based grouping per class
     val configGroupFn: ScannedClass => Option[String] = config.classGrouping match {
-      case ClassGrouping.NoGrouping => _ => None
+      case ClassGrouping.NoGrouping      => _ => None
       case ClassGrouping.ByPackage(base) =>
         val prefix = if (base.endsWith(".")) base else base + "."
         cls => {
           val rest = if (cls.packageName.startsWith(prefix)) cls.packageName.drop(prefix.length) else ""
-          val seg = rest.takeWhile(_ != '.')
+          val seg  = rest.takeWhile(_ != '.')
           if (seg.isEmpty) None else Some(seg)
         }
-      case ClassGrouping.Custom(fn) => fn
+      case ClassGrouping.Custom(fn)      => fn
     }
-    val groupFn: ScannedClass => Option[String] = cls =>
-      result.classGroups.get((cls.packageName, cls.name)).orElse(configGroupFn(cls))
+    val groupFn: ScannedClass => Option[String]       = cls => result.classGroups.get((cls.packageName, cls.name)).orElse(configGroupFn(cls))
 
     val visibleFromCallGraph = result.classes.filter { cls =>
       cls.methods.exists(m => m.calls.nonEmpty || m.integrations.nonEmpty || isCalledByOthers(m.ref, result))
     }
 
     // Classes from integrations not in result.classes (e.g., Scala objects detected by scanners)
-    val knownClassKeys: Set[ClassKey] = result.classes.map(cls => (cls.packageName, cls.name)).toSet
+    val knownClassKeys: Set[ClassKey]              = result.classes.map(cls => (cls.packageName, cls.name)).toSet
     val integrationOnlyClasses: List[ScannedClass] = result.integrations
       .map(i => (i.method.packageName, i.method.className))
       .distinct
@@ -142,8 +141,7 @@ object MermaidRenderer {
 
     val visibleClasses = visibleFromCallGraph ++ integrationOnlyClasses
 
-    val displayName: ScannedClass => String = cls =>
-      result.classDisplayNames.getOrElse((cls.packageName, cls.name), cls.name)
+    val displayName: ScannedClass => String = cls => result.classDisplayNames.getOrElse((cls.packageName, cls.name), cls.name)
 
     val grouped = visibleClasses.groupBy(groupFn)
 
@@ -201,7 +199,7 @@ object MermaidRenderer {
     sb.append("\n")
 
     // Class-to-class call graph edges (deduplicated)
-    val declaredClassKeys: Set[ClassKey] = visibleClasses.map(cls => (cls.packageName, cls.name)).toSet
+    val declaredClassKeys: Set[ClassKey]       = visibleClasses.map(cls => (cls.packageName, cls.name)).toSet
     val classEdges: List[(ClassKey, ClassKey)] = result.callGraph
       .map(e => ((e.caller.packageName, e.caller.className), (e.callee.packageName, e.callee.className)))
       .distinct
@@ -282,10 +280,10 @@ object MermaidRenderer {
   private def renderTargetNode(sb: StringBuilder, id: String, label: String, rtype: ResourceType, indent: String): Unit = {
     val safe = escapeHtmlChars(label)
     rtype match {
-      case ResourceType.Grpc    => sb.append(s"""$indent$id{{"$safe"}}\n""")
-      case ResourceType.Kafka   => sb.append(s"""$indent$id(["$safe"])\n""")
-      case ResourceType.S3      => sb.append(s"""$indent$id[/"$safe"/]\n""")
-      case _                    => sb.append(s"""$indent$id[("$safe")]\n""")
+      case ResourceType.Grpc  => sb.append(s"""$indent$id{{"$safe"}}\n""")
+      case ResourceType.Kafka => sb.append(s"""$indent$id(["$safe"])\n""")
+      case ResourceType.S3    => sb.append(s"""$indent$id[/"$safe"/]\n""")
+      case _                  => sb.append(s"""$indent$id[("$safe")]\n""")
     }
   }
 
@@ -301,23 +299,23 @@ object MermaidRenderer {
 
   private def renderEdge(sb: StringBuilder, from: String, to: String, accessType: DataAccessType, dataFlow: Boolean): Unit =
     (accessType, dataFlow) match {
-      case (DataAccessType.Read, false) => sb.append(s"""  $from -.->|Read| $to\n""")
-      case (DataAccessType.Read, true)  => sb.append(s"""  $to -.->|Read| $from\n""")
-      case (DataAccessType.Write, _)    => sb.append(s"""  $from ==>|Write| $to\n""")
+      case (DataAccessType.Read, false)  => sb.append(s"""  $from -.->|Read| $to\n""")
+      case (DataAccessType.Read, true)   => sb.append(s"""  $to -.->|Read| $from\n""")
+      case (DataAccessType.Write, _)     => sb.append(s"""  $from ==>|Write| $to\n""")
       case (DataAccessType.ReadWrite, _) => sb.append(s"""  $from -->|ReadWrite| $to\n""")
-      case _                            => sb.append(s"""  $from -->|$accessType| $to\n""")
+      case _                             => sb.append(s"""  $from -->|$accessType| $to\n""")
     }
 
   private def integrationStyle(rtype: ResourceType): String = rtype match {
-    case ResourceType.Grpc    => "grpcNode"
-    case ResourceType.Kafka   => "kafkaNode"
-    case ResourceType.S3      => "s3Node"
-    case _                    => "dbNode"
+    case ResourceType.Grpc  => "grpcNode"
+    case ResourceType.Kafka => "kafkaNode"
+    case ResourceType.S3    => "s3Node"
+    case _                  => "dbNode"
   }
 
   def toViewUrl(mermaidCode: String): String = {
-    val json    = s"""{"code":${escapeJsonString(mermaidCode)}}"""
-    val encoded = Base64.getEncoder.encodeToString(json.getBytes(StandardCharsets.UTF_8))
+    val json      = s"""{"code":${escapeJsonString(mermaidCode)}}"""
+    val encoded   = Base64.getEncoder.encodeToString(json.getBytes(StandardCharsets.UTF_8))
     val base64url = encoded
       .replace('+', '-')
       .replace('/', '_')

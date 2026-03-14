@@ -56,7 +56,7 @@ object LineageBuilder {
     }
 
     val scannedMethodsByClass = scannedMethods.groupBy(m => (m.ref.packageName, m.ref.className))
-    val scannedClasses = methods
+    val scannedClasses        = methods
       .groupBy(m => (m.packageName, m.className))
       .map { case ((pkg, className), _) =>
         ScannedClass(
@@ -83,7 +83,7 @@ object LineageBuilder {
       directAccess: Map[MethodRef, DataAccessType],
       callees: Map[MethodRef, List[MethodRef]],
   ): Map[MethodRef, DataAccessType] = {
-    val memo = scala.collection.mutable.Map.empty[MethodRef, DataAccessType]
+    val memo     = scala.collection.mutable.Map.empty[MethodRef, DataAccessType]
     val visiting = scala.collection.mutable.Set.empty[MethodRef]
 
     def resolve(ref: MethodRef): DataAccessType = {
@@ -91,11 +91,11 @@ object LineageBuilder {
         ref, {
           if (visiting.contains(ref)) DataAccessType.Pure
           else {
-            val _ = visiting.add(ref)
-            val direct = directAccess.getOrElse(ref, DataAccessType.Pure)
+            val _          = visiting.add(ref)
+            val direct     = directAccess.getOrElse(ref, DataAccessType.Pure)
             val transitive = callees.getOrElse(ref, Nil).map(resolve)
-            val result = DataAccessType.combineAll(direct :: transitive)
-            val _ = visiting.remove(ref)
+            val result     = DataAccessType.combineAll(direct :: transitive)
+            val _          = visiting.remove(ref)
             result
           }
         },
@@ -110,8 +110,8 @@ object LineageBuilder {
       callees: Map[MethodRef, List[MethodRef]],
       integrationsByMethod: Map[MethodRef, List[DiscoveredIntegration]],
   ): List[LineageChain] = {
-    val allRefs = callees.keySet
-    val hasCallers = callees.values.flatten.toSet
+    val allRefs     = callees.keySet
+    val hasCallers  = callees.values.flatten.toSet
     val entryPoints = allRefs -- hasCallers
 
     def walk(

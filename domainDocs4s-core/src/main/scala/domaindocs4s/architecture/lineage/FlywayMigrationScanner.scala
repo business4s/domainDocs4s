@@ -45,7 +45,10 @@ class FlywayMigrationScanner(
 
   private lazy val parsedEvents: List[MigrationEvent] = {
     val files = Using(Files.list(migrationDir)) { stream =>
-      stream.iterator().asScala.toList
+      stream
+        .iterator()
+        .asScala
+        .toList
         .filter(p => MigrationFilePattern.matches(p.getFileName.toString))
         .sortBy(p => flywayVersionKey(p.getFileName.toString))
     }.getOrElse(Nil)
@@ -84,14 +87,16 @@ class FlywayMigrationScanner(
 
       case cv: CreateView =>
         val viewName = cv.getView.getName
-        val sources = Option(cv.getSelect).toList.flatMap(extractSourceTables).distinct
+        val sources  = Option(cv.getSelect).toList.flatMap(extractSourceTables).distinct
         IntegrationEvent(mkIntegration(method, DataAccessType.Write, viewName, filename)) ::
           sources.map(t => IntegrationEvent(mkIntegration(method, DataAccessType.Read, t, filename))) :::
           sources.map(t => DependencyEvent(ResourceDependency(from = t, to = viewName, resourceType = ResourceType.Database, label = "view source")))
 
       case alt: Alter =>
-        val oldName = alt.getTable.getName
-        val renameExpr = Option(alt.getAlterExpressions).map(_.asScala).getOrElse(Nil)
+        val oldName    = alt.getTable.getName
+        val renameExpr = Option(alt.getAlterExpressions)
+          .map(_.asScala)
+          .getOrElse(Nil)
           .find(_.getOperation == AlterOperation.RENAME_TABLE)
         renameExpr match {
           case Some(expr) => renameEvents(oldName, expr.getNewTableName, method, filename)
@@ -136,7 +141,7 @@ class FlywayMigrationScanner(
 }
 
 object FlywayMigrationScanner {
-  private sealed trait MigrationEvent
+  sealed private trait MigrationEvent
   private case class IntegrationEvent(di: DiscoveredIntegration) extends MigrationEvent
   private case class DropEvent(target: String)                   extends MigrationEvent
   private case class DependencyEvent(dep: ResourceDependency)    extends MigrationEvent
@@ -145,9 +150,8 @@ object FlywayMigrationScanner {
 
   /** Sort key for Flyway migration filenames.
     *
-    * Flyway orders migrations by version number (numeric segments), not lexicographically.
-    * `V1_0_7` < `V1_0_11`, but lexicographic sort puts `V1_0_11` before `V1_0_7`.
-    * Repeatable migrations (R__*) sort after all versioned migrations.
+    * Flyway orders migrations by version number (numeric segments), not lexicographically. `V1_0_7` < `V1_0_11`, but lexicographic sort puts
+    * `V1_0_11` before `V1_0_7`. Repeatable migrations (R__*) sort after all versioned migrations.
     */
   private def flywayVersionKey(filename: String): (Int, List[Long], String) =
     if (filename.startsWith("V")) {
@@ -159,34 +163,31 @@ object FlywayMigrationScanner {
       (1, Nil, filename)
     }
 
-  /** SQL identifiers must start with a letter or underscore.
-    * Filters out JSqlParser artifacts from dollar-quoting (DO $$...$$)
-    * and format strings (%1$s) in PL/pgSQL blocks.
+  /** SQL identifiers must start with a letter or underscore. Filters out JSqlParser artifacts from dollar-quoting (DO $$...$$) and format strings
+    * (%1$s) in PL/pgSQL blocks.
     */
   private def isValidIdentifier(name: String): Boolean =
     name.nonEmpty && (name.head.isLetter || name.head == '_')
 
   /** Process migration events in order, removing integrations and dependencies for dropped targets.
     *
-    * When a DropEvent(X) is encountered, all accumulated integrations with target X
-    * are removed, and all dependencies where `to == X` are removed.
-    * If a subsequent migration re-creates X, fresh integrations/dependencies are added.
+    * When a DropEvent(X) is encountered, all accumulated integrations with target X are removed, and all dependencies where `to == X` are removed. If
+    * a subsequent migration re-creates X, fresh integrations/dependencies are added.
     */
   private def resolveDrops(events: List[MigrationEvent]): (List[DiscoveredIntegration], List[ResourceDependency]) = {
     val integrations = scala.collection.mutable.ListBuffer.empty[DiscoveredIntegration]
     val dependencies = scala.collection.mutable.ListBuffer.empty[ResourceDependency]
     for (event <- events) event match {
-      case IntegrationEvent(di)  => integrations += di
-      case DependencyEvent(dep)  => dependencies += dep
-      case DropEvent(target)     =>
+      case IntegrationEvent(di) => integrations += di
+      case DependencyEvent(dep) => dependencies += dep
+      case DropEvent(target)    =>
         integrations.filterInPlace(_.target != target)
         dependencies.filterInPlace(_.to != target)
     }
     (integrations.toList, dependencies.toList)
   }
 
-  /** Parse SQL content into statements, silently skipping unparseable ones
-    * (e.g. PL/pgSQL procedural blocks with DO $$...$$ or CREATE PROCEDURE).
+  /** Parse SQL content into statements, silently skipping unparseable ones (e.g. PL/pgSQL procedural blocks with DO $$...$$ or CREATE PROCEDURE).
     */
   private def parseStatements(content: String): List[net.sf.jsqlparser.statement.Statement] = {
     val preprocessed = stripUnsupportedClauses(content)
@@ -204,17 +205,20 @@ object FlywayMigrationScanner {
 
   /** Extract table names from a SELECT's FROM and JOIN clauses. */
   private def extractSourceTables(select: Select): List[String] = select match {
-    case ps: PlainSelect =>
-      val from = Option(ps.getFromItem).toList.flatMap(tableName)
-      val joins = Option(ps.getJoins).map(_.asScala.toList).getOrElse(Nil)
-        .flatMap(j => Option(j.getFromItem)).flatMap(tableName)
+    case ps: PlainSelect       =>
+      val from  = Option(ps.getFromItem).toList.flatMap(tableName)
+      val joins = Option(ps.getJoins)
+        .map(_.asScala.toList)
+        .getOrElse(Nil)
+        .flatMap(j => Option(j.getFromItem))
+        .flatMap(tableName)
       from ++ joins
     case sol: SetOperationList =>
       Option(sol.getSelects).map(_.asScala.toList).getOrElse(Nil).flatMap {
         case s: Select => extractSourceTables(s)
         case _         => Nil
       }
-    case _ => Nil
+    case _                     => Nil
   }
 
   private def tableName(fi: FromItem): Option[String] = fi match {
@@ -224,8 +228,7 @@ object FlywayMigrationScanner {
 
   /** Strip DDL clauses that JSqlParser cannot parse.
     *
-    * PostgreSQL `CREATE TABLE ... PARTITION BY {RANGE|LIST|HASH} (cols)` is not
-    * supported by JSqlParser (as of 5.3). We remove the clause so that the
+    * PostgreSQL `CREATE TABLE ... PARTITION BY {RANGE|LIST|HASH} (cols)` is not supported by JSqlParser (as of 5.3). We remove the clause so that the
     * CREATE TABLE itself can still be parsed and the table name discovered.
     */
   private val PartitionByPattern =

@@ -32,8 +32,7 @@ private[lineage] object TastyUtils {
   def moduleClassesRecursive(pkg: PackageSymbol)(using Context): List[(PackageSymbol, ClassSymbol)] =
     allSubpackages(pkg).flatMap(p => moduleClasses(p).map(p -> _))
 
-  /** Collect classes nested inside module classes (companion objects).
-    * E.g., `object Foo { case class Impl(...) }` → finds `Impl` inside `Foo$`.
+  /** Collect classes nested inside module classes (companion objects). E.g., `object Foo { case class Impl(...) }` → finds `Impl` inside `Foo$`.
     * Returns (ownerPackage, nestedClass) pairs.
     */
   def nestedClassesInModules(pkg: PackageSymbol)(using Context): List[(PackageSymbol, ClassSymbol)] =
@@ -45,9 +44,8 @@ private[lineage] object TastyUtils {
       }
     }
 
-  /** Collect module classes (objects) nested inside other module classes.
-    * E.g., `object OuterJob { object Helpers { def process(...) } }` → finds `Helpers$` inside `OuterJob$`.
-    * Returns (ownerPackage, nestedModuleClass) pairs.
+  /** Collect module classes (objects) nested inside other module classes. E.g., `object OuterJob { object Helpers { def process(...) } }` → finds
+    * `Helpers$` inside `OuterJob$`. Returns (ownerPackage, nestedModuleClass) pairs.
     */
   def nestedModulesInModules(pkg: PackageSymbol)(using Context): List[(PackageSymbol, ClassSymbol)] =
     allSubpackages(pkg).flatMap { p =>
@@ -70,9 +68,8 @@ private[lineage] object TastyUtils {
 
   /** Extract the simple name from a TASTy Name, unwrapping SignedName if needed.
     *
-    * TASTy method names may be SignedNames that include type signatures,
-    * e.g. `readJournalFor[with sig (1,java.lang.String):java.lang.Object @readJournalFor]`.
-    * This extracts the underlying simple name string.
+    * TASTy method names may be SignedNames that include type signatures, e.g. `readJournalFor[with sig (1,java.lang.String):java.lang.Object
+    * \@readJournalFor]`. This extracts the underlying simple name string.
     */
   def simpleName(name: Name): String = name match {
     case SignedName(underlying, _, _) => underlying.toString
@@ -98,69 +95,76 @@ private[lineage] object TastyUtils {
     case _               => None
   }
 
-  /** Extract the package name from a TypeRef's prefix.
-    * Walks the prefix chain to handle nested types (e.g., `object Foo { case class Impl(...) }`
+  /** Extract the package name from a TypeRef's prefix. Walks the prefix chain to handle nested types (e.g., `object Foo { case class Impl(...) }`
     * where Impl's prefix is a TypeRef to Foo, not a PackageRef).
     */
   def typeRefPackage(tr: TypeRef, depth: Int = 0): String =
-    if (depth > 10) "" else
-    try {
-      tr.prefix match {
-        case pr: PackageRef       => pr.symbol.fullName.toString
-        case parent: TypeRef      => typeRefPackage(parent, depth + 1)
-        case tt: ThisType         => typeRefPackage(tt.tref, depth + 1)
-        case _                    => ""
-      }
-    } catch { case _: Exception => "" }
+    if (depth > 10) ""
+    else
+      try {
+        tr.prefix match {
+          case pr: PackageRef  => pr.symbol.fullName.toString
+          case parent: TypeRef => typeRefPackage(parent, depth + 1)
+          case tt: ThisType    => typeRefPackage(tt.tref, depth + 1)
+          case _               => ""
+        }
+      } catch { case _: Exception => "" }
 
   /** Extract the package name from a TermRef's prefix chain. */
   def termRefPackage(tr: TermRef, depth: Int = 0): String =
-    if (depth > 10) "" else
-    try {
-      tr.prefix match {
-        case pr: PackageRef  => pr.symbol.fullName.toString
-        case parent: TermRef => termRefPackage(parent, depth + 1)
-        case parent: TypeRef => typeRefPackage(parent, depth + 1)
-        case _               => ""
-      }
-    } catch { case _: Exception => "" }
+    if (depth > 10) ""
+    else
+      try {
+        tr.prefix match {
+          case pr: PackageRef  => pr.symbol.fullName.toString
+          case parent: TermRef => termRefPackage(parent, depth + 1)
+          case parent: TypeRef => typeRefPackage(parent, depth + 1)
+          case _               => ""
+        }
+      } catch { case _: Exception => "" }
 
   /** Extract the fully qualified name from a TASTy type. */
   def extractFqn(tpe: TypeOrMethodic): Option[String] =
     extractTypeRef(tpe) match {
       case Some(tr) =>
-        val pkg = typeRefPackage(tr)
+        val pkg  = typeRefPackage(tr)
         val name = tr.name.toString.stripSuffix("$")
         if (pkg.nonEmpty) Some(s"$pkg.$name") else Some(name)
-      case None =>
+      case None     =>
         tpe match {
           case at: AndType => extractFqn(at.first).orElse(extractFqn(at.second))
           case _           => None
         }
     }
 
-  /** Extract the type from a parent tree in a ClassDef's parent list.
-    * Handles both `new ParentType(args)` (Apply/TypeApply wrapping New) and bare `TypeTree` references.
+  /** Extract the type from a parent tree in a ClassDef's parent list. Handles both `new ParentType(args)` (Apply/TypeApply wrapping New) and bare
+    * `TypeTree` references.
     */
   def resolveParentType(parentTree: Trees.Tree): Option[Type] = parentTree match {
-    case Trees.Apply(Trees.Select(Trees.New(typeTree), _), _)                        => Some(typeTree.toType)
-    case Trees.Apply(Trees.TypeApply(Trees.Select(Trees.New(typeTree), _), _), _)    => Some(typeTree.toType)
-    case typeTree: Trees.TypeTree                                                     => Some(typeTree.toType)
-    case _                                                                            => None
+    case Trees.Apply(Trees.Select(Trees.New(typeTree), _), _)                     => Some(typeTree.toType)
+    case Trees.Apply(Trees.TypeApply(Trees.Select(Trees.New(typeTree), _), _), _) => Some(typeTree.toType)
+    case typeTree: Trees.TypeTree                                                 => Some(typeTree.toType)
+    case _                                                                        => None
   }
 
   /** Resolve a type to its symbol, safely handling TypeRef and AppliedType. */
   def resolveSymbol(tpe: TypeOrMethodic)(using Context): Option[Symbol] =
     tpe match {
-      case tr: TypeRef     => try tr.optSymbol catch { case _: Exception => None }
-      case at: AppliedType => extractTypeRef(at).flatMap(tr => try tr.optSymbol catch { case _: Exception => None })
+      case tr: TypeRef     =>
+        try tr.optSymbol
+        catch { case _: Exception => None }
+      case at: AppliedType =>
+        extractTypeRef(at).flatMap(tr =>
+          try tr.optSymbol
+          catch { case _: Exception => None },
+        )
       case _               => None
     }
 }
 
 /** Extract (packageName, className) from a ClassTag's runtime class. */
 private[lineage] def splitClassTag(ct: reflect.ClassTag[?]): (String, String) = {
-  val fqn = ct.runtimeClass.getName.stripSuffix("$")
+  val fqn     = ct.runtimeClass.getName.stripSuffix("$")
   val lastDot = fqn.lastIndexOf('.')
   if (lastDot >= 0) (fqn.substring(0, lastDot), fqn.substring(lastDot + 1))
   else ("", fqn)
@@ -180,8 +184,7 @@ private[lineage] def splitClassTag(ct: reflect.ClassTag[?]): (String, String) = 
 
 /** Type-safe wrapper for resource type identifiers.
   *
-  * Zero-overhead opaque type over String. Use predefined constants for
-  * built-in types (Database, Kafka, etc.) or `ResourceType("custom")` for
+  * Zero-overhead opaque type over String. Use predefined constants for built-in types (Database, Kafka, etc.) or `ResourceType("custom")` for
   * user-defined types.
   */
 opaque type ResourceType = String
@@ -240,17 +243,19 @@ case class ExtractedMethod(
 
 /** Source of an argument at a call site.
   *
-  * Used by [[ParamValueIndex]] to trace string literals backward through
-  * arbitrary-depth call chains.
+  * Used by [[ParamValueIndex]] to trace string literals backward through arbitrary-depth call chains.
   */
 sealed trait ArgSource
 object ArgSource {
+
   /** A string literal directly at the call site. */
   case class Literal(value: String) extends ArgSource
 
   /** The arg was the Nth term parameter of the enclosing method — follow callers. */
   case class ForwardedParam(
-      callerPkg: String, callerCls: String, callerMethod: String,
+      callerPkg: String,
+      callerCls: String,
+      callerMethod: String,
       paramIndex: Int,
   ) extends ArgSource
 
@@ -281,24 +286,23 @@ trait ResourceScanner {
 
 /** A dependency between two resources (e.g., a VIEW depends on its source tables). */
 case class ResourceDependency(
-    from: String,              // source resource (e.g., table name)
-    to: String,                // derived resource (e.g., view name)
+    from: String,      // source resource (e.g., table name)
+    to: String,        // derived resource (e.g., view name)
     resourceType: ResourceType,
-    label: String = "",        // e.g., "view source"
+    label: String = "", // e.g., "view source"
 )
 
 /** A discovered external integration — output of any scanner.
   *
-  * Each scanner type (doobie, kafka, grpc, ...) produces these.
-  * The lineage builder consumes them generically.
+  * Each scanner type (doobie, kafka, grpc, ...) produces these. The lineage builder consumes them generically.
   */
 case class DiscoveredIntegration(
     method: MethodRef,
     accessType: DataAccessType,
-    resourceType: ResourceType,   // ResourceType.Database, .Kafka, .Grpc, .Journal, .S3, or custom
-    scanner: String,              // "doobie", "slick", "flyway", "grpc", "pekko-journal", "manual"
-    target: String,               // what was accessed: table name, topic, endpoint, ...
-    evidence: String,             // source evidence: SQL query, config key, ...
+    resourceType: ResourceType,  // ResourceType.Database, .Kafka, .Grpc, .Journal, .S3, or custom
+    scanner: String,             // "doobie", "slick", "flyway", "grpc", "pekko-journal", "manual"
+    target: String,              // what was accessed: table name, topic, endpoint, ...
+    evidence: String,            // source evidence: SQL query, config key, ...
     group: Option[String] = None, // logical group: service name, database, ...
 )
 
@@ -322,8 +326,7 @@ object DiscoveredResource {
 
   /** Merge flat integrations into deduplicated resources.
     *
-    * Groups by (target, resourceType) — if the same resource is found by
-    * multiple scanners with different groups, the first non-None group wins.
+    * Groups by (target, resourceType) — if the same resource is found by multiple scanners with different groups, the first non-None group wins.
     */
   def merge(integrations: List[DiscoveredIntegration]): List[DiscoveredResource] =
     integrations
@@ -353,12 +356,12 @@ case class IntegrationGroupConfig(
 
 object IntegrationGroupConfig {
   class Builder {
-    private val entries = scala.collection.mutable.Map.empty[String, String]
+    private val entries                                        = scala.collection.mutable.Map.empty[String, String]
     def group[T: reflect.ClassTag](groupName: String): Builder = {
       entries += (splitClassTag(reflect.classTag[T])._2 -> groupName)
       this
     }
-    def build: IntegrationGroupConfig = IntegrationGroupConfig(entries.toMap)
+    def build: IntegrationGroupConfig                          = IntegrationGroupConfig(entries.toMap)
   }
   def builder: Builder = new Builder
 }
@@ -366,16 +369,15 @@ object IntegrationGroupConfig {
 /** How to group class nodes in class-level diagrams. */
 sealed trait ClassGrouping
 object ClassGrouping {
-  case object NoGrouping extends ClassGrouping
-  case class ByPackage(scanBase: String) extends ClassGrouping
+  case object NoGrouping                                     extends ClassGrouping
+  case class ByPackage(scanBase: String)                     extends ClassGrouping
   case class Custom(groupOf: ScannedClass => Option[String]) extends ClassGrouping
 }
 
 /** Configuration for class-level Mermaid rendering.
   *
-  * Note: to hide classes (remove them while reconnecting callers → callees),
-  * use `LineageAdjustments.builder.cls[T].remove` instead — this operates at
-  * the data level so it works for all diagram types.
+  * Note: to hide classes (remove them while reconnecting callers → callees), use `LineageAdjustments.builder.cls[T].remove` instead — this operates
+  * at the data level so it works for all diagram types.
   */
 case class ClassLevelConfig(
     foldByGroup: Set[ResourceType] = Set(ResourceType.Grpc),
@@ -385,12 +387,12 @@ case class ClassLevelConfig(
 object ClassLevelConfig {
   class Builder {
     private var _foldByGroup: Set[ResourceType] = Set(ResourceType.Grpc)
-    private var _classGrouping: ClassGrouping    = ClassGrouping.NoGrouping
+    private var _classGrouping: ClassGrouping   = ClassGrouping.NoGrouping
 
-    def foldByGroup(types: Set[ResourceType]): Builder = { _foldByGroup = types; this }
-    def groupByPackage(scanBase: String): Builder = { _classGrouping = ClassGrouping.ByPackage(scanBase); this }
+    def foldByGroup(types: Set[ResourceType]): Builder              = { _foldByGroup = types; this }
+    def groupByPackage(scanBase: String): Builder                   = { _classGrouping = ClassGrouping.ByPackage(scanBase); this }
     def groupClassesBy(fn: ScannedClass => Option[String]): Builder = { _classGrouping = ClassGrouping.Custom(fn); this }
-    def build: ClassLevelConfig = ClassLevelConfig(_foldByGroup, _classGrouping)
+    def build: ClassLevelConfig                                     = ClassLevelConfig(_foldByGroup, _classGrouping)
   }
   def builder: Builder = new Builder
 }
@@ -425,10 +427,8 @@ case class LineageChain(
 
 /** Complete lineage result — all classes, call graph, and lineage chains.
   *
-  * `integrations` contains code-scanned integrations (from TASTy scanners) that drive
-  * class nodes and edges in diagrams. `resourceOnlyIntegrations` contains discoveries
-  * from resource scanners (e.g., Flyway) that contribute to resource deduplication but
-  * do not create class nodes or edges.
+  * `integrations` contains code-scanned integrations (from TASTy scanners) that drive class nodes and edges in diagrams. `resourceOnlyIntegrations`
+  * contains discoveries from resource scanners (e.g., Flyway) that contribute to resource deduplication but do not create class nodes or edges.
   */
 case class ScanResult(
     classes: List[ScannedClass],
@@ -440,7 +440,7 @@ case class ScanResult(
     resourceOnlyIntegrations: List[DiscoveredIntegration] = Nil,
     resourceDependencies: List[ResourceDependency] = Nil,
 ) {
-  lazy val allMethods: List[ScannedMethod] = classes.flatMap(_.methods)
+  lazy val allMethods: List[ScannedMethod]     = classes.flatMap(_.methods)
   lazy val resources: List[DiscoveredResource] = DiscoveredResource.merge(integrations ++ resourceOnlyIntegrations)
 
   def findClass(name: String): Option[ScannedClass] =
@@ -464,7 +464,7 @@ case class ScanResult(
       for (m <- cls.methods) {
         val directStr = if (m.directAccess != DataAccessType.Pure) s" (direct: ${m.directAccess})" else ""
         sb.append(s"    - ${m.ref.methodName}: ${m.effectiveAccess}$directStr\n")
-        for (i <- m.integrations)
+        for (i    <- m.integrations)
           sb.append(s"        ${i.scanner}(${i.resourceType}): ${i.accessType} ${i.target} [${i.evidence}]\n")
         for (call <- m.calls)
           sb.append(s"        -> calls ${call.display}\n")

@@ -24,9 +24,9 @@ import tastyquery.Trees.*
 
 class TastyFs2GrpcScanner(using ctx: Context) extends IntegrationScanner {
 
-  private val typeMatcher = TypeMatcher.fqnEndsWith("Fs2Grpc")
+  private val typeMatcher       = TypeMatcher.fqnEndsWith("Fs2Grpc")
   private val inheritanceSearch = SymbolSearch.ClassInheritance(typeMatcher)
-  private val methodCallSearch = SymbolSearch.MethodCall(typeMatcher)
+  private val methodCallSearch  = SymbolSearch.MethodCall(typeMatcher)
 
   def scan(packages: List[String]): List[DiscoveredIntegration] = {
     val finder = new SymbolUsageFinder(Seq(inheritanceSearch, methodCallSearch))
@@ -40,13 +40,13 @@ class TastyFs2GrpcScanner(using ctx: Context) extends IntegrationScanner {
 
   // Server: class extends *Fs2Grpc → emit one Write per implemented RPC method
   private def interpretServer(u: FoundUsage.InheritanceResult): List[DiscoveredIntegration] = {
-    val ref = u.path.toMethodRef
+    val ref         = u.path.toMethodRef
     val serviceName = u.parentSimpleName.stripSuffix("Fs2Grpc")
 
     u.inheritedMethods.flatMap { method =>
       // Only emit if the class actually declares this method
-      val classNode = u.path.nodes.collectFirst { case c: NestingNode.ClassOrObject => c }
-      val classTree = classNode.flatMap(_.tree)
+      val classNode           = u.path.nodes.collectFirst { case c: NestingNode.ClassOrObject => c }
+      val classTree           = classNode.flatMap(_.tree)
       val classDeclaresMethod = classTree.exists { cd =>
         cd.rhs.body.exists {
           case defDef: DefDef => defDef.name.toString == method
@@ -54,22 +54,24 @@ class TastyFs2GrpcScanner(using ctx: Context) extends IntegrationScanner {
         }
       }
       if (classDeclaresMethod) {
-        List(DiscoveredIntegration(
-          method = MethodRef(ref.packageName, ref.className, method),
-          accessType = DataAccessType.Write,
-          resourceType = ResourceType.Grpc,
-          scanner = "grpc",
-          target = s"$serviceName/$method",
-          evidence = s"implements ${u.parentSimpleName}",
-          group = Some(serviceName),
-        ))
+        List(
+          DiscoveredIntegration(
+            method = MethodRef(ref.packageName, ref.className, method),
+            accessType = DataAccessType.Write,
+            resourceType = ResourceType.Grpc,
+            scanner = "grpc",
+            target = s"$serviceName/$method",
+            evidence = s"implements ${u.parentSimpleName}",
+            group = Some(serviceName),
+          ),
+        )
       } else Nil
     }
   }
 
   // Client: field of type *Fs2Grpc → each call is a Read
   private def interpretClient(u: FoundUsage.MethodCallResult): DiscoveredIntegration = {
-    val ref = u.path.toMethodRef
+    val ref         = u.path.toMethodRef
     val serviceName = u.ownerSimpleName.stripSuffix("Fs2Grpc")
     DiscoveredIntegration(
       method = ref,

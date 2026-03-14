@@ -27,12 +27,12 @@ class OrderActor extends PersistentActor {
 
   private var orders: List[String] = Nil
 
-  override def receiveCommand: Receive = {
-    case order: String => persist(order) { evt => orders = evt :: orders }
+  override def receiveCommand: Receive = { case order: String =>
+    persist(order) { evt => orders = evt :: orders }
   }
 
-  override def receiveRecover: Receive = {
-    case order: String => orders = order :: orders
+  override def receiveRecover: Receive = { case order: String =>
+    orders = order :: orders
   }
 }
 

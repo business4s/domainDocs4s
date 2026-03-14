@@ -73,7 +73,7 @@ object LedgerServiceFlow {
 
   // ── External dependencies (consumed from other services) ──────────────────
 
-  val rateServiceGetRate = grpcEndpoint("RateServiceAPI", "GetRate").exposed
+  val rateServiceGetRate        = grpcEndpoint("RateServiceAPI", "GetRate").exposed
   val configServiceGetInventory = grpcEndpoint("ConfigServiceAPI", "GetCurrencyInventory").exposed
 
   // ── Downstream consumers ──────────────────────────────────────────────────
@@ -142,7 +142,13 @@ object LedgerServiceFlow {
     ),
     subgraphs = List(
       subgraph("Service")(grpcApi, sagaActors, ledgerActor, dailyBalanceChange, legalEntityChange, txIdTracking, balanceHistoryCache),
-      subgraph("Projections")(movementsProjection, accountBalancesProjection, operatorStatementProjection, dueToUsersCheckProjection, exchangeRatesProjection),
+      subgraph("Projections")(
+        movementsProjection,
+        accountBalancesProjection,
+        operatorStatementProjection,
+        dueToUsersCheckProjection,
+        exchangeRatesProjection,
+      ),
       subgraph("Jobs")(userAssetsJob, operatorAssetsJob),
       subgraph("Internal DB")(pekkoJournal, dailyBalanceChangeTable, legalEntityChangeTable),
       subgraph("Operational DB")(movementsTable, accountBalancesTable, operatorClosingTable, dueToUsersCheckTable, exchangeRatesTable),
@@ -153,15 +159,18 @@ object LedgerServiceFlow {
 
   // ── Views ─────────────────────────────────────────────────────────────────
 
-  val coreWritePath = flow.view("Core Write Path")
+  val coreWritePath = flow
+    .view("Core Write Path")
     .only(grpcApi, sagaActors, ledgerActor, pekkoJournal)
     .build
 
-  val kafkaPipeline = flow.view("Kafka Pipeline")
+  val kafkaPipeline = flow
+    .view("Kafka Pipeline")
     .only(pekkoJournal, movementsProjection, movementsTopic, legalEntityChange, legalEntityTopic, redshift)
     .build
 
-  val externalInterface = flow.view("External Interface")
+  val externalInterface = flow
+    .view("External Interface")
     .only(grpcApi, movementsTable, accountBalancesTable, operatorClosingTable, movementsTopic, legalEntityTopic, assetsS3)
     .build
 }

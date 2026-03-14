@@ -14,8 +14,8 @@ class FlywayMigrationScannerTest extends AnyFreeSpec {
 
   private val pkg = "domaindocs4s.architecture.lineage.example"
 
-  private val flywayDir = Paths.get(getClass.getClassLoader.getResource("flyway").toURI)
-  private val flywayScanner = new FlywayMigrationScanner(flywayDir, group = Some("core-db"))
+  private val flywayDir          = Paths.get(getClass.getClassLoader.getResource("flyway").toURI)
+  private val flywayScanner      = new FlywayMigrationScanner(flywayDir, group = Some("core-db"))
   private val flywayIntegrations = flywayScanner.scan()
 
   "FlywayMigrationScanner" - {
@@ -36,15 +36,11 @@ class FlywayMigrationScannerTest extends AnyFreeSpec {
 
     "discovers CREATE VIEW as Write to view and Read from source tables (after drop+recreate)" in {
       // V002 creates the view, V004 drops it, V005 recreates it
-      val viewWrites = flywayIntegrations.filter(di =>
-        di.accessType == DataAccessType.Write && di.target == "user_transaction_summary"
-      )
+      val viewWrites = flywayIntegrations.filter(di => di.accessType == DataAccessType.Write && di.target == "user_transaction_summary")
       viewWrites should have size 1
       viewWrites.head.evidence shouldBe "V005__recreate_view.sql"
 
-      val sourceReads = flywayIntegrations.filter(di =>
-        di.accessType == DataAccessType.Read && di.evidence == "V005__recreate_view.sql"
-      )
+      val sourceReads = flywayIntegrations.filter(di => di.accessType == DataAccessType.Read && di.evidence == "V005__recreate_view.sql")
       sourceReads.map(_.target).toSet should contain allOf ("users", "transactions")
     }
 
@@ -59,14 +55,10 @@ class FlywayMigrationScannerTest extends AnyFreeSpec {
 
     "DROP does not affect unrelated tables" in {
       // V004 drops user_transaction_summary, but users and transactions tables survive
-      val userWrites = flywayIntegrations.filter(di =>
-        di.accessType == DataAccessType.Write && di.target == "users"
-      )
+      val userWrites = flywayIntegrations.filter(di => di.accessType == DataAccessType.Write && di.target == "users")
       userWrites should not be empty
 
-      val txWrites = flywayIntegrations.filter(di =>
-        di.accessType == DataAccessType.Write && di.target == "transactions"
-      )
+      val txWrites = flywayIntegrations.filter(di => di.accessType == DataAccessType.Write && di.target == "transactions")
       txWrites should not be empty
     }
 
@@ -81,17 +73,13 @@ class FlywayMigrationScannerTest extends AnyFreeSpec {
     }
 
     "RENAME preserves unrelated tables" in {
-      flywayIntegrations.filter(di =>
-        di.accessType == DataAccessType.Write && di.target == "users"
-      ) should not be empty
+      flywayIntegrations.filter(di => di.accessType == DataAccessType.Write && di.target == "users") should not be empty
 
-      flywayIntegrations.filter(di =>
-        di.accessType == DataAccessType.Write && di.target == "transactions"
-      ) should not be empty
+      flywayIntegrations.filter(di => di.accessType == DataAccessType.Write && di.target == "transactions") should not be empty
     }
 
     "scanDependencies returns VIEW source table relationships" in {
-      val deps = flywayScanner.scanDependencies()
+      val deps     = flywayScanner.scanDependencies()
       // V005 recreates the view (V002 created, V004 dropped)
       val viewDeps = deps.filter(_.to == "user_transaction_summary")
       viewDeps.map(_.from).toSet should contain allOf ("users", "transactions")
@@ -104,7 +92,7 @@ class FlywayMigrationScannerTest extends AnyFreeSpec {
     "DROP VIEW removes dependencies for that view" in {
       // V002 creates view with deps, V004 drops it → V002 deps gone
       // V005 recreates → fresh deps survive
-      val deps = flywayScanner.scanDependencies()
+      val deps     = flywayScanner.scanDependencies()
       val viewDeps = deps.filter(_.to == "user_transaction_summary")
       // Only 2 deps (from V005 recreate), not 4 (V002 + V005)
       viewDeps should have size 2
@@ -143,8 +131,8 @@ class FlywayMigrationScannerTest extends AnyFreeSpec {
 
     "merges with doobie integrations into resources" in {
       val doobieIntegrations = new TastyDoobieScanner().scan(List(pkg))
-      val allIntegrations = doobieIntegrations ++ flywayIntegrations
-      val resources = DiscoveredResource.merge(allIntegrations)
+      val allIntegrations    = doobieIntegrations ++ flywayIntegrations
+      val resources          = DiscoveredResource.merge(allIntegrations)
 
       // "users" table from doobie (group=None) and flyway (group=Some("core-db")) stay separate
       // because group differs
@@ -154,8 +142,8 @@ class FlywayMigrationScannerTest extends AnyFreeSpec {
       // But if groups matched, they would merge
       val ungroupedFlyway = new FlywayMigrationScanner(flywayDir).scan()
       val doobieAndFlyway = doobieIntegrations ++ ungroupedFlyway
-      val merged = DiscoveredResource.merge(doobieAndFlyway)
-      val usersResource = merged.filter(r => r.target == "users" && r.group.isEmpty)
+      val merged          = DiscoveredResource.merge(doobieAndFlyway)
+      val usersResource   = merged.filter(r => r.target == "users" && r.group.isEmpty)
       usersResource should have size 1
       usersResource.head.discoveries.map(_.scanner).toSet should contain allOf ("doobie", "flyway")
     }
@@ -166,7 +154,7 @@ class FlywayMigrationScannerTest extends AnyFreeSpec {
         scanners = List(new TastyDoobieScanner()),
         resourceScanners = List(new FlywayMigrationScanner(flywayDir, group = Some("core-db"))),
       )
-      val result = scanner.scan()
+      val result  = scanner.scan()
 
       // Flyway results should not appear in integrations (no "flyway" class node or edges)
       result.integrations.filter(_.scanner == "flyway") shouldBe empty

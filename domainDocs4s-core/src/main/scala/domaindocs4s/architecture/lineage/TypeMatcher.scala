@@ -6,9 +6,8 @@ import tastyquery.Types.*
 
 /** FQN-based type matching for [[SymbolUsageFinder]] searches.
   *
-  * Wraps a `String => Boolean` predicate on fully qualified names.
-  * When `checkAncestors` is true, the predicate is also applied
-  * to the type's ancestor chain.
+  * Wraps a `String => Boolean` predicate on fully qualified names. When `checkAncestors` is true, the predicate is also applied to the type's
+  * ancestor chain.
   *
   * {{{
   * // Exact FQN match
@@ -31,8 +30,8 @@ case class TypeMatcher(
     matchFqn: String => Boolean,
     checkAncestors: Boolean = false,
 ) {
-  /** Per-instance cache for ancestor resolution results, keyed by FQN.
-    * Only allocated when `checkAncestors` is true.
+
+  /** Per-instance cache for ancestor resolution results, keyed by FQN. Only allocated when `checkAncestors` is true.
     */
   @transient private[lineage] val ancestorCache: java.util.HashMap[String, java.lang.Boolean] | Null =
     if (checkAncestors) new java.util.HashMap() else null
@@ -49,8 +48,7 @@ object TypeMatcher {
   /** Matches a type whose FQN ends with the given suffix. */
   def fqnEndsWith(suffix: String): TypeMatcher = new TypeMatcher(_.endsWith(suffix))
 
-  /** Matches a type that is or inherits from a type with the given FQN.
-    * Walks the full type hierarchy.
+  /** Matches a type that is or inherits from a type with the given FQN. Walks the full type hierarchy.
     */
   def isOrInheritsFrom(fqn: String): TypeMatcher = new TypeMatcher(_ == fqn, checkAncestors = true)
 }
@@ -68,7 +66,7 @@ private[lineage] object TypeMatcherResolver {
 
   private def cachedAncestorCheck(matcher: TypeMatcher, tpe: TypeOrMethodic)(using Context): Boolean = {
     val cache = matcher.ancestorCache
-    val fqn = fqnOf(tpe).orNull
+    val fqn   = fqnOf(tpe).orNull
     if (cache != null && fqn != null) {
       val cached = cache.get(fqn)
       if (cached != null) return cached.booleanValue()
@@ -84,9 +82,8 @@ private[lineage] object TypeMatcherResolver {
   def matchesFqn(matcher: TypeMatcher, fqn: String): Boolean =
     matcher.matchFqn(fqn)
 
-  /** Extract FQN from a TermRef (used for Ident/Select tree reference types).
-    * Recursively resolves nested TermRef prefixes (e.g., `Producer.flexiFlow`
-    * where `Producer` is itself a TermRef, not a PackageRef).
+  /** Extract FQN from a TermRef (used for Ident/Select tree reference types). Recursively resolves nested TermRef prefixes (e.g.,
+    * `Producer.flexiFlow` where `Producer` is itself a TermRef, not a PackageRef).
     */
   def termRefFqn(refType: Any): Option[String] = refType match {
     case tr: TermRef =>
@@ -96,10 +93,10 @@ private[lineage] object TypeMatcherResolver {
           case inner: TermRef => termRefFqn(inner).getOrElse("")
           case _              => ""
         }
-        val name = tr.name.toString.stripSuffix("$")
+        val name   = tr.name.toString.stripSuffix("$")
         if (prefix.nonEmpty) Some(s"$prefix.$name") else Some(name)
       } catch { case _: Exception => None }
-    case _ => None
+    case _           => None
   }
 
   /** Walk type hierarchy checking if the type itself or any ancestor matches the predicate.
@@ -108,16 +105,14 @@ private[lineage] object TypeMatcherResolver {
     *   - `AndType(A, B)` — direct intersection in TASTy trees
     *   - `AppliedType(scala.&, List(A, B))` — intersection inside type aliases
     *
-    * After splitting intersections, each component's own FQN is checked before
-    * walking parents — this is necessary because `matches` only checks `fqnOf(tpe)`
-    * at the top level, which returns `None` for compound types.
+    * After splitting intersections, each component's own FQN is checked before walking parents — this is necessary because `matches` only checks
+    * `fqnOf(tpe)` at the top level, which returns `None` for compound types.
     *
-    * Type aliases (`type T = ...`) are resolved to their underlying type via
-    * `TypeMemberSymbol.typeDef` before continuing the hierarchy walk.
+    * Type aliases (`type T = ...`) are resolved to their underlying type via `TypeMemberSymbol.typeDef` before continuing the hierarchy walk.
     */
   private def hasMatchingAncestor(tpe: TypeOrMethodic, predicate: String => Boolean, visited: Set[ClassSymbol])(using Context): Boolean = {
     tpe match {
-      case at: AndType =>
+      case at: AndType                                =>
         return hasMatchingAncestor(at.first, predicate, visited) || hasMatchingAncestor(at.second, predicate, visited)
       // In TASTy, intersection types inside type aliases are represented as
       // AppliedType(TypeRef(scala.&), List(A, B)) rather than AndType(A, B).
@@ -126,25 +121,29 @@ private[lineage] object TypeMatcherResolver {
           case arg: TypeOrMethodic => hasMatchingAncestor(arg, predicate, visited)
           case _                   => false
         }
-      case _ =>
+      case _                                          =>
     }
     fqnOf(tpe).exists(predicate) || {
       TastyUtils.resolveSymbol(tpe) match {
         case Some(cs: ClassSymbol) if !visited.contains(cs) =>
-          try cs.parents.exists { p =>
-            fqnOf(p).exists(predicate) || hasMatchingAncestor(p, predicate, visited + cs)
-          } catch { case _: Exception => false }
-        case Some(tms: TypeMemberSymbol) =>
+          try
+            cs.parents.exists { p =>
+              fqnOf(p).exists(predicate) || hasMatchingAncestor(p, predicate, visited + cs)
+            }
+          catch { case _: Exception => false }
+        case Some(tms: TypeMemberSymbol)                    =>
           // Resolve type aliases (e.g., `type JournalRead = ReadJournal & ...`)
           // to their underlying type and continue walking the hierarchy.
-          try tms.typeDef match {
-            case TypeMemberDefinition.TypeAlias(alias) =>
-              hasMatchingAncestor(alias, predicate, visited)
-            case TypeMemberDefinition.OpaqueTypeAlias(_, alias) =>
-              hasMatchingAncestor(alias, predicate, visited)
-            case _ => false
-          } catch { case _: Exception => false }
-        case _ => false
+          try
+            tms.typeDef match {
+              case TypeMemberDefinition.TypeAlias(alias)          =>
+                hasMatchingAncestor(alias, predicate, visited)
+              case TypeMemberDefinition.OpaqueTypeAlias(_, alias) =>
+                hasMatchingAncestor(alias, predicate, visited)
+              case _                                              => false
+            }
+          catch { case _: Exception => false }
+        case _                                              => false
       }
     }
   }
@@ -159,6 +158,6 @@ private[lineage] object TypeMatcherResolver {
             case _              => false
           })
         } catch { case _: Exception => false }
-      case _ => false
+      case _           => false
     }
 }

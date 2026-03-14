@@ -14,11 +14,11 @@ class LineagePipelineTest extends AnyFreeSpec {
   private val pkg = "domaindocs4s.architecture.lineage.example"
   private val ph  = f"${pkg.hashCode.abs}%08x".take(8)
 
-  private val callGraph = new TastyCallGraphExtractor().extract(pkg)
+  private val callGraph          = new TastyCallGraphExtractor().extract(pkg)
   private val doobieIntegrations = new TastyDoobieScanner().scan(List(pkg))
-  private val grpcIntegrations = new TastyFs2GrpcScanner().scan(List(pkg))
+  private val grpcIntegrations   = new TastyFs2GrpcScanner().scan(List(pkg))
 
-  private val enrichment = IntegrationGroupConfig.builder
+  private val enrichment   = IntegrationGroupConfig.builder
     .group[UserRepo]("user-db")
     .build
   private val integrations = enrichment.enrich(doobieIntegrations ++ grpcIntegrations)
@@ -35,7 +35,7 @@ class LineagePipelineTest extends AnyFreeSpec {
     }
 
     "extracts call graph from UserService to UserRepo" in {
-      val serviceCalls = result.callGraph.filter(_.caller.className == "UserService")
+      val serviceCalls  = result.callGraph.filter(_.caller.className == "UserService")
       val calledMethods = serviceCalls.map(e => (e.callee.className, e.callee.methodName))
 
       calledMethods should contain(("UserRepo", "getBalance"))
@@ -45,7 +45,7 @@ class LineagePipelineTest extends AnyFreeSpec {
     }
 
     "extracts call graph from UserGrpcApi to UserService" in {
-      val apiCalls = result.callGraph.filter(_.caller.className == "UserGrpcApi")
+      val apiCalls      = result.callGraph.filter(_.caller.className == "UserGrpcApi")
       val calledMethods = apiCalls.map(e => (e.callee.className, e.callee.methodName))
 
       calledMethods should contain(("UserService", "getBalance"))
@@ -60,7 +60,7 @@ class LineagePipelineTest extends AnyFreeSpec {
 
     "extracts constructor calls from val bodies — BalanceProjection.handler → BalanceHandler methods" in {
       val projectionCalls = callGraph.filter(_.className == "BalanceProjection")
-      val calledMethods = projectionCalls.flatMap(_.calls).map(r => (r.className, r.methodName))
+      val calledMethods   = projectionCalls.flatMap(_.calls).map(r => (r.className, r.methodName))
       calledMethods should contain(("BalanceHandler", "process"))
     }
 
@@ -71,14 +71,14 @@ class LineagePipelineTest extends AnyFreeSpec {
     }
 
     "extracts field.method() calls from val bodies — CachedService.defaultBalance → UserRepo" in {
-      val cachedCalls = callGraph.filter(_.className == "CachedService")
+      val cachedCalls   = callGraph.filter(_.className == "CachedService")
       cachedCalls should not be empty
       val calledMethods = cachedCalls.flatMap(_.calls).map(r => (r.className, r.methodName))
       calledMethods should contain(("UserRepo", "getBalance"))
     }
 
     "extracts constructor calls from def methods — ServiceFactory.createHandler → BalanceHandler" in {
-      val factoryCalls = callGraph.filter(_.className == "ServiceFactory")
+      val factoryCalls  = callGraph.filter(_.className == "ServiceFactory")
       val calledMethods = factoryCalls.flatMap(_.calls).map(r => (r.className, r.methodName))
       calledMethods should contain(("BalanceHandler", "process"))
     }
@@ -106,7 +106,7 @@ class LineagePipelineTest extends AnyFreeSpec {
     }
 
     "extracts call graph from TraitRepoEntryPoint to TraitRepoConsumer" in {
-      val entryCalls = callGraph.filter(_.className == "TraitRepoEntryPoint")
+      val entryCalls    = callGraph.filter(_.className == "TraitRepoEntryPoint")
       val calledMethods = entryCalls.flatMap(_.calls).map(r => (r.className, r.methodName))
       calledMethods should contain(("TraitRepoConsumer", "readAndWrite"))
     }
@@ -117,7 +117,7 @@ class LineagePipelineTest extends AnyFreeSpec {
     }
 
     "extracts call graph from NestedImplService.Impl to UserRepo" in {
-      val implCalls = callGraph.filter(m => m.className == "Impl" && m.packageName == pkg)
+      val implCalls     = callGraph.filter(m => m.className == "Impl" && m.packageName == pkg)
       implCalls should not be empty
       val calledMethods = implCalls.flatMap(_.calls).map(r => (r.className, r.methodName))
       calledMethods should contain(("UserRepo", "getBalance"))
@@ -150,13 +150,13 @@ class LineagePipelineTest extends AnyFreeSpec {
     }
 
     "detects imported function calls — ImportedCallJob.run → Helpers.processBalance" in {
-      val jobCalls = callGraph.filter(_.className == "ImportedCallJob")
+      val jobCalls      = callGraph.filter(_.className == "ImportedCallJob")
       val calledMethods = jobCalls.flatMap(_.calls).map(r => (r.className, r.methodName))
       calledMethods should contain(("Helpers", "processBalance"))
     }
 
     "extracts parameter method calls inside nested module — Helpers.processBalance → UserService.getBalance" in {
-      val helperCalls = callGraph.filter(_.className == "Helpers")
+      val helperCalls   = callGraph.filter(_.className == "Helpers")
       helperCalls should not be empty
       val calledMethods = helperCalls.flatMap(_.calls).map(r => (r.className, r.methodName))
       calledMethods should contain(("UserService", "getBalance"))
@@ -187,7 +187,7 @@ class LineagePipelineTest extends AnyFreeSpec {
       chains should not be empty
       chains.exists(_.integration.target == "trait_repo_table") shouldBe true
       // Should have both Read and Write chains
-      val reads = chains.filter(c => c.integration.target == "trait_repo_table" && c.integration.accessType == DataAccessType.Read)
+      val reads  = chains.filter(c => c.integration.target == "trait_repo_table" && c.integration.accessType == DataAccessType.Read)
       val writes = chains.filter(c => c.integration.target == "trait_repo_table" && c.integration.accessType == DataAccessType.Write)
       reads should not be empty
       writes should not be empty
@@ -197,21 +197,26 @@ class LineagePipelineTest extends AnyFreeSpec {
   "MermaidRenderer class-level" - {
 
     // Build a result that includes kafka (manual) integrations, matching RenderLineage
-    val adj = LineageAdjustments.builder
-      .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
+    val adj                             = LineageAdjustments.builder
+      .method[EventPublisher](_.publishDeposit)
+      .writes
+      .kafka("user.deposit-events")
       .build
     val (adjCallGraph, adjIntegrations) = adj.apply(callGraph, doobieIntegrations ++ grpcIntegrations)
-    val allIntegrations = enrichment.enrich(adjIntegrations)
-    val resultWithManual = LineageBuilder.build(adjCallGraph, allIntegrations)
+    val allIntegrations                 = enrichment.enrich(adjIntegrations)
+    val resultWithManual                = LineageBuilder.build(adjCallGraph, allIntegrations)
 
     // Build a result with UserRepo hidden via LineageAdjustments
-    val adjWithHide = LineageAdjustments.builder
-      .method[EventPublisher](_.publishDeposit).writes.kafka("user.deposit-events")
-      .cls[UserRepo].remove
+    val adjWithHide                           = LineageAdjustments.builder
+      .method[EventPublisher](_.publishDeposit)
+      .writes
+      .kafka("user.deposit-events")
+      .cls[UserRepo]
+      .remove
       .build
     val (hiddenCallGraph, hiddenIntegrations) = adjWithHide.apply(callGraph, doobieIntegrations ++ grpcIntegrations)
-    val hiddenAllIntegrations = enrichment.enrich(hiddenIntegrations)
-    val resultWithHidden = LineageBuilder.build(hiddenCallGraph, hiddenAllIntegrations)
+    val hiddenAllIntegrations                 = enrichment.enrich(hiddenIntegrations)
+    val resultWithHidden                      = LineageBuilder.build(hiddenCallGraph, hiddenAllIntegrations)
 
     "contains class names as nodes, not individual methods" in {
       val diagram = MermaidRenderer.renderClassLevel(resultWithManual)
@@ -255,7 +260,7 @@ class LineagePipelineTest extends AnyFreeSpec {
 
     "deduplicates class-to-class call edges" in {
       val diagram = MermaidRenderer.renderClassLevel(resultWithManual)
-      val lines = diagram.split("\n")
+      val lines   = diagram.split("\n")
 
       // UserGrpcApi calls multiple methods on UserService, but should appear as one edge
       lines.count(_.contains(s"cls_${ph}_UserGrpcApi --> cls_${ph}_UserService")) shouldBe 1
@@ -264,7 +269,7 @@ class LineagePipelineTest extends AnyFreeSpec {
 
     "renders renamed class with display name but preserves node ID" in {
       val renamed = resultWithManual.copy(
-        classDisplayNames = Map((pkg, "UserRepo") -> "User Repository")
+        classDisplayNames = Map((pkg, "UserRepo") -> "User Repository"),
       )
       val diagram = MermaidRenderer.renderClassLevel(renamed)
 
@@ -307,12 +312,10 @@ class LineagePipelineTest extends AnyFreeSpec {
     }
 
     "groups classes into subgraphs with custom grouping" in {
-      val config = ClassLevelConfig.builder
-        .groupClassesBy { cls =>
-          if (cls.name.startsWith("User")) Some("user-domain")
-          else Some("events")
-        }
-        .build
+      val config  = ClassLevelConfig.builder.groupClassesBy { cls =>
+        if (cls.name.startsWith("User")) Some("user-domain")
+        else Some("events")
+      }.build
       val diagram = MermaidRenderer.renderClassLevel(resultWithManual, config)
 
       diagram should include("""subgraph pkg_user_domain ["user-domain"]""")
@@ -322,39 +325,37 @@ class LineagePipelineTest extends AnyFreeSpec {
     }
 
     "ungrouped classes render as standalone nodes" in {
-      val config = ClassLevelConfig.builder
-        .groupClassesBy { cls =>
-          if (cls.name == "UserGrpcApi") Some("api") else None
-        }
-        .build
+      val config  = ClassLevelConfig.builder.groupClassesBy { cls =>
+        if (cls.name == "UserGrpcApi") Some("api") else None
+      }.build
       val diagram = MermaidRenderer.renderClassLevel(resultWithManual, config)
 
       diagram should include("""subgraph pkg_api ["api"]""")
       // Classes outside the subgraph should still appear as standalone
       diagram should include(s"""cls_${ph}_UserService["UserService"]""")
       // Standalone nodes should NOT be inside the subgraph
-      val lines = diagram.split("\n")
+      val lines         = diagram.split("\n")
       val subgraphStart = lines.indexWhere(_.contains("subgraph pkg_api"))
-      val subgraphEnd = lines.indexWhere(l => l.trim == "end", subgraphStart)
+      val subgraphEnd   = lines.indexWhere(l => l.trim == "end", subgraphStart)
       val subgraphBlock = lines.slice(subgraphStart, subgraphEnd + 1).mkString("\n")
       subgraphBlock should not include "UserService"
     }
 
     "ByPackage with same package produces no grouping for base-package classes" in {
-      val config = ClassLevelConfig.builder
+      val config  = ClassLevelConfig.builder
         .groupByPackage(pkg)
         .build
       val diagram = MermaidRenderer.renderClassLevel(resultWithManual, config)
 
       // Classes in the base package should render as standalone nodes (not inside subgraphs)
-      val lines = diagram.split("\n")
+      val lines                = diagram.split("\n")
       val standaloneClassLines = lines.filter(l => l.trim.startsWith(s"cls_${ph}_"))
       standaloneClassLines should not be empty
       // Verify none of them are inside a subgraph block
       standaloneClassLines.foreach { line =>
-        val idx = lines.indexOf(line)
+        val idx               = lines.indexOf(line)
         val precedingSubgraph = lines.take(idx).lastIndexWhere(_.contains("subgraph pkg_"))
-        val precedingEnd = lines.take(idx).lastIndexWhere(_.trim == "end")
+        val precedingEnd      = lines.take(idx).lastIndexWhere(_.trim == "end")
         // Either no subgraph before, or the subgraph was closed before this line
         (precedingSubgraph == -1 || precedingEnd > precedingSubgraph) shouldBe true
       }
@@ -415,10 +416,10 @@ class LineagePipelineTest extends AnyFreeSpec {
   "Package-level adjustments" - {
 
     // Synthetic call graph: A.x -> B.y -> C.z, with integrations on B.y and C.z
-    val pkgA = "com.example.api"
-    val pkgB = "com.example.internal"
+    val pkgA    = "com.example.api"
+    val pkgB    = "com.example.internal"
     val pkgBSub = "com.example.internal.helper"
-    val pkgC = "com.example.persistence"
+    val pkgC    = "com.example.persistence"
 
     val syntheticCallGraph = List(
       ExtractedMethod("ApiController", pkgA, "handle", List(MethodRef(pkgB, "InternalService", "process"))),
@@ -429,13 +430,22 @@ class LineagePipelineTest extends AnyFreeSpec {
 
     val syntheticIntegrations = List(
       DiscoveredIntegration(MethodRef(pkgB, "InternalService", "process"), DataAccessType.Write, ResourceType.Kafka, "test", "events", "synthetic"),
-      DiscoveredIntegration(MethodRef(pkgBSub, "Helper", "compute"), DataAccessType.Read, ResourceType.S3, "test", "data-bucket", "synthetic", group = Some("S3")),
+      DiscoveredIntegration(
+        MethodRef(pkgBSub, "Helper", "compute"),
+        DataAccessType.Read,
+        ResourceType.S3,
+        "test",
+        "data-bucket",
+        "synthetic",
+        group = Some("S3"),
+      ),
       DiscoveredIntegration(MethodRef(pkgC, "Repo", "save"), DataAccessType.Write, ResourceType.Database, "test", "items", "synthetic"),
     )
 
     "HidePackage hides all classes in the package prefix" in {
-      val adj = LineageAdjustments.builder
-        .pkg("com.example.internal").remove
+      val adj              = LineageAdjustments.builder
+        .pkg("com.example.internal")
+        .remove
         .build
       val (methods, integ) = adj.apply(syntheticCallGraph, syntheticIntegrations)
 
@@ -444,20 +454,21 @@ class LineagePipelineTest extends AnyFreeSpec {
       methods.map(m => (m.packageName, m.className)).toSet should not contain (pkgBSub, "Helper")
 
       // ApiController and Repo should remain
-      methods.map(m => (m.packageName, m.className)).toSet should contain (pkgA, "ApiController")
-      methods.map(m => (m.packageName, m.className)).toSet should contain (pkgC, "Repo")
+      methods.map(m => (m.packageName, m.className)).toSet should contain(pkgA, "ApiController")
+      methods.map(m => (m.packageName, m.className)).toSet should contain(pkgC, "Repo")
     }
 
     "HidePackage promotes integrations to non-hidden callers" in {
-      val adj = LineageAdjustments.builder
-        .pkg("com.example.internal").remove
+      val adj        = LineageAdjustments.builder
+        .pkg("com.example.internal")
+        .remove
         .build
       val (_, integ) = adj.apply(syntheticCallGraph, syntheticIntegrations)
 
       // Kafka and S3 integrations from hidden package should be promoted to ApiController
       val apiIntegrations = integ.filter(_.method.className == "ApiController")
-      apiIntegrations.map(_.target).toSet should contain ("events")
-      apiIntegrations.map(_.target).toSet should contain ("data-bucket")
+      apiIntegrations.map(_.target).toSet should contain("events")
+      apiIntegrations.map(_.target).toSet should contain("data-bucket")
 
       // No integrations should remain on hidden classes
       integ.filter(_.method.packageName == pkgB) shouldBe empty
@@ -465,20 +476,23 @@ class LineagePipelineTest extends AnyFreeSpec {
     }
 
     "HidePackage reconnects callers to callees through hidden package" in {
-      val adj = LineageAdjustments.builder
-        .pkg("com.example.internal").remove
+      val adj          = LineageAdjustments.builder
+        .pkg("com.example.internal")
+        .remove
         .build
       val (methods, _) = adj.apply(syntheticCallGraph, syntheticIntegrations)
 
       // ApiController should now directly call Repo.save (bypassing hidden InternalService + Helper)
       val apiCalls = methods.find(m => m.className == "ApiController").get.calls
-      apiCalls should contain (MethodRef(pkgC, "Repo", "save"))
+      apiCalls should contain(MethodRef(pkgC, "Repo", "save"))
     }
 
     "SetPackageGroup sets class groups for all classes in the package prefix" in {
       val adj = LineageAdjustments.builder
-        .pkg("com.example.internal").setGroup("Internal")
-        .pkg("com.example.persistence").setGroup("Persistence")
+        .pkg("com.example.internal")
+        .setGroup("Internal")
+        .pkg("com.example.persistence")
+        .setGroup("Persistence")
         .build
 
       val groups = adj.classGroups(syntheticCallGraph)
@@ -490,8 +504,10 @@ class LineagePipelineTest extends AnyFreeSpec {
 
     "SetClassGroup overrides SetPackageGroup" in {
       val adj = LineageAdjustments.builder
-        .pkg("com.example.internal").setGroup("Internal")
-        .cls(pkgBSub, "Helper").setGroup("Utilities")
+        .pkg("com.example.internal")
+        .setGroup("Internal")
+        .cls(pkgBSub, "Helper")
+        .setGroup("Utilities")
         .build
 
       val groups = adj.classGroups(syntheticCallGraph)
@@ -500,15 +516,19 @@ class LineagePipelineTest extends AnyFreeSpec {
     }
 
     "classGroups renders into MermaidRenderer subgraphs" in {
-      val adj = LineageAdjustments.builder
-        .pkg("com.example.internal").setGroup("Internal")
-        .pkg("com.example.persistence").setGroup("Persistence")
+      val adj              = LineageAdjustments.builder
+        .pkg("com.example.internal")
+        .setGroup("Internal")
+        .pkg("com.example.persistence")
+        .setGroup("Persistence")
         .build
       val (methods, integ) = adj.apply(syntheticCallGraph, syntheticIntegrations)
-      val scanResult = LineageBuilder.build(methods, integ).copy(
-        classGroups = adj.classGroups(methods),
-      )
-      val diagram = MermaidRenderer.renderClassLevel(scanResult)
+      val scanResult       = LineageBuilder
+        .build(methods, integ)
+        .copy(
+          classGroups = adj.classGroups(methods),
+        )
+      val diagram          = MermaidRenderer.renderClassLevel(scanResult)
 
       diagram should include(""""Internal"""")
       diagram should include(""""Persistence"""")
@@ -519,12 +539,13 @@ class LineagePipelineTest extends AnyFreeSpec {
 
     "promotes both Read and Write integrations through hidden intermediaries" in {
       // Only show TraitRepoEntryPoint, hide TraitRepoConsumer and TraitRepo
-      val adj = LineageAdjustments.builder
-        .cls[TraitRepoEntryPoint].show
+      val adj                    = LineageAdjustments.builder
+        .cls[TraitRepoEntryPoint]
+        .show
         .build
       val (adjMethods, adjInteg) = adj.apply(callGraph, doobieIntegrations)
-      val adjResult = LineageBuilder.build(adjMethods, adjInteg)
-      val diagram = MermaidRenderer.renderClassLevel(adjResult)
+      val adjResult              = LineageBuilder.build(adjMethods, adjInteg)
+      val diagram                = MermaidRenderer.renderClassLevel(adjResult)
 
       // TraitRepoEntryPoint should be visible
       diagram should include("TraitRepoEntryPoint")
@@ -538,7 +559,7 @@ class LineagePipelineTest extends AnyFreeSpec {
 
       // Verify both Read and Write edges exist
       val entryInteg = adjInteg.filter(_.method.className == "TraitRepoEntryPoint")
-      val targets = entryInteg.filter(_.target == "trait_repo_table")
+      val targets    = entryInteg.filter(_.target == "trait_repo_table")
       targets.map(_.accessType).toSet should contain(DataAccessType.Read)
       targets.map(_.accessType).toSet should contain(DataAccessType.Write)
     }

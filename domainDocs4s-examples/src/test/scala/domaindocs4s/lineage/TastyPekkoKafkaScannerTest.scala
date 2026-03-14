@@ -10,7 +10,7 @@ class TastyPekkoKafkaScannerTest extends AnyFreeSpec {
 
   given ctx: Context = TastyContext.fromCurrentProcess()
 
-  private val pekkoPkg = "domaindocs4s.architecture.lineage.example.pekko"
+  private val pekkoPkg          = "domaindocs4s.architecture.lineage.example.pekko"
   private val kafkaIntegrations = new TastyPekkoKafkaScanner().scan(List(pekkoPkg))
 
   "TastyPekkoKafkaScanner" - {

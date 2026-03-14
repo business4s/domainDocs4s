@@ -24,7 +24,7 @@ object OneHopTarget {
 }
 
 class OneHopForwarder {
-  def run(): Unit = forward("one_hop")
+  def run(): Unit              = forward("one_hop")
   def forward(s: String): Unit = OneHopTarget.consume(s)
 }
 
@@ -35,7 +35,7 @@ object TwoHopTarget {
 }
 
 class TwoHopForwarder {
-  def run(): Unit = hop1("two_hop")
+  def run(): Unit           = hop1("two_hop")
   def hop1(s: String): Unit = hop2(s)
   def hop2(s: String): Unit = TwoHopTarget.consume(s)
 }

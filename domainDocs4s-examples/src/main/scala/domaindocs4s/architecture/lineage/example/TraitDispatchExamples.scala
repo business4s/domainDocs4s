@@ -26,16 +26,15 @@ class AuditService(val auditRepo: AuditRepo) {
     auditRepo.logAction(action)
 }
 
-/** Same pattern but without val — simulates a constructor param used in method body.
-  * The call graph must still detect the field.method() call.
+/** Same pattern but without val — simulates a constructor param used in method body. The call graph must still detect the field.method() call.
   */
 class AuditServiceNoVal(auditRepo: AuditRepo) {
   def performAudit(action: String): ConnectionIO[Int] =
     auditRepo.logAction(action)
 }
 
-/** Repo where a public method delegates to a private helper that has the actual doobie call.
-  * The call graph must detect the intra-class call: batchLog → insertBatch.
+/** Repo where a public method delegates to a private helper that has the actual doobie call. The call graph must detect the intra-class call:
+  * batchLog → insertBatch.
   */
 class AuditRepoWithHelper extends AuditRepo {
   def logAction(action: String): ConnectionIO[Int] =

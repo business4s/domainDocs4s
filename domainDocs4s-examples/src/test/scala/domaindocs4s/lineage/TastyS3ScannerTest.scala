@@ -67,11 +67,14 @@ class TastyS3ScannerTest extends AnyFreeSpec {
 
     "LineageAdjustments .s3(bucket) overrides auto-detected S3 targets" in {
       val adj = LineageAdjustments.builder
-        .cls[S3Exporter].removeIntegrations(ResourceType.S3)
-        .cls[S3Exporter].writes.s3("ledger-exports/assets")
+        .cls[S3Exporter]
+        .removeIntegrations(ResourceType.S3)
+        .cls[S3Exporter]
+        .writes
+        .s3("ledger-exports/assets")
         .build
 
-      val (_, result) = adj.apply(Nil, s3Integrations)
+      val (_, result)     = adj.apply(Nil, s3Integrations)
       val exporterResults = result.filter(_.method.className == "S3Exporter")
       exporterResults should have size 1
       exporterResults.head.target shouldBe "ledger-exports/assets"

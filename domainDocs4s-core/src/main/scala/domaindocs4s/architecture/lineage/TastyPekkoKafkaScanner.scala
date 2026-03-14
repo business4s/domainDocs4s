@@ -30,15 +30,17 @@ class TastyPekkoKafkaScanner(using ctx: Context) extends IntegrationScanner {
     usages.flatMap { u =>
       val ref = u.path.toMethodRef
       if (seen.add(ref)) {
-        Some(DiscoveredIntegration(
-          method = ref,
-          accessType = DataAccessType.Write,
-          resourceType = ResourceType.Kafka,
-          scanner = "pekko-kafka",
-          target = s"unknown topic from ${ref.className}.${ref.methodName}",
-          evidence = s"references ${u.ownerSimpleName}",
-          group = Some("Kafka"),
-        ))
+        Some(
+          DiscoveredIntegration(
+            method = ref,
+            accessType = DataAccessType.Write,
+            resourceType = ResourceType.Kafka,
+            scanner = "pekko-kafka",
+            target = s"unknown topic from ${ref.className}.${ref.methodName}",
+            evidence = s"references ${u.ownerSimpleName}",
+            group = Some("Kafka"),
+          ),
+        )
       } else None
     }
   }

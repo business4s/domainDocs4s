@@ -63,14 +63,12 @@ object LineageAdjustment {
 
   /** Add an integration at class level — resolves to matching methods at apply time.
     *
-    * Resolution: finds methods with existing integrations of the same resourceType
-    * (from original auto-detected integrations). If none match, uses first method
-    * found in the class. If class has no methods, creates a synthetic one.
+    * Resolution: finds methods with existing integrations of the same resourceType (from original auto-detected integrations). If none match, uses
+    * first method found in the class. If class has no methods, creates a synthetic one.
     *
-    * When `expectDetected = true` (the default), apply() will throw if no auto-detected
-    * integration of the same resourceType exists for this class or any method reachable
-    * through the call graph. Use `.undetected` on the integration builder or
-    * `Builder.undetected("s3", ...)` to mark entries as manual-only.
+    * When `expectDetected = true` (the default), apply() will throw if no auto-detected integration of the same resourceType exists for this class or
+    * any method reachable through the call graph. Use `.undetected` on the integration builder or `Builder.undetected("s3", ...)` to mark entries as
+    * manual-only.
     */
   case class AddClassIntegration(
       packageName: String,
@@ -101,8 +99,7 @@ object LineageAdjustment {
 
   // ── Call graph edges (method → method) ──────────────────────────────────
 
-  /** Add a call edge from one method to another.
-    * Creates synthetic ExtractedMethod entries if either doesn't exist.
+  /** Add a call edge from one method to another. Creates synthetic ExtractedMethod entries if either doesn't exist.
     */
   case class AddCall(from: MethodRef, to: MethodRef) extends LineageAdjustment
 
@@ -111,8 +108,8 @@ object LineageAdjustment {
 
   /** Add a call edge from a class to a method — resolves the "from" method at apply time.
     *
-    * Resolution: finds methods in the class that already call any method in the target's class.
-    * If none match, uses the first method in the class. If the class has no methods, creates a synthetic one.
+    * Resolution: finds methods in the class that already call any method in the target's class. If none match, uses the first method in the class. If
+    * the class has no methods, creates a synthetic one.
     */
   case class AddClassCall(fromPackage: String, fromClass: String, to: MethodRef) extends LineageAdjustment
 
@@ -144,8 +141,7 @@ object LineageAdjustment {
   /** Change the group of a resource across all integrations. */
   case class SetResourceGroup(resourceType: ResourceType, target: String, group: String) extends LineageAdjustment
 
-  /** Rename all resources whose target matches a regex pattern. Effectively merges
-    * multiple resources (e.g. partition tables) into a single node.
+  /** Rename all resources whose target matches a regex pattern. Effectively merges multiple resources (e.g. partition tables) into a single node.
     */
   case class RenameResourceByPattern(resourceType: ResourceType, pattern: scala.util.matching.Regex, newTarget: String) extends LineageAdjustment
 
@@ -170,17 +166,16 @@ object LineageAdjustment {
 
   // ── Visibility (allowlist) ─────────────────────────────────────────
 
-  /** Explicitly show a class in the diagram. When any ShowClass adjustment exists,
-    * only shown classes are visible — everything else is hidden (with promotion).
+  /** Explicitly show a class in the diagram. When any ShowClass adjustment exists, only shown classes are visible — everything else is hidden (with
+    * promotion).
     */
   case class ShowClass(packageName: String, className: String) extends LineageAdjustment
 }
 
 /** Adjustments to apply to auto-detected lineage data before building.
   *
-  * Applied between scanner output and LineageBuilder — modifies both
-  * the call graph (ExtractedMethod list) and integrations (DiscoveredIntegration list),
-  * then LineageBuilder recomputes effective access types and lineage chains.
+  * Applied between scanner output and LineageBuilder — modifies both the call graph (ExtractedMethod list) and integrations (DiscoveredIntegration
+  * list), then LineageBuilder recomputes effective access types and lineage chains.
   */
 case class LineageAdjustments(adjustments: List[LineageAdjustment] = Nil) {
 
@@ -191,12 +186,11 @@ case class LineageAdjustments(adjustments: List[LineageAdjustment] = Nil) {
   lazy val classRenames: Map[(String, String), String] =
     adjustments.collect { case LineageAdjustment.RenameClass(pkg, cls, name) => (pkg, cls) -> name }.toMap
 
-  /** Resolve class groups from SetClassGroup and SetPackageGroup adjustments.
-    * Requires the resolved call graph to expand package-level groups.
+  /** Resolve class groups from SetClassGroup and SetPackageGroup adjustments. Requires the resolved call graph to expand package-level groups.
     * SetClassGroup takes precedence over SetPackageGroup.
     */
   def classGroups(methods: List[ExtractedMethod]): Map[(String, String), String] = {
-    val packageGroups = adjustments.collect { case LineageAdjustment.SetPackageGroup(prefix, group) => (prefix, group) }
+    val packageGroups       = adjustments.collect { case LineageAdjustment.SetPackageGroup(prefix, group) => (prefix, group) }
     val classGroupOverrides = adjustments.collect { case LineageAdjustment.SetClassGroup(pkg, cls, group) => (pkg, cls) -> group }.toMap
 
     if (packageGroups.isEmpty && classGroupOverrides.isEmpty) return Map.empty
@@ -214,9 +208,12 @@ case class LineageAdjustments(adjustments: List[LineageAdjustment] = Nil) {
 
   /** Apply all adjustments to the raw scanner output.
     *
-    * @param callGraph     extracted methods with call edges (from TastyCallGraphExtractor)
-    * @param integrations  discovered integrations (from all scanners)
-    * @return              adjusted (callGraph, integrations) ready for LineageBuilder
+    * @param callGraph
+    *   extracted methods with call edges (from TastyCallGraphExtractor)
+    * @param integrations
+    *   discovered integrations (from all scanners)
+    * @return
+    *   adjusted (callGraph, integrations) ready for LineageBuilder
     */
   def apply(
       callGraph: List[ExtractedMethod],
@@ -233,7 +230,7 @@ case class LineageAdjustments(adjustments: List[LineageAdjustment] = Nil) {
     // reconnect callers → callees through the hidden set, and promote integrations.
     def hideRefs(hiddenRefs: Set[MethodRef]): Unit = if (hiddenRefs.nonEmpty) {
       // Build indexes for O(1) lookups instead of O(n) linear scans
-      val methodByRef: Map[MethodRef, ExtractedMethod] = methods.map(m => m.ref -> m).toMap
+      val methodByRef: Map[MethodRef, ExtractedMethod]     = methods.map(m => m.ref -> m).toMap
       val callersByCallee: Map[MethodRef, List[MethodRef]] = {
         val builder = scala.collection.mutable.Map.empty[MethodRef, ListBuffer[MethodRef]]
         for (m <- methods; callee <- m.calls)
@@ -243,20 +240,27 @@ case class LineageAdjustments(adjustments: List[LineageAdjustment] = Nil) {
 
       // Resolve external callees transitively through hidden methods.
       // Memoized: each hidden node is resolved once, giving O(V+E) total.
-      val calleeMemo = scala.collection.mutable.Map.empty[MethodRef, Set[MethodRef]]
-      val calleeInProgress = scala.collection.mutable.Set.empty[MethodRef]
+      val calleeMemo                                     = scala.collection.mutable.Map.empty[MethodRef, Set[MethodRef]]
+      val calleeInProgress                               = scala.collection.mutable.Set.empty[MethodRef]
       def resolveCallees(ref: MethodRef): Set[MethodRef] = {
         if (calleeInProgress.contains(ref)) return Set.empty // cycle
-        calleeMemo.getOrElse(ref, {
-          calleeInProgress += ref
-          val result = methodByRef.get(ref).map(_.calls).getOrElse(Nil).flatMap { callee =>
-            if (!hiddenRefs.contains(callee)) Set(callee)
-            else resolveCallees(callee)
-          }.toSet
-          calleeInProgress -= ref
-          calleeMemo(ref) = result
-          result
-        })
+        calleeMemo.getOrElse(
+          ref, {
+            calleeInProgress += ref
+            val result = methodByRef
+              .get(ref)
+              .map(_.calls)
+              .getOrElse(Nil)
+              .flatMap { callee =>
+                if (!hiddenRefs.contains(callee)) Set(callee)
+                else resolveCallees(callee)
+              }
+              .toSet
+            calleeInProgress -= ref
+            calleeMemo(ref) = result
+            result
+          },
+        )
       }
 
       val externalCallees: Map[MethodRef, Set[MethodRef]] =
@@ -264,25 +268,30 @@ case class LineageAdjustments(adjustments: List[LineageAdjustment] = Nil) {
 
       // Find non-hidden callers transitively for integration promotion.
       // Memoized: each hidden node is resolved once, giving O(V+E) total.
-      val callerMemo = scala.collection.mutable.Map.empty[MethodRef, Set[MethodRef]]
-      val callerInProgress = scala.collection.mutable.Set.empty[MethodRef]
+      val callerMemo                                           = scala.collection.mutable.Map.empty[MethodRef, Set[MethodRef]]
+      val callerInProgress                                     = scala.collection.mutable.Set.empty[MethodRef]
       def findNonHiddenCallers(ref: MethodRef): Set[MethodRef] = {
         if (callerInProgress.contains(ref)) return Set.empty // cycle
-        callerMemo.getOrElse(ref, {
-          callerInProgress += ref
-          val result = callersByCallee.getOrElse(ref, Nil).flatMap { c =>
-            if (!hiddenRefs.contains(c)) Set(c)
-            else findNonHiddenCallers(c)
-          }.toSet
-          callerInProgress -= ref
-          callerMemo(ref) = result
-          result
-        })
+        callerMemo.getOrElse(
+          ref, {
+            callerInProgress += ref
+            val result = callersByCallee
+              .getOrElse(ref, Nil)
+              .flatMap { c =>
+                if (!hiddenRefs.contains(c)) Set(c)
+                else findNonHiddenCallers(c)
+              }
+              .toSet
+            callerInProgress -= ref
+            callerMemo(ref) = result
+            result
+          },
+        )
       }
 
       // Promote integrations from hidden methods to their non-hidden callers
       val hiddenIntegrations = integ.filter(di => hiddenRefs.contains(di.method))
-      val promoted = hiddenIntegrations.flatMap { di =>
+      val promoted           = hiddenIntegrations.flatMap { di =>
         findNonHiddenCallers(di.method).map(caller => di.copy(method = caller))
       }
 
@@ -291,7 +300,7 @@ case class LineageAdjustments(adjustments: List[LineageAdjustment] = Nil) {
         if (hiddenRefs.contains(m.ref)) m
         else {
           val (hiddenCalls, otherCalls) = m.calls.partition(hiddenRefs.contains)
-          val newCalls = otherCalls ++ hiddenCalls.flatMap(externalCallees.getOrElse(_, Set.empty))
+          val newCalls                  = otherCalls ++ hiddenCalls.flatMap(externalCallees.getOrElse(_, Set.empty))
           m.copy(calls = newCalls.distinct)
         }
       }
@@ -319,24 +328,23 @@ case class LineageAdjustments(adjustments: List[LineageAdjustment] = Nil) {
         // When expectDetected, validate that auto-detection found this resourceType on the class or its callees
         if (expectDetected) {
           // Direct: integration on a method of this class
-          val directDetection = originalIntegrations.exists(di =>
-            di.method.packageName == pkg && di.method.className == cls && di.resourceType == resourceType
-          )
+          val directDetection =
+            originalIntegrations.exists(di => di.method.packageName == pkg && di.method.className == cls && di.resourceType == resourceType)
           // Transitive: integration on a method reachable through the call graph
-          val hasDetection = directDetection || {
-            val classMethodRefs = methods.filter(m => m.packageName == pkg && m.className == cls).map(_.ref).toSet
-            val callMap = methods.map(m => m.ref -> m.calls).toMap
+          val hasDetection    = directDetection || {
+            val classMethodRefs                                                    = methods.filter(m => m.packageName == pkg && m.className == cls).map(_.ref).toSet
+            val callMap                                                            = methods.map(m => m.ref -> m.calls).toMap
             def reachable(ref: MethodRef, visited: Set[MethodRef]): Set[MethodRef] =
               if (visited.contains(ref)) Set.empty
               else callMap.getOrElse(ref, Nil).flatMap(c => Set(c) ++ reachable(c, visited + ref)).toSet
-            val transitiveRefs = classMethodRefs.flatMap(r => reachable(r, Set.empty))
+            val transitiveRefs                                                     = classMethodRefs.flatMap(r => reachable(r, Set.empty))
             originalIntegrations.exists(di => transitiveRefs.contains(di.method) && di.resourceType == resourceType)
           }
           if (!hasDetection)
             throw new IllegalStateException(
               s"Detection check failed: no auto-detected '$resourceType' integration found for class '$cls' " +
                 s"(package '$pkg') or any method reachable through its call graph. " +
-                s"Ensure scanners detect this resource type, or use .undetected to mark as manual-only."
+                s"Ensure scanners detect this resource type, or use .undetected to mark as manual-only.",
             )
         }
 
@@ -409,9 +417,10 @@ case class LineageAdjustments(adjustments: List[LineageAdjustment] = Nil) {
 
       case AddClassCall(fromPkg, fromCls, to) =>
         // Find methods in the class that already call the target's class
-        val classMethods = methods.filter(m => m.packageName == fromPkg && m.className == fromCls)
+        val classMethods       = methods.filter(m => m.packageName == fromPkg && m.className == fromCls)
         val callingTargetClass = classMethods.filter(_.calls.exists(c => c.packageName == to.packageName && c.className == to.className))
-        val targets = if (callingTargetClass.nonEmpty) callingTargetClass
+        val targets            =
+          if (callingTargetClass.nonEmpty) callingTargetClass
           else if (classMethods.nonEmpty) List(classMethods.head)
           else {
             val synRef = MethodRef(fromPkg, fromCls, fromCls)
@@ -439,7 +448,7 @@ case class LineageAdjustments(adjustments: List[LineageAdjustment] = Nil) {
       case HideMethod(ref) =>
         methods.find(_.ref == ref).foreach { hidden =>
           // Find callers of the hidden method
-          val callerRefs = methods.filter(m => m.ref != ref && m.calls.contains(ref)).map(_.ref)
+          val callerRefs   = methods.filter(m => m.ref != ref && m.calls.contains(ref)).map(_.ref)
           // Reconnect: callers get hidden method's callees
           methods = methods.map { m =>
             if (m.calls.contains(ref))
@@ -448,7 +457,7 @@ case class LineageAdjustments(adjustments: List[LineageAdjustment] = Nil) {
           }
           // Promote integrations to callers
           val hiddenIntegs = integ.filter(_.method == ref)
-          val promoted = callerRefs.flatMap(caller => hiddenIntegs.map(_.copy(method = caller)))
+          val promoted     = callerRefs.flatMap(caller => hiddenIntegs.map(_.copy(method = caller)))
           // Remove hidden method and its integrations, add promoted
           methods = methods.filterNot(_.ref == ref)
           integ = integ.filterNot(_.method == ref) ++ promoted
@@ -497,10 +506,10 @@ case class LineageAdjustments(adjustments: List[LineageAdjustment] = Nil) {
       case RemoveResourceByPattern(resourceType, pattern) =>
         integ = integ.filterNot(di => di.resourceType == resourceType && pattern.matches(di.target))
 
-      case RenameClass(_, _, _)     => // display-only, handled via classRenames
-      case SetClassGroup(_, _, _)   => // metadata-only, handled via classGroups()
-      case SetPackageGroup(_, _)    => // metadata-only, handled via classGroups()
-      case ShowClass(_, _)          => // handled after main loop
+      case RenameClass(_, _, _)   => // display-only, handled via classRenames
+      case SetClassGroup(_, _, _) => // metadata-only, handled via classGroups()
+      case SetPackageGroup(_, _)  => // metadata-only, handled via classGroups()
+      case ShowClass(_, _)        => // handled after main loop
     }
 
     // ShowClass allowlist: if any ShowClass adjustments exist, hide all non-shown classes
@@ -540,8 +549,8 @@ object LineageAdjustments {
   val empty: LineageAdjustments = LineageAdjustments()
 
   class ClassCollector {
-    private val _refs = ListBuffer.empty[(String, String)]
-    def cls[T: ClassTag]: ClassCollector = {
+    private val _refs                                  = ListBuffer.empty[(String, String)]
+    def cls[T: ClassTag]: ClassCollector               = {
       val (pkg, name) = splitClassTag(summon[ClassTag[T]])
       _refs += ((pkg, name))
       this
@@ -550,18 +559,17 @@ object LineageAdjustments {
       _refs += ((pkg, name))
       this
     }
-    def refs: Seq[(String, String)] = _refs.toSeq
+    def refs: Seq[(String, String)]                    = _refs.toSeq
   }
 
   def builder: Builder = new Builder
 
   class Builder {
-    private val _adjustments    = ListBuffer.empty[LineageAdjustment]
+    private val _adjustments     = ListBuffer.empty[LineageAdjustment]
     private val _undetectedTypes = scala.collection.mutable.Set.empty[ResourceType]
 
-    /** Mark resource types as manual-only — class-level integrations of these types
-      * won't require auto-detection validation. By default all class-level
-      * integrations expect scanner confirmation.
+    /** Mark resource types as manual-only — class-level integrations of these types won't require auto-detection validation. By default all
+      * class-level integrations expect scanner confirmation.
       */
     def undetected(resourceTypes: ResourceType*): Builder = {
       _undetectedTypes ++= resourceTypes
@@ -582,8 +590,7 @@ object LineageAdjustments {
       new ClassActions(pkg, cls)
     }
 
-    /** Select multiple classes at once; apply actions to all of them.
-      * Usage: `.classes(_.cls[A].cls[B].cls[C]).show.setGroup("Group")`
+    /** Select multiple classes at once; apply actions to all of them. Usage: `.classes(_.cls[A].cls[B].cls[C]).show.setGroup("Group")`
       */
     def classes(selector: ClassCollector => ClassCollector): MultiClassActions = {
       val collector = selector(new ClassCollector)
@@ -612,8 +619,8 @@ object LineageAdjustments {
     def resource(resourceType: ResourceType, target: String): ResourceActions =
       new ResourceActions(resourceType, target)
 
-    /** Select external resources by type and regex pattern on target name.
-      * Useful for batch operations like merging partition tables or removing infrastructure noise.
+    /** Select external resources by type and regex pattern on target name. Useful for batch operations like merging partition tables or removing
+      * infrastructure noise.
       */
     def resourceMatching(resourceType: ResourceType, pattern: String): ResourcePatternActions =
       new ResourcePatternActions(resourceType, pattern.r)
@@ -628,12 +635,12 @@ object LineageAdjustments {
       private def ref: MethodRef = MethodRef(packageName, className, methodName)
 
       // Add integration
-      def reads: IntegrationBuilder    = new IntegrationBuilder(ref, DataAccessType.Read)
-      def writes: IntegrationBuilder   = new IntegrationBuilder(ref, DataAccessType.Write)
+      def reads: IntegrationBuilder     = new IntegrationBuilder(ref, DataAccessType.Read)
+      def writes: IntegrationBuilder    = new IntegrationBuilder(ref, DataAccessType.Write)
       def readWrite: IntegrationBuilder = new IntegrationBuilder(ref, DataAccessType.ReadWrite)
 
       // Add call edge
-      inline def calls[T](inline selector: T => Any): MethodActions = {
+      inline def calls[T](inline selector: T => Any): MethodActions      = {
         val (p, c, m) = MethodRefMacro.extract[T](selector)
         _adjustments += LineageAdjustment.AddCall(ref, MethodRef(p, c, m))
         this
@@ -644,7 +651,7 @@ object LineageAdjustments {
       }
 
       // Remove call edge
-      inline def removesCall[T](inline selector: T => Any): MethodActions = {
+      inline def removesCall[T](inline selector: T => Any): MethodActions      = {
         val (p, c, m) = MethodRefMacro.extract[T](selector)
         _adjustments += LineageAdjustment.RemoveCall(ref, MethodRef(p, c, m))
         this
@@ -679,14 +686,14 @@ object LineageAdjustments {
       }
 
       // Transitions to other selectors
-      inline def method[T](inline selector: T => Any): MethodActions = Builder.this.method[T](selector)
-      def method(pkg: String, cls: String, method: String): MethodActions = Builder.this.method(pkg, cls, method)
-      def cls[T: ClassTag]: ClassActions = Builder.this.cls[T]
-      def cls(pkg: String, cls: String): ClassActions = Builder.this.cls(pkg, cls)
+      inline def method[T](inline selector: T => Any): MethodActions             = Builder.this.method[T](selector)
+      def method(pkg: String, cls: String, method: String): MethodActions        = Builder.this.method(pkg, cls, method)
+      def cls[T: ClassTag]: ClassActions                                         = Builder.this.cls[T]
+      def cls(pkg: String, cls: String): ClassActions                            = Builder.this.cls(pkg, cls)
       def classes(selector: ClassCollector => ClassCollector): MultiClassActions = Builder.this.classes(selector)
-      def pkg(packagePrefix: String): PackageActions = Builder.this.pkg(packagePrefix)
-      def resource(resourceType: ResourceType, target: String): ResourceActions = Builder.this.resource(resourceType, target)
-      def build: LineageAdjustments = Builder.this.build
+      def pkg(packagePrefix: String): PackageActions                             = Builder.this.pkg(packagePrefix)
+      def resource(resourceType: ResourceType, target: String): ResourceActions  = Builder.this.resource(resourceType, target)
+      def build: LineageAdjustments                                              = Builder.this.build
     }
 
     // ── Class-level actions ───────────────────────────────────────────────
@@ -694,12 +701,12 @@ object LineageAdjustments {
     class ClassActions(packageName: String, className: String) {
 
       // Add integration (class-level — resolves to matching methods at apply time)
-      def reads: ClassIntegrationBuilder    = new ClassIntegrationBuilder(packageName, className, DataAccessType.Read)
-      def writes: ClassIntegrationBuilder   = new ClassIntegrationBuilder(packageName, className, DataAccessType.Write)
+      def reads: ClassIntegrationBuilder     = new ClassIntegrationBuilder(packageName, className, DataAccessType.Read)
+      def writes: ClassIntegrationBuilder    = new ClassIntegrationBuilder(packageName, className, DataAccessType.Write)
       def readWrite: ClassIntegrationBuilder = new ClassIntegrationBuilder(packageName, className, DataAccessType.ReadWrite)
 
       // Add call edge (resolves "from" method at apply time)
-      inline def calls[T](inline selector: T => Any): ClassActions = {
+      inline def calls[T](inline selector: T => Any): ClassActions      = {
         val (p, c, m) = MethodRefMacro.extract[T](selector)
         _adjustments += LineageAdjustment.AddClassCall(packageName, className, MethodRef(p, c, m))
         this
@@ -710,7 +717,7 @@ object LineageAdjustments {
       }
 
       // Remove call edge from all methods in this class
-      inline def removesCall[T](inline selector: T => Any): ClassActions = {
+      inline def removesCall[T](inline selector: T => Any): ClassActions      = {
         val (p, c, m) = MethodRefMacro.extract[T](selector)
         _adjustments += LineageAdjustment.RemoveClassCall(packageName, className, MethodRef(p, c, m))
         this
@@ -763,24 +770,24 @@ object LineageAdjustments {
       }
 
       // Transitions to other selectors
-      inline def method[T](inline selector: T => Any): MethodActions = Builder.this.method[T](selector)
-      def method(pkg: String, cls: String, method: String): MethodActions = Builder.this.method(pkg, cls, method)
-      def cls[T: ClassTag]: ClassActions = Builder.this.cls[T]
-      def cls(pkg: String, cls: String): ClassActions = Builder.this.cls(pkg, cls)
+      inline def method[T](inline selector: T => Any): MethodActions             = Builder.this.method[T](selector)
+      def method(pkg: String, cls: String, method: String): MethodActions        = Builder.this.method(pkg, cls, method)
+      def cls[T: ClassTag]: ClassActions                                         = Builder.this.cls[T]
+      def cls(pkg: String, cls: String): ClassActions                            = Builder.this.cls(pkg, cls)
       def classes(selector: ClassCollector => ClassCollector): MultiClassActions = Builder.this.classes(selector)
-      def pkg(packagePrefix: String): PackageActions = Builder.this.pkg(packagePrefix)
-      def resource(resourceType: ResourceType, target: String): ResourceActions = Builder.this.resource(resourceType, target)
-      def build: LineageAdjustments = Builder.this.build
+      def pkg(packagePrefix: String): PackageActions                             = Builder.this.pkg(packagePrefix)
+      def resource(resourceType: ResourceType, target: String): ResourceActions  = Builder.this.resource(resourceType, target)
+      def build: LineageAdjustments                                              = Builder.this.build
     }
 
     // ── Multi-class collector & actions ─────────────────────────────────
 
     class MultiClassActions(refs: Seq[(String, String)]) {
-      def show: MultiClassActions = {
+      def show: MultiClassActions                          = {
         refs.foreach { (pkg, cls) => _adjustments += LineageAdjustment.ShowClass(pkg, cls) }
         this
       }
-      def setGroup(group: String): MultiClassActions = {
+      def setGroup(group: String): MultiClassActions       = {
         refs.foreach { (pkg, cls) => _adjustments += LineageAdjustment.SetClassGroup(pkg, cls, group) }
         this
       }
@@ -788,25 +795,25 @@ object LineageAdjustments {
         refs.foreach { (pkg, cls) => _adjustments += LineageAdjustment.RenameClass(pkg, cls, displayName) }
         this
       }
-      def remove: Builder = {
+      def remove: Builder                                  = {
         refs.foreach { (pkg, cls) => _adjustments += LineageAdjustment.HideClass(pkg, cls) }
         Builder.this
       }
-      def delete: Builder = {
+      def delete: Builder                                  = {
         refs.foreach { (pkg, cls) => _adjustments += LineageAdjustment.DeleteClass(pkg, cls) }
         Builder.this
       }
 
       // Transitions to other selectors
-      inline def method[T](inline selector: T => Any): MethodActions = Builder.this.method[T](selector)
-      def method(pkg: String, cls: String, method: String): MethodActions = Builder.this.method(pkg, cls, method)
-      def cls[T: ClassTag]: ClassActions = Builder.this.cls[T]
-      def cls(pkg: String, cls: String): ClassActions = Builder.this.cls(pkg, cls)
-      def classes(selector: ClassCollector => ClassCollector): MultiClassActions = Builder.this.classes(selector)
-      def pkg(packagePrefix: String): PackageActions = Builder.this.pkg(packagePrefix)
-      def resource(resourceType: ResourceType, target: String): ResourceActions = Builder.this.resource(resourceType, target)
+      inline def method[T](inline selector: T => Any): MethodActions                            = Builder.this.method[T](selector)
+      def method(pkg: String, cls: String, method: String): MethodActions                       = Builder.this.method(pkg, cls, method)
+      def cls[T: ClassTag]: ClassActions                                                        = Builder.this.cls[T]
+      def cls(pkg: String, cls: String): ClassActions                                           = Builder.this.cls(pkg, cls)
+      def classes(selector: ClassCollector => ClassCollector): MultiClassActions                = Builder.this.classes(selector)
+      def pkg(packagePrefix: String): PackageActions                                            = Builder.this.pkg(packagePrefix)
+      def resource(resourceType: ResourceType, target: String): ResourceActions                 = Builder.this.resource(resourceType, target)
       def resourceMatching(resourceType: ResourceType, pattern: String): ResourcePatternActions = Builder.this.resourceMatching(resourceType, pattern)
-      def build: LineageAdjustments = Builder.this.build
+      def build: LineageAdjustments                                                             = Builder.this.build
     }
 
     // ── Package-level actions ──────────────────────────────────────────
@@ -826,15 +833,15 @@ object LineageAdjustments {
       }
 
       // Transitions to other selectors
-      inline def method[T](inline selector: T => Any): MethodActions = Builder.this.method[T](selector)
-      def method(pkg: String, cls: String, method: String): MethodActions = Builder.this.method(pkg, cls, method)
-      def cls[T: ClassTag]: ClassActions = Builder.this.cls[T]
-      def cls(pkg: String, cls: String): ClassActions = Builder.this.cls(pkg, cls)
-      def classes(selector: ClassCollector => ClassCollector): MultiClassActions = Builder.this.classes(selector)
-      def pkg(packagePrefix: String): PackageActions = Builder.this.pkg(packagePrefix)
-      def resource(resourceType: ResourceType, target: String): ResourceActions = Builder.this.resource(resourceType, target)
+      inline def method[T](inline selector: T => Any): MethodActions                            = Builder.this.method[T](selector)
+      def method(pkg: String, cls: String, method: String): MethodActions                       = Builder.this.method(pkg, cls, method)
+      def cls[T: ClassTag]: ClassActions                                                        = Builder.this.cls[T]
+      def cls(pkg: String, cls: String): ClassActions                                           = Builder.this.cls(pkg, cls)
+      def classes(selector: ClassCollector => ClassCollector): MultiClassActions                = Builder.this.classes(selector)
+      def pkg(packagePrefix: String): PackageActions                                            = Builder.this.pkg(packagePrefix)
+      def resource(resourceType: ResourceType, target: String): ResourceActions                 = Builder.this.resource(resourceType, target)
       def resourceMatching(resourceType: ResourceType, pattern: String): ResourcePatternActions = Builder.this.resourceMatching(resourceType, pattern)
-      def build: LineageAdjustments = Builder.this.build
+      def build: LineageAdjustments                                                             = Builder.this.build
     }
 
     // ── Integration builders (method-level and class-level) ─────────────
@@ -851,22 +858,23 @@ object LineageAdjustments {
         this
       }
 
-      def kafka(topic: String): IntegrationBuilder = emit(ResourceType.Kafka, topic, Some("Kafka"))
-      def s3(bucket: String): IntegrationBuilder = emit(ResourceType.S3, bucket, Some("S3"))
-      def database(table: String, group: Option[String] = None): IntegrationBuilder = emit(ResourceType.Database, table, group)
-      def grpc(endpoint: String, group: Option[String] = None): IntegrationBuilder = emit(ResourceType.Grpc, endpoint, grpcGroup(endpoint, group))
-      def journal(target: String = "journal", group: Option[String] = Some("Journal")): IntegrationBuilder = emit(ResourceType.Database, target, group)
+      def kafka(topic: String): IntegrationBuilder                                                             = emit(ResourceType.Kafka, topic, Some("Kafka"))
+      def s3(bucket: String): IntegrationBuilder                                                               = emit(ResourceType.S3, bucket, Some("S3"))
+      def database(table: String, group: Option[String] = None): IntegrationBuilder                            = emit(ResourceType.Database, table, group)
+      def grpc(endpoint: String, group: Option[String] = None): IntegrationBuilder                             = emit(ResourceType.Grpc, endpoint, grpcGroup(endpoint, group))
+      def journal(target: String = "journal", group: Option[String] = Some("Journal")): IntegrationBuilder     =
+        emit(ResourceType.Database, target, group)
       def custom(resourceType: ResourceType, target: String, group: Option[String] = None): IntegrationBuilder = emit(resourceType, target, group)
 
       // Transitions to other selectors
-      inline def method[T](inline selector: T => Any): MethodActions = Builder.this.method[T](selector)
-      def method(pkg: String, cls: String, method: String): MethodActions = Builder.this.method(pkg, cls, method)
-      def cls[T: ClassTag]: ClassActions = Builder.this.cls[T]
-      def cls(pkg: String, cls: String): ClassActions = Builder.this.cls(pkg, cls)
+      inline def method[T](inline selector: T => Any): MethodActions             = Builder.this.method[T](selector)
+      def method(pkg: String, cls: String, method: String): MethodActions        = Builder.this.method(pkg, cls, method)
+      def cls[T: ClassTag]: ClassActions                                         = Builder.this.cls[T]
+      def cls(pkg: String, cls: String): ClassActions                            = Builder.this.cls(pkg, cls)
       def classes(selector: ClassCollector => ClassCollector): MultiClassActions = Builder.this.classes(selector)
-      def pkg(packagePrefix: String): PackageActions = Builder.this.pkg(packagePrefix)
-      def resource(resourceType: ResourceType, target: String): ResourceActions = Builder.this.resource(resourceType, target)
-      def build: LineageAdjustments = Builder.this.build
+      def pkg(packagePrefix: String): PackageActions                             = Builder.this.pkg(packagePrefix)
+      def resource(resourceType: ResourceType, target: String): ResourceActions  = Builder.this.resource(resourceType, target)
+      def build: LineageAdjustments                                              = Builder.this.build
     }
 
     class ClassIntegrationBuilder(packageName: String, className: String, accessType: DataAccessType) {
@@ -878,15 +886,18 @@ object LineageAdjustments {
         this
       }
 
-      def kafka(topic: String): ClassIntegrationBuilder = emit(ResourceType.Kafka, topic, Some("Kafka"))
-      def s3(bucket: String): ClassIntegrationBuilder = emit(ResourceType.S3, bucket, Some("S3"))
-      def database(table: String, group: Option[String] = None): ClassIntegrationBuilder = emit(ResourceType.Database, table, group)
-      def grpc(endpoint: String, group: Option[String] = None): ClassIntegrationBuilder = emit(ResourceType.Grpc, endpoint, grpcGroup(endpoint, group))
-      def journal(target: String = "journal", group: Option[String] = Some("Journal")): ClassIntegrationBuilder = emit(ResourceType.Database, target, group)
-      def custom(resourceType: ResourceType, target: String, group: Option[String] = None): ClassIntegrationBuilder = emit(resourceType, target, group)
+      def kafka(topic: String): ClassIntegrationBuilder                                                             = emit(ResourceType.Kafka, topic, Some("Kafka"))
+      def s3(bucket: String): ClassIntegrationBuilder                                                               = emit(ResourceType.S3, bucket, Some("S3"))
+      def database(table: String, group: Option[String] = None): ClassIntegrationBuilder                            = emit(ResourceType.Database, table, group)
+      def grpc(endpoint: String, group: Option[String] = None): ClassIntegrationBuilder                             =
+        emit(ResourceType.Grpc, endpoint, grpcGroup(endpoint, group))
+      def journal(target: String = "journal", group: Option[String] = Some("Journal")): ClassIntegrationBuilder     =
+        emit(ResourceType.Database, target, group)
+      def custom(resourceType: ResourceType, target: String, group: Option[String] = None): ClassIntegrationBuilder =
+        emit(resourceType, target, group)
 
-      /** Mark entries from this builder as manual-only — no scanner detection expected.
-        * Overrides the default (which requires scanners to confirm the resource type).
+      /** Mark entries from this builder as manual-only — no scanner detection expected. Overrides the default (which requires scanners to confirm the
+        * resource type).
         */
       def undetected: ClassIntegrationBuilder = {
         for (i <- startIdx until _adjustments.size)
@@ -897,8 +908,7 @@ object LineageAdjustments {
         this
       }
 
-      /** Mark entries from this builder as requiring scanner detection.
-        * Useful to override a builder-level `.undetected(type)` for specific entries.
+      /** Mark entries from this builder as requiring scanner detection. Useful to override a builder-level `.undetected(type)` for specific entries.
         */
       def detected: ClassIntegrationBuilder = {
         for (i <- startIdx until _adjustments.size)
@@ -910,14 +920,14 @@ object LineageAdjustments {
       }
 
       // Transitions to other selectors
-      inline def method[T](inline selector: T => Any): MethodActions = Builder.this.method[T](selector)
-      def method(pkg: String, cls: String, method: String): MethodActions = Builder.this.method(pkg, cls, method)
-      def cls[T: ClassTag]: ClassActions = Builder.this.cls[T]
-      def cls(pkg: String, cls: String): ClassActions = Builder.this.cls(pkg, cls)
+      inline def method[T](inline selector: T => Any): MethodActions             = Builder.this.method[T](selector)
+      def method(pkg: String, cls: String, method: String): MethodActions        = Builder.this.method(pkg, cls, method)
+      def cls[T: ClassTag]: ClassActions                                         = Builder.this.cls[T]
+      def cls(pkg: String, cls: String): ClassActions                            = Builder.this.cls(pkg, cls)
       def classes(selector: ClassCollector => ClassCollector): MultiClassActions = Builder.this.classes(selector)
-      def pkg(packagePrefix: String): PackageActions = Builder.this.pkg(packagePrefix)
-      def resource(resourceType: ResourceType, target: String): ResourceActions = Builder.this.resource(resourceType, target)
-      def build: LineageAdjustments = Builder.this.build
+      def pkg(packagePrefix: String): PackageActions                             = Builder.this.pkg(packagePrefix)
+      def resource(resourceType: ResourceType, target: String): ResourceActions  = Builder.this.resource(resourceType, target)
+      def build: LineageAdjustments                                              = Builder.this.build
     }
 
     // ── Resource-level actions ────────────────────────────────────────────
@@ -943,15 +953,15 @@ object LineageAdjustments {
       }
 
       // Transitions to other selectors
-      inline def method[T](inline selector: T => Any): MethodActions = Builder.this.method[T](selector)
-      def method(pkg: String, cls: String, method: String): MethodActions = Builder.this.method(pkg, cls, method)
-      def cls[T: ClassTag]: ClassActions = Builder.this.cls[T]
-      def cls(pkg: String, cls: String): ClassActions = Builder.this.cls(pkg, cls)
-      def classes(selector: ClassCollector => ClassCollector): MultiClassActions = Builder.this.classes(selector)
-      def pkg(packagePrefix: String): PackageActions = Builder.this.pkg(packagePrefix)
-      def resource(resourceType: ResourceType, target: String): ResourceActions = Builder.this.resource(resourceType, target)
+      inline def method[T](inline selector: T => Any): MethodActions                            = Builder.this.method[T](selector)
+      def method(pkg: String, cls: String, method: String): MethodActions                       = Builder.this.method(pkg, cls, method)
+      def cls[T: ClassTag]: ClassActions                                                        = Builder.this.cls[T]
+      def cls(pkg: String, cls: String): ClassActions                                           = Builder.this.cls(pkg, cls)
+      def classes(selector: ClassCollector => ClassCollector): MultiClassActions                = Builder.this.classes(selector)
+      def pkg(packagePrefix: String): PackageActions                                            = Builder.this.pkg(packagePrefix)
+      def resource(resourceType: ResourceType, target: String): ResourceActions                 = Builder.this.resource(resourceType, target)
       def resourceMatching(resourceType: ResourceType, pattern: String): ResourcePatternActions = Builder.this.resourceMatching(resourceType, pattern)
-      def build: LineageAdjustments = Builder.this.build
+      def build: LineageAdjustments                                                             = Builder.this.build
     }
 
     class ResourcePatternActions(resourceType: ResourceType, pattern: scala.util.matching.Regex) {
@@ -969,15 +979,15 @@ object LineageAdjustments {
       }
 
       // Transitions to other selectors
-      inline def method[T](inline selector: T => Any): MethodActions = Builder.this.method[T](selector)
-      def method(pkg: String, cls: String, method: String): MethodActions = Builder.this.method(pkg, cls, method)
-      def cls[T: ClassTag]: ClassActions = Builder.this.cls[T]
-      def cls(pkg: String, cls: String): ClassActions = Builder.this.cls(pkg, cls)
-      def classes(selector: ClassCollector => ClassCollector): MultiClassActions = Builder.this.classes(selector)
-      def pkg(packagePrefix: String): PackageActions = Builder.this.pkg(packagePrefix)
-      def resource(resourceType: ResourceType, target: String): ResourceActions = Builder.this.resource(resourceType, target)
+      inline def method[T](inline selector: T => Any): MethodActions                            = Builder.this.method[T](selector)
+      def method(pkg: String, cls: String, method: String): MethodActions                       = Builder.this.method(pkg, cls, method)
+      def cls[T: ClassTag]: ClassActions                                                        = Builder.this.cls[T]
+      def cls(pkg: String, cls: String): ClassActions                                           = Builder.this.cls(pkg, cls)
+      def classes(selector: ClassCollector => ClassCollector): MultiClassActions                = Builder.this.classes(selector)
+      def pkg(packagePrefix: String): PackageActions                                            = Builder.this.pkg(packagePrefix)
+      def resource(resourceType: ResourceType, target: String): ResourceActions                 = Builder.this.resource(resourceType, target)
       def resourceMatching(resourceType: ResourceType, pattern: String): ResourcePatternActions = Builder.this.resourceMatching(resourceType, pattern)
-      def build: LineageAdjustments = Builder.this.build
+      def build: LineageAdjustments                                                             = Builder.this.build
     }
   }
 }

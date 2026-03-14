@@ -11,10 +11,10 @@ object MethodRefMacro {
   private def extractImpl[T: Type](selector: Expr[T => Any])(using Quotes): Expr[(String, String, String)] = {
     import quotes.reflect.*
 
-    val sym = TypeRepr.of[T].typeSymbol
-    val className = sym.name
+    val sym         = TypeRepr.of[T].typeSymbol
+    val className   = sym.name
     val packageName = sym.owner.fullName
-    val methodName = extractMethodName(selector.asTerm)
+    val methodName  = extractMethodName(selector.asTerm)
 
     Expr((packageName, className, methodName))
   }
@@ -22,12 +22,12 @@ object MethodRefMacro {
   private def extractMethodName(using Quotes)(tree: quotes.reflect.Tree): String = {
     import quotes.reflect.*
     tree match {
-      case Inlined(_, _, body)                        => extractMethodName(body)
+      case Inlined(_, _, body)                         => extractMethodName(body)
       case Block(List(DefDef(_, _, _, Some(body))), _) => extractMethodName(body)
-      case Select(_, name)                            => name
-      case Apply(fun, _)                              => extractMethodName(fun)
-      case TypeApply(fun, _)                          => extractMethodName(fun)
-      case _ =>
+      case Select(_, name)                             => name
+      case Apply(fun, _)                               => extractMethodName(fun)
+      case TypeApply(fun, _)                           => extractMethodName(fun)
+      case _                                           =>
         report.errorAndAbort(s"Expected _.methodName, got: ${tree.show}")
     }
   }

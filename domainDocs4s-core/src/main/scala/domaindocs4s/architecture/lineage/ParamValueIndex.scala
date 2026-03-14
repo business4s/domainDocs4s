@@ -24,8 +24,7 @@ import scala.util.control.NonFatal
 
 /** Indexes call-site argument sources for every method in the scanned packages.
   *
-  * Enables backward resolution: given (pkg, cls, method, paramIndex),
-  * return all string literals that were ever passed there — following
+  * Enables backward resolution: given (pkg, cls, method, paramIndex), return all string literals that were ever passed there — following
   * ForwardedParam and LocalLiteral chains recursively.
   *
   * Thread-safe (immutable after build).
@@ -33,29 +32,35 @@ import scala.util.control.NonFatal
 class ParamValueIndex private (
     entries: Map[(String, String, String, Int), List[ArgSource]],
 ) {
+
   /** Resolve all string literals ever passed as argument [paramIndex] to the given method.
     *
-    * Follows ForwardedParam and LocalLiteral chains to arbitrary depth.
-    * Cycle-safe: returns empty set if a cycle is detected.
+    * Follows ForwardedParam and LocalLiteral chains to arbitrary depth. Cycle-safe: returns empty set if a cycle is detected.
     */
   def resolve(pkg: String, cls: String, method: String, paramIndex: Int): Set[String] =
     resolveRec(pkg, cls, method, paramIndex, visited = Set.empty)
 
   private def resolveRec(
-      pkg: String, cls: String, method: String, paramIndex: Int,
+      pkg: String,
+      cls: String,
+      method: String,
+      paramIndex: Int,
       visited: Set[(String, String, String, Int)],
   ): Set[String] = {
-    val key = (pkg, cls, method, paramIndex)
+    val key        = (pkg, cls, method, paramIndex)
     if (visited.contains(key)) return Set.empty
     val newVisited = visited + key
-    entries.getOrElse(key, Nil).flatMap {
-      case ArgSource.Literal(v)      => Set(v)
-      case ArgSource.LocalLiteral(v) => Set(v)
-      case ArgSource.ForwardedParam(fp, fc, fm, fi) =>
-        resolveRec(fp, fc, fm, fi, newVisited)
-      case ArgSource.CallResult(_, _) => Set.empty  // Phase 4
-      case ArgSource.Unresolvable     => Set.empty
-    }.toSet
+    entries
+      .getOrElse(key, Nil)
+      .flatMap {
+        case ArgSource.Literal(v)                     => Set(v)
+        case ArgSource.LocalLiteral(v)                => Set(v)
+        case ArgSource.ForwardedParam(fp, fc, fm, fi) =>
+          resolveRec(fp, fc, fm, fi, newVisited)
+        case ArgSource.CallResult(_, _)               => Set.empty // Phase 4
+        case ArgSource.Unresolvable                   => Set.empty
+      }
+      .toSet
   }
 }
 
@@ -76,12 +81,12 @@ object ParamValueIndex {
 
       for (packageName <- packages) {
         try {
-          val pkg = ctx.findPackage(packageName)
+          val pkg     = ctx.findPackage(packageName)
           val classes =
             TastyUtils.userClassesRecursive(pkg) ++
-            TastyUtils.moduleClassesRecursive(pkg) ++
-            TastyUtils.nestedClassesInModules(pkg) ++
-            TastyUtils.nestedModulesInModules(pkg)
+              TastyUtils.moduleClassesRecursive(pkg) ++
+              TastyUtils.nestedClassesInModules(pkg) ++
+              TastyUtils.nestedModulesInModules(pkg)
 
           for ((ownerPkg, cls) <- classes) {
             val pkgName         = ownerPkg.fullName.toString
@@ -97,13 +102,13 @@ object ParamValueIndex {
                     val params     = buildParamList(defDef)
                     defDef.rhs.foreach { rhs =>
                       new ArgSourceCollector(
-                        callerPkg       = pkgName,
-                        callerCls       = clsName,
-                        callerMethod    = methodName,
-                        paramNames      = params,
-                        fieldTypes      = fieldTypes,
+                        callerPkg = pkgName,
+                        callerCls = clsName,
+                        callerMethod = methodName,
+                        paramNames = params,
+                        fieldTypes = fieldTypes,
                         classStringLits = classStringLits,
-                        addEntry        = addEntry,
+                        addEntry = addEntry,
                       ).traverse(rhs)
                     }
                   // Class-level val initializers (e.g. val repo = Factory("name")) are not
@@ -111,16 +116,16 @@ object ParamValueIndex {
                   case Some(valDef: ValDef) =>
                     valDef.rhs.foreach { rhs =>
                       new ArgSourceCollector(
-                        callerPkg       = pkgName,
-                        callerCls       = clsName,
-                        callerMethod    = "<init>",
-                        paramNames      = IndexedSeq.empty,
-                        fieldTypes      = fieldTypes,
+                        callerPkg = pkgName,
+                        callerCls = clsName,
+                        callerMethod = "<init>",
+                        paramNames = IndexedSeq.empty,
+                        fieldTypes = fieldTypes,
                         classStringLits = classStringLits,
-                        addEntry        = addEntry,
+                        addEntry = addEntry,
                       ).traverse(rhs)
                     }
-                  case _ =>
+                  case _                    =>
                 }
               }
             }
@@ -134,31 +139,37 @@ object ParamValueIndex {
     // ── Class-level field introspection ───────────────────────────────────────
 
     private def resolveFieldTypes(cls: ClassSymbol): Map[String, (String, String)] =
-      cls.declarations.collect {
-        case ts: TermSymbol if !ts.name.toString.startsWith("<") =>
-          try {
-            TastyUtils.extractTypeRef(ts.declaredType).flatMap { tr =>
-              val pkg  = TastyUtils.typeRefPackage(tr)
-              val name = tr.name.toString.stripSuffix("$")
-              if (pkg.nonEmpty) Some(ts.name.toString -> (pkg, name)) else None
-            }
-          } catch { case NonFatal(_) => None }
-      }.flatten.toMap
+      cls.declarations
+        .collect {
+          case ts: TermSymbol if !ts.name.toString.startsWith("<") =>
+            try {
+              TastyUtils.extractTypeRef(ts.declaredType).flatMap { tr =>
+                val pkg  = TastyUtils.typeRefPackage(tr)
+                val name = tr.name.toString.stripSuffix("$")
+                if (pkg.nonEmpty) Some(ts.name.toString -> (pkg, name)) else None
+              }
+            } catch { case NonFatal(_) => None }
+        }
+        .flatten
+        .toMap
 
     /** Collect class-level val bindings whose RHS is a string literal. */
     private def resolveClassStringLiterals(cls: ClassSymbol): Map[String, String] =
-      cls.declarations.collect {
-        case ts: TermSymbol if !ts.name.toString.startsWith("<") =>
-          ts.tree match {
-            case Some(vd: ValDef) =>
-              vd.rhs match {
-                case Some(Literal(c)) if c.value.isInstanceOf[String] =>
-                  Some(ts.name.toString -> c.value.asInstanceOf[String])
-                case _ => None
-              }
-            case _ => None
-          }
-      }.flatten.toMap
+      cls.declarations
+        .collect {
+          case ts: TermSymbol if !ts.name.toString.startsWith("<") =>
+            ts.tree match {
+              case Some(vd: ValDef) =>
+                vd.rhs match {
+                  case Some(Literal(c)) if c.value.isInstanceOf[String] =>
+                    Some(ts.name.toString -> c.value.asInstanceOf[String])
+                  case _                                                => None
+                }
+              case _                => None
+            }
+        }
+        .flatten
+        .toMap
 
     /** Build a flat list of parameter names in declaration order. */
     private def buildParamList(defDef: DefDef): IndexedSeq[String] =
@@ -170,13 +181,13 @@ object ParamValueIndex {
     // ── Tree traverser ────────────────────────────────────────────────────────
 
     private class ArgSourceCollector(
-        callerPkg:       String,
-        callerCls:       String,
-        callerMethod:    String,
-        paramNames:      IndexedSeq[String],
-        fieldTypes:      Map[String, (String, String)],
+        callerPkg: String,
+        callerCls: String,
+        callerMethod: String,
+        paramNames: IndexedSeq[String],
+        fieldTypes: Map[String, (String, String)],
         classStringLits: Map[String, String],
-        addEntry:        ((String, String, String, Int), ArgSource) => Unit,
+        addEntry: ((String, String, String, Int), ArgSource) => Unit,
     ) extends TreeTraverser {
 
       // Local val bindings accumulated during traversal
@@ -207,21 +218,22 @@ object ParamValueIndex {
       // ── Arg classification ───────────────────────────────────────────────
 
       private def classifyArg(arg: Tree): ArgSource = arg match {
-        case NamedArg(_, value) =>
+        case NamedArg(_, value)                         =>
           classifyArg(value)
         case Literal(c) if c.value.isInstanceOf[String] =>
           ArgSource.Literal(c.value.asInstanceOf[String])
-        case Ident(name) =>
+        case Ident(name)                                =>
           val n        = TastyUtils.simpleName(name)
           val paramIdx = paramNames.indexOf(n)
           if (paramIdx >= 0)
             ArgSource.ForwardedParam(callerPkg, callerCls, callerMethod, paramIdx)
           else
-            localStringLits.get(n)
+            localStringLits
+              .get(n)
               .orElse(classStringLits.get(n))
               .map(ArgSource.LocalLiteral.apply)
               .getOrElse(ArgSource.Unresolvable)
-        case _ => ArgSource.Unresolvable
+        case _                                          => ArgSource.Unresolvable
       }
 
       // ── ValDef tracking ──────────────────────────────────────────────────
@@ -230,7 +242,7 @@ object ParamValueIndex {
         vd.rhs.foreach {
           case Literal(c) if c.value.isInstanceOf[String] =>
             localStringLits(TastyUtils.simpleName(vd.name)) = c.value.asInstanceOf[String]
-          case _ =>
+          case _                                          =>
         }
         try {
           TastyUtils.extractTypeRef(vd.symbol.declaredType).foreach { tr =>
@@ -244,8 +256,7 @@ object ParamValueIndex {
 
       // ── Callee resolution ────────────────────────────────────────────────
 
-      /** Unwrap nested Apply/TypeApply to get (rootFun, allArgsInFlatOrder).
-        * For method(a)(b, c), TASTy is Apply(Apply(method,[a]),[b,c]).
+      /** Unwrap nested Apply/TypeApply to get (rootFun, allArgsInFlatOrder). For method(a)(b, c), TASTy is Apply(Apply(method,[a]),[b,c]).
         * flattenApply yields (method, [a, b, c]).
         */
       private def flattenApply(tree: Tree, accArgs: List[Tree] = Nil): (Tree, List[Tree]) =
@@ -264,18 +275,19 @@ object ParamValueIndex {
         case Select(recv, methodName) =>
           val mn = TastyUtils.simpleName(methodName)
           recv match {
-            case ident @ Ident(fieldName) =>
+            case ident @ Ident(fieldName)   =>
               val fn = TastyUtils.simpleName(fieldName)
               fieldTypes.get(fn).orElse(localVarTypes.get(fn)) match {
                 case Some((pkg, cls)) => Some(MethodRef(pkg, cls, mn))
                 case None             => resolveModuleCallee(ident, mn)
               }
-            case _: This =>
+            case _: This                    =>
               Some(MethodRef(callerPkg, callerCls, mn))
             case Select(_: This, fieldName) =>
-              fieldTypes.get(TastyUtils.simpleName(fieldName))
+              fieldTypes
+                .get(TastyUtils.simpleName(fieldName))
                 .map { case (pkg, cls) => MethodRef(pkg, cls, mn) }
-            case _ => None
+            case _                          => None
           }
 
         case _ => None
@@ -286,20 +298,22 @@ object ParamValueIndex {
           ident.referenceType match {
             case tr: TermRef =>
               tr.prefix match {
-                case _: ThisType =>
+                case _: ThisType       =>
                   Some(MethodRef(callerPkg, callerCls, TastyUtils.simpleName(tr.name)))
                 case prefixTr: TermRef =>
                   val methodName = TastyUtils.simpleName(tr.name)
                   val pkg        = TastyUtils.termRefPackage(prefixTr)
                   val cls        = prefixTr.name.toString.stripSuffix("$")
                   if (pkg.nonEmpty) Some(MethodRef(pkg, cls, methodName)) else None
-                case pr: PackageRef =>
+                case pr: PackageRef    =>
                   val cls = tr.name.toString.stripSuffix("$")
-                  val pkg = try pr.symbol.fullName.toString catch { case NonFatal(_) => "" }
+                  val pkg =
+                    try pr.symbol.fullName.toString
+                    catch { case NonFatal(_) => "" }
                   if (pkg.nonEmpty) Some(MethodRef(pkg, cls, "apply")) else None
-                case _ => None
+                case _                 => None
               }
-            case _ => None
+            case _           => None
           }
         } catch { case NonFatal(_) => None }
 
@@ -311,7 +325,7 @@ object ParamValueIndex {
               val pkg = TastyUtils.termRefPackage(tr)
               val cls = tr.name.toString.stripSuffix("$")
               if (pkg.nonEmpty) Some(MethodRef(pkg, cls, methodName)) else None
-            case _ => None
+            case _           => None
           }
         } catch { case NonFatal(_) => None }
 
