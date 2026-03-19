@@ -15,7 +15,7 @@ class FlywayMigrationScannerTest extends AnyFreeSpec {
   private val pkg = "domaindocs4s.architecture.lineage.example"
 
   private val flywayDir          = Paths.get(getClass.getClassLoader.getResource("flyway").toURI)
-  private val flywayScanner      = new FlywayMigrationScanner(flywayDir, group = Some("core-db"))
+  private val flywayScanner      = new FlywayMigrationScanner(flywayDir, database = Some("core-db"))
   private val flywayIntegrations = flywayScanner.scan()
 
   "FlywayMigrationScanner" - {
@@ -81,10 +81,10 @@ class FlywayMigrationScannerTest extends AnyFreeSpec {
     "scanDependencies returns VIEW source table relationships" in {
       val deps     = flywayScanner.scanDependencies()
       // V005 recreates the view (V002 created, V004 dropped)
-      val viewDeps = deps.filter(_.to == "user_transaction_summary")
-      viewDeps.map(_.from).toSet should contain allOf ("users", "transactions")
+      val viewDeps = deps.filter(_.to.label == "user_transaction_summary")
+      viewDeps.map(_.from.label).toSet should contain allOf ("users", "transactions")
       viewDeps.foreach { dep =>
-        dep.resourceType shouldBe ResourceType.Database
+        dep.from.resourceType shouldBe ResourceType.Database
         dep.label shouldBe "view source"
       }
     }
@@ -93,7 +93,7 @@ class FlywayMigrationScannerTest extends AnyFreeSpec {
       // V002 creates view with deps, V004 drops it → V002 deps gone
       // V005 recreates → fresh deps survive
       val deps     = flywayScanner.scanDependencies()
-      val viewDeps = deps.filter(_.to == "user_transaction_summary")
+      val viewDeps = deps.filter(_.to.label == "user_transaction_summary")
       // Only 2 deps (from V005 recreate), not 4 (V002 + V005)
       viewDeps should have size 2
     }
@@ -112,8 +112,8 @@ class FlywayMigrationScannerTest extends AnyFreeSpec {
       }
     }
 
-    "all flyway integrations have group core-db" in {
-      flywayIntegrations.foreach(_.group shouldBe Some("core-db"))
+    "all flyway integrations have database segment core-db" in {
+      flywayIntegrations.foreach(_.resourceId.segments should contain(("database", "core-db")))
     }
 
     "evidence includes filename" in {
@@ -143,7 +143,7 @@ class FlywayMigrationScannerTest extends AnyFreeSpec {
       val ungroupedFlyway = new FlywayMigrationScanner(flywayDir).scan()
       val doobieAndFlyway = doobieIntegrations ++ ungroupedFlyway
       val merged          = DiscoveredResource.merge(doobieAndFlyway)
-      val usersResource   = merged.filter(r => r.target == "users" && r.group.isEmpty)
+      val usersResource   = merged.filter(r => r.target == "users" && r.resourceId.segments.size == 1)
       usersResource should have size 1
       usersResource.head.discoveries.map(_.scanner).toSet should contain allOf ("doobie", "flyway")
     }
@@ -152,7 +152,7 @@ class FlywayMigrationScannerTest extends AnyFreeSpec {
       val scanner = LineageScanner(
         packages = List(pkg),
         scanners = List(new TastyDoobieScanner()),
-        resourceScanners = List(new FlywayMigrationScanner(flywayDir, group = Some("core-db"))),
+        resourceScanners = List(new FlywayMigrationScanner(flywayDir, database = Some("core-db"))),
       )
       val result  = scanner.scan()
 

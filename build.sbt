@@ -35,7 +35,7 @@ lazy val root = (project in file("."))
     name           := "domainDocs4s",
     publish / skip := true,
   )
-  .aggregate(core, examples)
+  .aggregate(core, examples, viewerCy, viewerCyE2E)
 
 lazy val core = (project in file("domainDocs4s-core"))
   .settings(commonSettings)
@@ -69,6 +69,46 @@ lazy val examples = (project in file("domainDocs4s-examples"))
     ),
   )
   .dependsOn(core)
+
+lazy val viewerCy = (project in file("domainDocs4s-viewer-cy"))
+  .enablePlugins(ScalaJSPlugin)
+  .settings(
+    name         := "domainDocs4s-viewer-cy",
+    scalaVersion := "3.8.2",
+    scalacOptions ++= Seq("-no-indent"),
+    tpolecatExcludeOptions += ScalacOptions.fatalWarnings,
+    organization := "org.business4s",
+    publish / skip := true,
+    scalaJSLinkerConfig ~= {
+      _.withModuleKind(ModuleKind.ESModule)
+        .withModuleSplitStyle(
+          org.scalajs.linker.interface.ModuleSplitStyle.SmallModulesFor(List("domaindocs4s.viewercy")),
+        )
+    },
+    libraryDependencies ++= Seq(
+      "org.scala-js" %%% "scalajs-dom" % "2.8.0",
+      "com.raquo"    %%% "laminar"     % "17.2.0",
+    ),
+  )
+
+lazy val viewerCyE2E = (project in file("domainDocs4s-viewer-cy-e2e"))
+  .settings(
+    name           := "domainDocs4s-viewer-cy-e2e",
+    scalaVersion   := "3.8.2",
+    scalacOptions ++= Seq("-no-indent"),
+    tpolecatExcludeOptions += ScalacOptions.fatalWarnings,
+    organization   := "org.business4s",
+    publish / skip := true,
+    Test / fork    := true,
+    Test / javaOptions ++= Seq(
+      s"-Dviewer.dir=${(viewerCy / baseDirectory).value.getAbsolutePath}",
+    ),
+    libraryDependencies ++= Seq(
+      "org.scalatest"           %% "scalatest"        % "3.2.19" % Test,
+      "org.seleniumhq.selenium"  % "selenium-java"    % "4.27.0" % Test,
+      "io.github.bonigarcia"     % "webdrivermanager" % "5.9.2"  % Test,
+    ),
+  )
 
 lazy val stableVersion = taskKey[String]("stableVersion")
 stableVersion := {

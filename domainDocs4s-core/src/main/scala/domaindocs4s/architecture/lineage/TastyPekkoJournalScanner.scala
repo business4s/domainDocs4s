@@ -26,7 +26,7 @@ import tastyquery.Contexts.Context
 // ============================================================================
 
 class TastyPekkoJournalScanner(
-    group: Option[String] = None,
+    resource: ResourceId = ResourceId.DbTable("journal"),
 )(using ctx: Context)
     extends IntegrationScanner {
 
@@ -95,10 +95,8 @@ class TastyPekkoJournalScanner(
     DiscoveredIntegration(
       method = method,
       accessType = accessType,
-      resourceType = ResourceType.Database,
+      resourceId = resource,
       scanner = "pekko-journal",
-      target = "journal",
       evidence = evidence,
-      group = group,
     )
 }

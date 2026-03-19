@@ -35,6 +35,9 @@ import tastyquery.Types.*
 
 class TastySlickScanner(
     tableBaseTypeName: String = "Table",
+    database: Option[String] = None,
+    schema: Option[String] = None,
+    cluster: Option[String] = None,
 )(using ctx: Context)
     extends IntegrationScanner {
 
@@ -538,15 +541,16 @@ class TastySlickScanner(
       classDef <- cs.tree.toList
     } f(classDef)
 
-  private def mkIntegration(method: MethodRef, access: DataAccessType, table: String, evidence: String): DiscoveredIntegration =
+  private def mkIntegration(method: MethodRef, access: DataAccessType, table: String, evidence: String): DiscoveredIntegration = {
+    val resourceId = ResourceId.DbTable(table = table, database = database, schema = schema, cluster = cluster)
     DiscoveredIntegration(
       method = method,
       accessType = access,
-      resourceType = ResourceType.Database,
+      resourceId = resourceId,
       scanner = "slick",
-      target = table,
       evidence = evidence,
     )
+  }
 }
 
 object TastySlickScanner {

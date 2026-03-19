@@ -57,8 +57,8 @@ class TastyFs2KafkaScannerTest extends AnyFreeSpec {
       }
     }
 
-    "all fs2-kafka integrations have group Kafka" in {
-      integrations.foreach(_.group shouldBe Some("Kafka"))
+    "all fs2-kafka integrations have only one segment (no cluster configured)" in {
+      integrations.foreach(_.resourceId.segments should have size 1)
     }
 
     "LineageAdjustments .kafka(topic) overrides auto-detected targets" in {
@@ -70,7 +70,7 @@ class TastyFs2KafkaScannerTest extends AnyFreeSpec {
         .kafka("user.events")
         .build
 
-      val (_, result)      = adj.apply(Nil, integrations)
+      val (_, result, _)   = adj.apply(Nil, integrations)
       val publisherResults = result.filter(_.method.className == "Fs2KafkaEventPublisher")
       publisherResults should have size 1
       publisherResults.head.target shouldBe "user.events"

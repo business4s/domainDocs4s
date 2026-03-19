@@ -202,6 +202,119 @@ object ResourceType {
   given Ordering[ResourceType] = Ordering.String
 }
 
+// ── Resource identity ────────────────────────────────────────────────────────
+//
+// Type-safe hierarchical identifiers for external resources.
+//
+// Each known resource type (DB, S3, Kafka, gRPC) has a dedicated case class
+// with typed fields for its natural hierarchy (e.g., cluster/database/schema/table).
+// Custom resource types use Generic with freeform (level, value) segments.
+//
+// Hierarchy goes outermost → innermost. Outermost segments are often shared
+// across a service (same cluster, same region) and can be omitted — they serve
+// as grouping/disambiguation only when needed.
+//
+// ResourceId is purely about identity. Display concerns (folding, containers,
+// subgraph nesting) are handled by ResourceDisplay + ResourceTypeDisplay config.
+// ─────────────────────────────────────────────────────────────────────────────
+
+sealed trait ResourceId {
+  def resourceType: ResourceType
+  def segments: List[(String, String)]
+
+  /** Innermost segment value — the resource's leaf name. */
+  def label: String = segments.lastOption.map(_._2).getOrElse("")
+
+  /** Full dedup key — all segments plus resource type. */
+  def key: String = s"${resourceType.value}:${segments.map((l, v) => s"$l=$v").mkString("/")}"
+
+  /** Whether this resource was auto-detected but the target is unknown (needs override). */
+  def isUnresolved: Boolean = label.startsWith("<unresolved:")
+
+  override def toString: String = key
+}
+
+object ResourceId {
+
+  // ── Database ──────────────────────────────────────────────────────────
+
+  case class DbTable(
+      table: String,
+      schema: Option[String] = None,
+      database: Option[String] = None,
+      cluster: Option[String] = None,
+  ) extends ResourceId {
+    def resourceType: ResourceType = ResourceType.Database
+    def segments: List[(String, String)] = List(
+      cluster.map("cluster" -> _),
+      database.map("database" -> _),
+      schema.map("schema" -> _),
+      Some("table" -> table),
+    ).flatten
+  }
+
+  // ── S3 ────────────────────────────────────────────────────────────────
+
+  case class S3Object(
+      path: String,
+      bucket: Option[String] = None,
+      region: Option[String] = None,
+  ) extends ResourceId {
+    def resourceType: ResourceType = ResourceType.S3
+    def segments: List[(String, String)] = List(
+      region.map("region" -> _),
+      bucket.map("bucket" -> _),
+      Some("path" -> path),
+    ).flatten
+
+  }
+
+  // ── Kafka ─────────────────────────────────────────────────────────────
+
+  case class KafkaTopic(
+      topic: String,
+      cluster: Option[String] = None,
+  ) extends ResourceId {
+    def resourceType: ResourceType = ResourceType.Kafka
+    def segments: List[(String, String)] = List(
+      cluster.map("cluster" -> _),
+      Some("topic" -> topic),
+    ).flatten
+
+  }
+
+  // ── gRPC ──────────────────────────────────────────────────────────────
+
+  case class GrpcEndpoint(
+      service: String,
+      method: String,
+      host: Option[String] = None,
+  ) extends ResourceId {
+    def resourceType: ResourceType = ResourceType.Grpc
+    def segments: List[(String, String)] = List(
+      host.map("host" -> _),
+      Some("service" -> service),
+      Some("method" -> method),
+    ).flatten
+
+  }
+
+  // ── Generic (for custom / extensible resource types) ──────────────────
+
+  case class Generic(
+      resourceType: ResourceType,
+      segments: List[(String, String)],
+  ) extends ResourceId
+
+  // ── Unresolved placeholder ────────────────────────────────────────────
+
+  /** Create an unresolved resource id. Scanners use this when they detect an integration but can't determine the actual target. The className and
+    * methodName identify where the usage was found, so adjustments can match by class/method to provide the real resource.
+    */
+  def unresolved(resourceType: ResourceType, className: String, methodName: String): ResourceId =
+    Generic(resourceType, List("target" -> s"<unresolved:$className.$methodName>"))
+}
+
 /** How a method accesses external resources. */
 enum DataAccessType {
   case Read
@@ -286,9 +399,8 @@ trait ResourceScanner {
 
 /** A dependency between two resources (e.g., a VIEW depends on its source tables). */
 case class ResourceDependency(
-    from: String,      // source resource (e.g., table name)
-    to: String,        // derived resource (e.g., view name)
-    resourceType: ResourceType,
+    from: ResourceId,
+    to: ResourceId,
     label: String = "", // e.g., "view source"
 )
 
@@ -299,12 +411,13 @@ case class ResourceDependency(
 case class DiscoveredIntegration(
     method: MethodRef,
     accessType: DataAccessType,
-    resourceType: ResourceType,  // ResourceType.Database, .Kafka, .Grpc, .Journal, .S3, or custom
-    scanner: String,             // "doobie", "slick", "flyway", "grpc", "pekko-journal", "manual"
-    target: String,              // what was accessed: table name, topic, endpoint, ...
-    evidence: String,            // source evidence: SQL query, config key, ...
-    group: Option[String] = None, // logical group: service name, database, ...
-)
+    resourceId: ResourceId,
+    scanner: String, // "doobie", "slick", "flyway", "grpc", "pekko-journal", "manual"
+    evidence: String, // source evidence: SQL query, config key, ...
+) {
+  def resourceType: ResourceType = resourceId.resourceType
+  def target: String             = resourceId.label
+}
 
 /** Metadata about one way a resource was found/accessed. */
 case class Discovery(
@@ -314,56 +427,49 @@ case class Discovery(
     evidence: String,
 )
 
-/** Merged physical resource — one per unique (target, resourceType, group). */
+/** Merged physical resource — one per unique ResourceId key. */
 case class DiscoveredResource(
-    target: String,
-    resourceType: ResourceType,
-    group: Option[String] = None,
+    resourceId: ResourceId,
     discoveries: List[Discovery] = Nil,
-)
+) {
+  def target: String             = resourceId.label
+  def resourceType: ResourceType = resourceId.resourceType
+}
 
 object DiscoveredResource {
 
   /** Merge flat integrations into deduplicated resources.
     *
-    * Groups by (target, resourceType) — if the same resource is found by multiple scanners with different groups, the first non-None group wins.
+    * First groups by exact ResourceId.key. Then merges resources of the same type and label where one is a less-specific version of another (fewer
+    * segments). For example, `database:table=X` and `database:database=InternalDB/table=X` merge into the more specific one, combining all
+    * discoveries. This handles the common case where code scanners (Doobie/Slick) detect table names without knowing which database they belong to,
+    * while resource scanners (Flyway) know the full identity.
     */
-  def merge(integrations: List[DiscoveredIntegration]): List[DiscoveredResource] =
-    integrations
-      .groupBy(i => (i.target, i.resourceType))
-      .map { case ((target, resourceType), dis) =>
-        val group = dis.flatMap(_.group).headOption
+  def merge(integrations: List[DiscoveredIntegration]): List[DiscoveredResource] = {
+    // Phase 1: group by exact key
+    val byKey = integrations
+      .groupBy(_.resourceId.key)
+      .map { case (_, dis) =>
         DiscoveredResource(
-          target = target,
-          resourceType = resourceType,
-          group = group,
+          resourceId = dis.head.resourceId,
           discoveries = dis.map(i => Discovery(i.method, i.accessType, i.scanner, i.evidence)),
         )
       }
       .toList
-      .sortBy(r => (r.resourceType, r.target))
-}
 
-case class IntegrationGroupConfig(
-    classToGroup: Map[String, String] = Map.empty,
-) {
-  def enrich(integrations: List[DiscoveredIntegration]): List[DiscoveredIntegration] =
-    integrations.map { di =>
-      if (di.group.isDefined) di
-      else classToGroup.get(di.method.className).fold(di)(g => di.copy(group = Some(g)))
-    }
-}
-
-object IntegrationGroupConfig {
-  class Builder {
-    private val entries                                        = scala.collection.mutable.Map.empty[String, String]
-    def group[T: reflect.ClassTag](groupName: String): Builder = {
-      entries += (splitClassTag(reflect.classTag[T])._2 -> groupName)
-      this
-    }
-    def build: IntegrationGroupConfig                          = IntegrationGroupConfig(entries.toMap)
+    // Phase 2: merge less-specific resources into more-specific ones with same type+label
+    val byTypeAndLabel = byKey.groupBy(r => (r.resourceType, r.target))
+    byTypeAndLabel.values.flatMap { group =>
+      if (group.size <= 1) group
+      else {
+        // Pick the most specific ResourceId (most segments), merge all discoveries into it
+        val sorted       = group.sortBy(-_.resourceId.segments.size)
+        val mostSpecific = sorted.head
+        val allDiscoveries = group.flatMap(_.discoveries)
+        List(mostSpecific.copy(discoveries = allDiscoveries))
+      }
+    }.toList.sortBy(r => (r.resourceType, r.target))
   }
-  def builder: Builder = new Builder
 }
 
 /** How to group class nodes in class-level diagrams. */
@@ -374,28 +480,123 @@ object ClassGrouping {
   case class Custom(groupOf: ScannedClass => Option[String]) extends ClassGrouping
 }
 
-/** Configuration for class-level Mermaid rendering.
+// ── Resource display configuration ───────────────────────────────────────────
+//
+// Separates display/rendering concerns from ResourceId (which is pure identity).
+// Each resource type can have a virtual container label and a default fold level.
+// Renderers use ResourceDisplay helpers to compute hierarchy from segments + config.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Per-resource-type display configuration.
+  *
+  * @param containerLabel
+  *   Virtual top-level container label (e.g., "S3", "gRPC"). When set, a container subgraph is prepended to the segment hierarchy even if no matching
+  *   outermost segment exists in the ResourceId.
+  * @param foldAtLevel
+  *   Segment level name at which to fold in class-level diagrams. Resources sharing the same value at this level are collapsed into one node. Segments
+  *   below the fold level become hidden detail.
+  */
+case class ResourceTypeDisplay(
+    containerLabel: Option[String] = None,
+    foldAtLevel: Option[String] = None,
+)
+
+/** Computes display information from ResourceId + ResourceTypeDisplay config.
+  *
+  * Pure utility — no mutable state, no side effects. Used by all renderers (Mermaid, JSON, Cytoscape viewer) to derive consistent hierarchy,
+  * folding, and node IDs from the same identity + config.
+  */
+object ResourceDisplay {
+
+  val defaults: Map[ResourceType, ResourceTypeDisplay] = Map(
+    ResourceType.S3   -> ResourceTypeDisplay(containerLabel = Some("S3"), foldAtLevel = Some("bucket")),
+    ResourceType.Grpc -> ResourceTypeDisplay(containerLabel = Some("gRPC"), foldAtLevel = Some("service")),
+    ResourceType.Kafka -> ResourceTypeDisplay(containerLabel = Some("Kafka")),
+  )
+
+  /** Effective segments with virtual container prepended if configured. */
+  def effectiveSegments(rid: ResourceId, config: Map[ResourceType, ResourceTypeDisplay]): List[(String, String)] = {
+    val tc = config.getOrElse(rid.resourceType, ResourceTypeDisplay())
+    tc.containerLabel match {
+      case Some(label) => ("container" -> label) :: rid.segments
+      case None        => rid.segments
+    }
+  }
+
+  /** Index of the fold level within effective segments, or None if no fold configured or level not found. */
+  def foldIndex(rid: ResourceId, config: Map[ResourceType, ResourceTypeDisplay]): Option[Int] = {
+    val tc = config.getOrElse(rid.resourceType, ResourceTypeDisplay())
+    tc.foldAtLevel.flatMap { level =>
+      val segs = effectiveSegments(rid, config)
+      val idx  = segs.indexWhere(_._1 == level)
+      if (idx >= 0) Some(idx) else None
+    }
+  }
+
+  /** Key for the folded node. If folding is active, includes segments up to and including the fold level. Otherwise returns the full resource key. */
+  def foldedNodeKey(rid: ResourceId, config: Map[ResourceType, ResourceTypeDisplay]): String =
+    foldIndex(rid, config) match {
+      case Some(idx) =>
+        val segs = effectiveSegments(rid, config).take(idx + 1)
+        s"${rid.resourceType.value}:${segs.map((l, v) => s"$l=$v").mkString("/")}"
+      case None      => rid.key
+    }
+
+  /** Label for the folded node. If folding is active, returns the value at the fold level. Otherwise returns the leaf label. */
+  def foldedNodeLabel(rid: ResourceId, config: Map[ResourceType, ResourceTypeDisplay]): String =
+    foldIndex(rid, config) match {
+      case Some(idx) => effectiveSegments(rid, config)(idx)._2
+      case None      => rid.label
+    }
+
+  /** Resolve a segment value to its display label, falling back to the value itself. */
+  def displayLabel(value: String, segmentLabels: Map[String, String]): String =
+    segmentLabels.getOrElse(value, value)
+
+  /** Segments above the visible node (fold level or leaf). These become nested subgraphs/compound nodes in renderers. */
+  def containerSegments(rid: ResourceId, config: Map[ResourceType, ResourceTypeDisplay]): List[(String, String)] = {
+    val segs = effectiveSegments(rid, config)
+    foldIndex(rid, config) match {
+      case Some(idx) => segs.take(idx)
+      case None      => if (segs.size > 1) segs.init else Nil
+    }
+  }
+}
+
+/** Configuration for class-level diagram rendering.
   *
   * Note: to hide classes (remove them while reconnecting callers → callees), use `LineageAdjustments.builder.cls[T].remove` instead — this operates
   * at the data level so it works for all diagram types.
   */
 case class ClassLevelConfig(
-    foldByGroup: Set[ResourceType] = Set(ResourceType.Grpc),
+    resourceDisplay: Map[ResourceType, ResourceTypeDisplay] = ResourceDisplay.defaults,
     classGrouping: ClassGrouping = ClassGrouping.NoGrouping,
 )
 
 object ClassLevelConfig {
   class Builder {
-    private var _foldByGroup: Set[ResourceType] = Set(ResourceType.Grpc)
-    private var _classGrouping: ClassGrouping   = ClassGrouping.NoGrouping
+    private var _resourceDisplay: Map[ResourceType, ResourceTypeDisplay] = ResourceDisplay.defaults
+    private var _classGrouping: ClassGrouping                            = ClassGrouping.NoGrouping
 
-    def foldByGroup(types: Set[ResourceType]): Builder              = { _foldByGroup = types; this }
-    def groupByPackage(scanBase: String): Builder                   = { _classGrouping = ClassGrouping.ByPackage(scanBase); this }
-    def groupClassesBy(fn: ScannedClass => Option[String]): Builder = { _classGrouping = ClassGrouping.Custom(fn); this }
-    def build: ClassLevelConfig                                     = ClassLevelConfig(_foldByGroup, _classGrouping)
+    def resourceDisplay(config: Map[ResourceType, ResourceTypeDisplay]): Builder = { _resourceDisplay = config; this }
+    def groupByPackage(scanBase: String): Builder                                = { _classGrouping = ClassGrouping.ByPackage(scanBase); this }
+    def groupClassesBy(fn: ScannedClass => Option[String]): Builder              = { _classGrouping = ClassGrouping.Custom(fn); this }
+    def build: ClassLevelConfig                                                  = ClassLevelConfig(_resourceDisplay, _classGrouping)
   }
   def builder: Builder = new Builder
 }
+
+// ── Views ────────────────────────────────────────────────────────────────────
+
+/** A named view definition that controls which classes are hidden in the viewer.
+  *
+  * Views can be defined in code (via `.show` adjustments) or in the UI. The same model is used everywhere — code-defined views appear as pre-defined
+  * options alongside user-created views.
+  */
+case class ViewDefinition(
+    name: String,
+    hiddenClasses: Set[(String, String)], // (packageName, className) pairs
+)
 
 // ── Phase 2: Lineage builder output ──────────────────────────────────────────
 
@@ -439,6 +640,8 @@ case class ScanResult(
     classGroups: Map[(String, String), String] = Map.empty,
     resourceOnlyIntegrations: List[DiscoveredIntegration] = Nil,
     resourceDependencies: List[ResourceDependency] = Nil,
+    views: List[ViewDefinition] = Nil,
+    segmentLabels: Map[String, String] = Map.empty,
 ) {
   lazy val allMethods: List[ScannedMethod]     = classes.flatMap(_.methods)
   lazy val resources: List[DiscoveredResource] = DiscoveredResource.merge(integrations ++ resourceOnlyIntegrations)

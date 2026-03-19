@@ -56,9 +56,7 @@ object LineageAdjustment {
   case class AddIntegration(
       method: MethodRef,
       accessType: DataAccessType,
-      resourceType: ResourceType,
-      target: String,
-      group: Option[String],
+      resourceId: ResourceId,
   ) extends LineageAdjustment
 
   /** Add an integration at class level — resolves to matching methods at apply time.
@@ -74,13 +72,11 @@ object LineageAdjustment {
       packageName: String,
       className: String,
       accessType: DataAccessType,
-      resourceType: ResourceType,
-      target: String,
-      group: Option[String],
+      resourceId: ResourceId,
       expectDetected: Boolean = true,
   ) extends LineageAdjustment
 
-  /** Remove a specific integration by (class [+ method], resourceType, target). */
+  /** Remove a specific integration by (class [+ method], resourceType, target label). */
   case class RemoveIntegration(
       packageName: String,
       className: String,
@@ -95,6 +91,17 @@ object LineageAdjustment {
       className: String,
       methodName: Option[String],
       resourceType: ResourceType,
+  ) extends LineageAdjustment
+
+  /** Override the ResourceId of all integrations matching (class [+ method], resourceType). Replaces unresolved auto-detected resources with a
+    * concrete one.
+    */
+  case class OverrideResource(
+      packageName: String,
+      className: String,
+      methodName: Option[String],
+      resourceType: ResourceType,
+      newResourceId: ResourceId,
   ) extends LineageAdjustment
 
   // ── Call graph edges (method → method) ──────────────────────────────────
@@ -132,20 +139,22 @@ object LineageAdjustment {
 
   // ── External resource modifications ─────────────────────────────────────
 
-  /** Rename a resource target across all integrations. */
+  /** Rename a resource's label (innermost segment) across all integrations. For structured changes use ReplaceResourceId.
+    * Matches by resourceType and the current label (innermost segment value).
+    */
   case class RenameResource(resourceType: ResourceType, oldTarget: String, newTarget: String) extends LineageAdjustment
 
-  /** Remove all integrations pointing to a specific resource. */
+  /** Replace the entire ResourceId of integrations matching (resourceType, old label). */
+  case class ReplaceResourceId(resourceType: ResourceType, oldTarget: String, newResourceId: ResourceId) extends LineageAdjustment
+
+  /** Remove all integrations pointing to a specific resource (by label). */
   case class RemoveResource(resourceType: ResourceType, target: String) extends LineageAdjustment
 
-  /** Change the group of a resource across all integrations. */
-  case class SetResourceGroup(resourceType: ResourceType, target: String, group: String) extends LineageAdjustment
-
-  /** Rename all resources whose target matches a regex pattern. Effectively merges multiple resources (e.g. partition tables) into a single node.
+  /** Rename all resources whose label matches a regex pattern. Effectively merges multiple resources (e.g. partition tables) into a single node.
     */
   case class RenameResourceByPattern(resourceType: ResourceType, pattern: scala.util.matching.Regex, newTarget: String) extends LineageAdjustment
 
-  /** Remove all integrations whose resource target matches a regex pattern. */
+  /** Remove all integrations whose resource label matches a regex pattern. */
   case class RemoveResourceByPattern(resourceType: ResourceType, pattern: scala.util.matching.Regex) extends LineageAdjustment
 
   // ── Package-level modifications ─────────────────────────────────────
@@ -182,9 +191,22 @@ case class LineageAdjustments(adjustments: List[LineageAdjustment] = Nil) {
   private def matchesPackagePrefix(pkg: String, prefix: String): Boolean =
     pkg == prefix || pkg.startsWith(prefix + ".")
 
+  /** Replace the innermost segment (label) of a ResourceId, preserving the outer segments. */
+  private def renameLabel(rid: ResourceId, newLabel: String): ResourceId = rid match {
+    case r: ResourceId.DbTable      => r.copy(table = newLabel)
+    case r: ResourceId.S3Object     => r.copy(path = newLabel)
+    case r: ResourceId.KafkaTopic   => r.copy(topic = newLabel)
+    case r: ResourceId.GrpcEndpoint => r.copy(method = newLabel)
+    case r: ResourceId.Generic      => r.copy(segments = r.segments.init :+ (r.segments.last._1 -> newLabel))
+  }
+
   /** Display name overrides for classes: (packageName, className) → displayName. */
   lazy val classRenames: Map[(String, String), String] =
     adjustments.collect { case LineageAdjustment.RenameClass(pkg, cls, name) => (pkg, cls) -> name }.toMap
+
+  /** Classes explicitly shown via ShowClass adjustments. */
+  private lazy val shownClasses: Set[(String, String)] =
+    adjustments.collect { case LineageAdjustment.ShowClass(pkg, cls) => (pkg, cls) }.toSet
 
   /** Resolve class groups from SetClassGroup and SetPackageGroup adjustments. Requires the resolved call graph to expand package-level groups.
     * SetClassGroup takes precedence over SetPackageGroup.
@@ -206,6 +228,20 @@ case class LineageAdjustments(adjustments: List[LineageAdjustment] = Nil) {
     fromPackages ++ classGroupOverrides // class-level overrides win
   }
 
+  /** Extract view definitions from ShowClass adjustments.
+    *
+    * When any ShowClass adjustments exist, produces a "Code-defined" view where all non-shown classes are hidden. Takes the raw call graph (before
+    * apply() filters it) to compute the full class set.
+    */
+  def extractViews(rawCallGraph: List[ExtractedMethod]): List[ViewDefinition] = {
+    if (shownClasses.isEmpty) Nil
+    else {
+      val allClasses = rawCallGraph.map(m => (m.packageName, m.className)).distinct
+      val hiddenClasses = allClasses.filterNot(shownClasses.contains).toSet
+      List(ViewDefinition("Code-defined", hiddenClasses))
+    }
+  }
+
   /** Apply all adjustments to the raw scanner output.
     *
     * @param callGraph
@@ -213,12 +249,13 @@ case class LineageAdjustments(adjustments: List[LineageAdjustment] = Nil) {
     * @param integrations
     *   discovered integrations (from all scanners)
     * @return
-    *   adjusted (callGraph, integrations) ready for LineageBuilder
+    *   (methods, integrations, orphanedIntegrations) where orphanedIntegrations are integrations
+    *   from hidden classes that had no non-hidden callers — they should become resource-only.
     */
   def apply(
       callGraph: List[ExtractedMethod],
       integrations: List[DiscoveredIntegration],
-  ): (List[ExtractedMethod], List[DiscoveredIntegration]) = {
+  ): (List[ExtractedMethod], List[DiscoveredIntegration], List[DiscoveredIntegration]) = {
     import LineageAdjustment.*
 
     val originalIntegrations = integrations
@@ -312,19 +349,18 @@ case class LineageAdjustments(adjustments: List[LineageAdjustment] = Nil) {
 
     for (adj <- adjustments) adj match {
 
-      case AddIntegration(method, accessType, resourceType, target, group) =>
+      case AddIntegration(method, accessType, resourceId) =>
         integ = integ :+ DiscoveredIntegration(
           method = method,
           accessType = accessType,
-          resourceType = resourceType,
+          resourceId = resourceId,
           scanner = "manual",
-          target = target,
           evidence = "manual adjustment",
-          group = group,
         )
         syntheticMethods += method
 
-      case AddClassIntegration(pkg, cls, accessType, resourceType, target, group, expectDetected) =>
+      case AddClassIntegration(pkg, cls, accessType, resourceId, expectDetected) =>
+        val resourceType = resourceId.resourceType
         // When expectDetected, validate that auto-detection found this resourceType on the class or its callees
         if (expectDetected) {
           // Direct: integration on a method of this class
@@ -372,11 +408,9 @@ case class LineageAdjustments(adjustments: List[LineageAdjustment] = Nil) {
           integ = integ :+ DiscoveredIntegration(
             method = m,
             accessType = accessType,
-            resourceType = resourceType,
+            resourceId = resourceId,
             scanner = "manual",
-            target = target,
             evidence = "manual adjustment (class-level)",
-            group = group,
           )
 
       case RemoveIntegration(pkg, cls, methodName, resourceType, target) =>
@@ -484,22 +518,35 @@ case class LineageAdjustments(adjustments: List[LineageAdjustment] = Nil) {
 
       case RenameResource(resourceType, oldTarget, newTarget) =>
         integ = integ.map { di =>
-          if (di.resourceType == resourceType && di.target == oldTarget) di.copy(target = newTarget)
+          if (di.resourceType == resourceType && di.target == oldTarget)
+            di.copy(resourceId = renameLabel(di.resourceId, newTarget))
+          else di
+        }
+
+      case ReplaceResourceId(resourceType, oldTarget, newResourceId) =>
+        integ = integ.map { di =>
+          if (di.resourceType == resourceType && di.target == oldTarget) di.copy(resourceId = newResourceId)
           else di
         }
 
       case RemoveResource(resourceType, target) =>
         integ = integ.filterNot(di => di.resourceType == resourceType && di.target == target)
 
-      case SetResourceGroup(resourceType, target, group) =>
+      case OverrideResource(pkg, cls, methodName, resourceType, newResourceId) =>
         integ = integ.map { di =>
-          if (di.resourceType == resourceType && di.target == target) di.copy(group = Some(group))
+          if (
+            di.method.packageName == pkg &&
+            di.method.className == cls &&
+            methodName.forall(_ == di.method.methodName) &&
+            di.resourceType == resourceType
+          ) di.copy(resourceId = newResourceId)
           else di
         }
 
       case RenameResourceByPattern(resourceType, pattern, newTarget) =>
         integ = integ.map { di =>
-          if (di.resourceType == resourceType && pattern.matches(di.target)) di.copy(target = newTarget)
+          if (di.resourceType == resourceType && pattern.matches(di.target))
+            di.copy(resourceId = renameLabel(di.resourceId, newTarget))
           else di
         }
 
@@ -513,7 +560,7 @@ case class LineageAdjustments(adjustments: List[LineageAdjustment] = Nil) {
     }
 
     // ShowClass allowlist: if any ShowClass adjustments exist, hide all non-shown classes
-    val shownClasses = adjustments.collect { case ShowClass(pkg, cls) => (pkg, cls) }.toSet
+    var orphaned = List.empty[DiscoveredIntegration]
     if (shownClasses.nonEmpty) {
       val hiddenRefs = methods
         .filterNot(m => shownClasses.contains((m.packageName, m.className)))
@@ -521,17 +568,14 @@ case class LineageAdjustments(adjustments: List[LineageAdjustment] = Nil) {
         .toSet
       hideRefs(hiddenRefs)
 
-      // Also filter integrations on non-shown classes whose MethodRefs weren't in the
-      // call graph methods list (e.g., scanner-synthesized methods like receiveCommand).
-      // hideRefs above only removes integrations whose MethodRef was in `methods`;
-      // integrations referencing MethodRefs absent from the call graph survive and cause
-      // non-shown classes to leak into the diagram via MermaidRenderer's
-      // "integration-only classes" logic.
-      //
-      // Only apply when a call graph was provided — resource-only integrations (e.g., flyway)
-      // are processed with an empty call graph and should not be subject to ShowClass filtering.
+      // Integrations from non-shown classes that weren't promoted to shown callers
+      // become "orphaned" — they should appear as resource-only (no class connection)
+      // rather than being dropped entirely. Only apply when a call graph was provided —
+      // resource-only integrations (e.g., flyway) are processed with an empty call graph.
       if (callGraph.nonEmpty) {
-        integ = integ.filter(di => shownClasses.contains((di.method.packageName, di.method.className)))
+        val (shown, notShown) = integ.partition(di => shownClasses.contains((di.method.packageName, di.method.className)))
+        orphaned = notShown
+        integ = shown
       }
     }
 
@@ -540,7 +584,7 @@ case class LineageAdjustments(adjustments: List[LineageAdjustment] = Nil) {
       if (!methods.exists(_.ref == ref))
         methods = methods :+ ExtractedMethod(ref.className, ref.packageName, ref.methodName, Nil)
 
-    (methods, integ)
+    (methods, integ, orphaned)
   }
 }
 
@@ -673,6 +717,12 @@ object LineageAdjustments {
         this
       }
 
+      // Override the resource identity of auto-detected integrations matching the resource type
+      def overrideResource(resourceType: ResourceType, newResourceId: ResourceId): MethodActions = {
+        _adjustments += LineageAdjustment.OverrideResource(packageName, className, Some(methodName), resourceType, newResourceId)
+        this
+      }
+
       // Hide the method (reconnect callers → callees, promote integrations)
       def remove: Builder = {
         _adjustments += LineageAdjustment.HideMethod(ref)
@@ -736,6 +786,12 @@ object LineageAdjustments {
       // Remove all integrations of a type from all methods
       def removeIntegrations(resourceType: ResourceType): ClassActions = {
         _adjustments += LineageAdjustment.RemoveIntegrationsByType(packageName, className, None, resourceType)
+        this
+      }
+
+      // Override the resource identity of auto-detected integrations matching the resource type
+      def overrideResource(resourceType: ResourceType, newResourceId: ResourceId): ClassActions = {
+        _adjustments += LineageAdjustment.OverrideResource(packageName, className, None, resourceType, newResourceId)
         this
       }
 
@@ -846,25 +902,22 @@ object LineageAdjustments {
 
     // ── Integration builders (method-level and class-level) ─────────────
 
-    private def grpcGroup(endpoint: String, group: Option[String]): Option[String] =
-      group.orElse {
-        val slash = endpoint.indexOf('/')
-        if (slash > 0) Some(endpoint.substring(0, slash)) else None
-      }
-
     class IntegrationBuilder(method: MethodRef, accessType: DataAccessType) {
-      private def emit(resourceType: ResourceType, target: String, group: Option[String]): IntegrationBuilder = {
-        _adjustments += LineageAdjustment.AddIntegration(method, accessType, resourceType, target, group)
+      private def emit(resourceId: ResourceId): IntegrationBuilder = {
+        _adjustments += LineageAdjustment.AddIntegration(method, accessType, resourceId)
         this
       }
 
-      def kafka(topic: String): IntegrationBuilder                                                             = emit(ResourceType.Kafka, topic, Some("Kafka"))
-      def s3(bucket: String): IntegrationBuilder                                                               = emit(ResourceType.S3, bucket, Some("S3"))
-      def database(table: String, group: Option[String] = None): IntegrationBuilder                            = emit(ResourceType.Database, table, group)
-      def grpc(endpoint: String, group: Option[String] = None): IntegrationBuilder                             = emit(ResourceType.Grpc, endpoint, grpcGroup(endpoint, group))
-      def journal(target: String = "journal", group: Option[String] = Some("Journal")): IntegrationBuilder     =
-        emit(ResourceType.Database, target, group)
-      def custom(resourceType: ResourceType, target: String, group: Option[String] = None): IntegrationBuilder = emit(resourceType, target, group)
+      def kafka(topic: String, cluster: Option[String] = None): IntegrationBuilder                     = emit(ResourceId.KafkaTopic(topic, cluster))
+      def s3(path: String, bucket: Option[String] = None, region: Option[String] = None): IntegrationBuilder =
+        emit(ResourceId.S3Object(path, bucket, region))
+      def database(table: String, database: Option[String] = None, schema: Option[String] = None, cluster: Option[String] = None): IntegrationBuilder =
+        emit(ResourceId.DbTable(table, schema = schema, database = database, cluster = cluster))
+      def grpc(service: String, method: String, host: Option[String] = None): IntegrationBuilder       = emit(ResourceId.GrpcEndpoint(service, method, host))
+      def journal(table: String = "journal", database: Option[String] = None): IntegrationBuilder      =
+        emit(ResourceId.DbTable(table, database = database))
+      def resource(resourceId: ResourceId): IntegrationBuilder                                         = emit(resourceId)
+      def custom(resourceType: ResourceType, segments: List[(String, String)]): IntegrationBuilder     = emit(ResourceId.Generic(resourceType, segments))
 
       // Transitions to other selectors
       inline def method[T](inline selector: T => Any): MethodActions             = Builder.this.method[T](selector)
@@ -880,21 +933,22 @@ object LineageAdjustments {
     class ClassIntegrationBuilder(packageName: String, className: String, accessType: DataAccessType) {
       private val startIdx = _adjustments.size
 
-      private def emit(resourceType: ResourceType, target: String, group: Option[String]): ClassIntegrationBuilder = {
-        val expect = !_undetectedTypes.contains(resourceType)
-        _adjustments += LineageAdjustment.AddClassIntegration(packageName, className, accessType, resourceType, target, group, expect)
+      private def emit(resourceId: ResourceId): ClassIntegrationBuilder = {
+        val expect = !_undetectedTypes.contains(resourceId.resourceType)
+        _adjustments += LineageAdjustment.AddClassIntegration(packageName, className, accessType, resourceId, expect)
         this
       }
 
-      def kafka(topic: String): ClassIntegrationBuilder                                                             = emit(ResourceType.Kafka, topic, Some("Kafka"))
-      def s3(bucket: String): ClassIntegrationBuilder                                                               = emit(ResourceType.S3, bucket, Some("S3"))
-      def database(table: String, group: Option[String] = None): ClassIntegrationBuilder                            = emit(ResourceType.Database, table, group)
-      def grpc(endpoint: String, group: Option[String] = None): ClassIntegrationBuilder                             =
-        emit(ResourceType.Grpc, endpoint, grpcGroup(endpoint, group))
-      def journal(target: String = "journal", group: Option[String] = Some("Journal")): ClassIntegrationBuilder     =
-        emit(ResourceType.Database, target, group)
-      def custom(resourceType: ResourceType, target: String, group: Option[String] = None): ClassIntegrationBuilder =
-        emit(resourceType, target, group)
+      def kafka(topic: String, cluster: Option[String] = None): ClassIntegrationBuilder                     = emit(ResourceId.KafkaTopic(topic, cluster))
+      def s3(path: String, bucket: Option[String] = None, region: Option[String] = None): ClassIntegrationBuilder =
+        emit(ResourceId.S3Object(path, bucket, region))
+      def database(table: String, database: Option[String] = None, schema: Option[String] = None, cluster: Option[String] = None): ClassIntegrationBuilder =
+        emit(ResourceId.DbTable(table, schema = schema, database = database, cluster = cluster))
+      def grpc(service: String, method: String, host: Option[String] = None): ClassIntegrationBuilder       = emit(ResourceId.GrpcEndpoint(service, method, host))
+      def journal(table: String = "journal", database: Option[String] = None): ClassIntegrationBuilder      =
+        emit(ResourceId.DbTable(table, database = database))
+      def resource(resourceId: ResourceId): ClassIntegrationBuilder                                         = emit(resourceId)
+      def custom(resourceType: ResourceType, segments: List[(String, String)]): ClassIntegrationBuilder     = emit(ResourceId.Generic(resourceType, segments))
 
       /** Mark entries from this builder as manual-only — no scanner detection expected. Overrides the default (which requires scanners to confirm the
         * resource type).
@@ -934,9 +988,15 @@ object LineageAdjustments {
 
     class ResourceActions(resourceType: ResourceType, target: String) {
 
-      /** Rename the resource target across all integrations. */
+      /** Rename the resource label (innermost segment) across all integrations. */
       def renameTo(newTarget: String): ResourceActions = {
         _adjustments += LineageAdjustment.RenameResource(resourceType, target, newTarget)
+        this
+      }
+
+      /** Replace the entire ResourceId for integrations matching this (type, label). */
+      def renameTo(newResourceId: ResourceId): ResourceActions = {
+        _adjustments += LineageAdjustment.ReplaceResourceId(resourceType, target, newResourceId)
         this
       }
 
@@ -944,12 +1004,6 @@ object LineageAdjustments {
       def remove: Builder = {
         _adjustments += LineageAdjustment.RemoveResource(resourceType, target)
         Builder.this
-      }
-
-      /** Change the group/cluster of this resource. */
-      def setGroup(group: String): ResourceActions = {
-        _adjustments += LineageAdjustment.SetResourceGroup(resourceType, target, group)
-        this
       }
 
       // Transitions to other selectors

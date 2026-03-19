@@ -18,10 +18,13 @@ class LineagePipelineTest extends AnyFreeSpec {
   private val doobieIntegrations = new TastyDoobieScanner().scan(List(pkg))
   private val grpcIntegrations   = new TastyFs2GrpcScanner().scan(List(pkg))
 
-  private val enrichment   = IntegrationGroupConfig.builder
-    .group[UserRepo]("user-db")
+  private val enrichment   = LineageAdjustments.builder
+    .resource(ResourceType.Database, "users")
+    .renameTo(ResourceId.DbTable("users", database = Some("user-db")))
+    .resource(ResourceType.Database, "transactions")
+    .renameTo(ResourceId.DbTable("transactions", database = Some("user-db")))
     .build
-  private val integrations = enrichment.enrich(doobieIntegrations ++ grpcIntegrations)
+  private val (_, integrations, _) = enrichment.apply(Nil, doobieIntegrations ++ grpcIntegrations)
 
   private val result = LineageBuilder.build(callGraph, integrations)
 
@@ -202,8 +205,8 @@ class LineagePipelineTest extends AnyFreeSpec {
       .writes
       .kafka("user.deposit-events")
       .build
-    val (adjCallGraph, adjIntegrations) = adj.apply(callGraph, doobieIntegrations ++ grpcIntegrations)
-    val allIntegrations                 = enrichment.enrich(adjIntegrations)
+    val (adjCallGraph, adjIntegrations, _) = adj.apply(callGraph, doobieIntegrations ++ grpcIntegrations)
+    val (_, allIntegrations, _)            = enrichment.apply(Nil, adjIntegrations)
     val resultWithManual                = LineageBuilder.build(adjCallGraph, allIntegrations)
 
     // Build a result with UserRepo hidden via LineageAdjustments
@@ -214,8 +217,8 @@ class LineagePipelineTest extends AnyFreeSpec {
       .cls[UserRepo]
       .remove
       .build
-    val (hiddenCallGraph, hiddenIntegrations) = adjWithHide.apply(callGraph, doobieIntegrations ++ grpcIntegrations)
-    val hiddenAllIntegrations                 = enrichment.enrich(hiddenIntegrations)
+    val (hiddenCallGraph, hiddenIntegrations, _) = adjWithHide.apply(callGraph, doobieIntegrations ++ grpcIntegrations)
+    val (_, hiddenAllIntegrations, _)            = enrichment.apply(Nil, hiddenIntegrations)
     val resultWithHidden                      = LineageBuilder.build(hiddenCallGraph, hiddenAllIntegrations)
 
     "contains class names as nodes, not individual methods" in {
@@ -295,8 +298,8 @@ class LineagePipelineTest extends AnyFreeSpec {
 
       // UserRepo's DB integrations should be promoted to UserService
       diagram should include(s"cls_${ph}_UserService")
-      diagram should include("ext_users")
-      diagram should include("ext_transactions")
+      diagram should include("users")
+      diagram should include("transactions")
 
       // No edges from hidden UserRepo
       diagram should not include s"cls_${ph}_UserRepo"
@@ -393,13 +396,13 @@ class LineagePipelineTest extends AnyFreeSpec {
 
       val balanceGrpcChains = balanceChains.filter(_.integration.scanner == "grpc")
       balanceGrpcChains should not be empty
-      balanceGrpcChains.head.integration.target shouldBe "UserService/getBalance"
+      balanceGrpcChains.head.integration.resourceId shouldBe ResourceId.GrpcEndpoint("UserService", "getBalance")
 
       // deposit chains: 2 doobie + 1 grpc server + 1 grpc client (may have duplicate paths through companion objects)
       val depositChains = apiChains.filter(_.path.exists(r => r.className == "UserGrpcApi" && r.methodName == "deposit"))
       depositChains should not be empty
       depositChains.filter(_.integration.scanner == "doobie").map(_.integration.target).toSet shouldBe Set("users", "transactions")
-      depositChains.filter(_.integration.scanner == "grpc").map(_.integration.target).toSet shouldBe Set("UserService/deposit", "RateService/getRate")
+      depositChains.filter(_.integration.scanner == "grpc").map(_.integration.resourceId).toSet shouldBe Set(ResourceId.GrpcEndpoint("UserService", "deposit"), ResourceId.GrpcEndpoint("RateService", "getRate"))
     }
 
     "pretty prints the full result" in {
@@ -429,17 +432,15 @@ class LineagePipelineTest extends AnyFreeSpec {
     )
 
     val syntheticIntegrations = List(
-      DiscoveredIntegration(MethodRef(pkgB, "InternalService", "process"), DataAccessType.Write, ResourceType.Kafka, "test", "events", "synthetic"),
+      DiscoveredIntegration(MethodRef(pkgB, "InternalService", "process"), DataAccessType.Write, ResourceId.KafkaTopic("events"), "test", "synthetic"),
       DiscoveredIntegration(
         MethodRef(pkgBSub, "Helper", "compute"),
         DataAccessType.Read,
-        ResourceType.S3,
+        ResourceId.S3Object("data-bucket"),
         "test",
-        "data-bucket",
         "synthetic",
-        group = Some("S3"),
       ),
-      DiscoveredIntegration(MethodRef(pkgC, "Repo", "save"), DataAccessType.Write, ResourceType.Database, "test", "items", "synthetic"),
+      DiscoveredIntegration(MethodRef(pkgC, "Repo", "save"), DataAccessType.Write, ResourceId.DbTable("items"), "test", "synthetic"),
     )
 
     "HidePackage hides all classes in the package prefix" in {
@@ -447,7 +448,7 @@ class LineagePipelineTest extends AnyFreeSpec {
         .pkg("com.example.internal")
         .remove
         .build
-      val (methods, integ) = adj.apply(syntheticCallGraph, syntheticIntegrations)
+      val (methods, integ, _) = adj.apply(syntheticCallGraph, syntheticIntegrations)
 
       // InternalService and Helper should be removed
       methods.map(m => (m.packageName, m.className)).toSet should not contain (pkgB, "InternalService")
@@ -463,7 +464,7 @@ class LineagePipelineTest extends AnyFreeSpec {
         .pkg("com.example.internal")
         .remove
         .build
-      val (_, integ) = adj.apply(syntheticCallGraph, syntheticIntegrations)
+      val (_, integ, _) = adj.apply(syntheticCallGraph, syntheticIntegrations)
 
       // Kafka and S3 integrations from hidden package should be promoted to ApiController
       val apiIntegrations = integ.filter(_.method.className == "ApiController")
@@ -480,7 +481,7 @@ class LineagePipelineTest extends AnyFreeSpec {
         .pkg("com.example.internal")
         .remove
         .build
-      val (methods, _) = adj.apply(syntheticCallGraph, syntheticIntegrations)
+      val (methods, _, _) = adj.apply(syntheticCallGraph, syntheticIntegrations)
 
       // ApiController should now directly call Repo.save (bypassing hidden InternalService + Helper)
       val apiCalls = methods.find(m => m.className == "ApiController").get.calls
@@ -522,8 +523,8 @@ class LineagePipelineTest extends AnyFreeSpec {
         .pkg("com.example.persistence")
         .setGroup("Persistence")
         .build
-      val (methods, integ) = adj.apply(syntheticCallGraph, syntheticIntegrations)
-      val scanResult       = LineageBuilder
+      val (methods, integ, _) = adj.apply(syntheticCallGraph, syntheticIntegrations)
+      val scanResult          = LineageBuilder
         .build(methods, integ)
         .copy(
           classGroups = adj.classGroups(methods),
@@ -543,7 +544,7 @@ class LineagePipelineTest extends AnyFreeSpec {
         .cls[TraitRepoEntryPoint]
         .show
         .build
-      val (adjMethods, adjInteg) = adj.apply(callGraph, doobieIntegrations)
+      val (adjMethods, adjInteg, _) = adj.apply(callGraph, doobieIntegrations)
       val adjResult              = LineageBuilder.build(adjMethods, adjInteg)
       val diagram                = MermaidRenderer.renderClassLevel(adjResult)
 

@@ -6,7 +6,7 @@ import net.sf.jsqlparser.statement.alter.{Alter, AlterOperation, RenameTableStat
 import net.sf.jsqlparser.statement.create.table.CreateTable
 import net.sf.jsqlparser.statement.create.view.CreateView
 import net.sf.jsqlparser.statement.drop.Drop
-import net.sf.jsqlparser.statement.select.{FromItem, PlainSelect, Select, SetOperationList}
+import net.sf.jsqlparser.statement.select.{FromItem, ParenthesedSelect, PlainSelect, Select, SetOperationList}
 
 import java.nio.file.{Files, Path}
 import scala.jdk.CollectionConverters.*
@@ -38,7 +38,9 @@ import scala.util.{Try, Using}
 
 class FlywayMigrationScanner(
     migrationDir: Path,
-    group: Option[String] = None,
+    database: Option[String] = None,
+    schema: Option[String] = None,
+    cluster: Option[String] = None,
 ) extends ResourceScanner {
 
   import FlywayMigrationScanner.*
@@ -90,7 +92,7 @@ class FlywayMigrationScanner(
         val sources  = Option(cv.getSelect).toList.flatMap(extractSourceTables).distinct
         IntegrationEvent(mkIntegration(method, DataAccessType.Write, viewName, filename)) ::
           sources.map(t => IntegrationEvent(mkIntegration(method, DataAccessType.Read, t, filename))) :::
-          sources.map(t => DependencyEvent(ResourceDependency(from = t, to = viewName, resourceType = ResourceType.Database, label = "view source")))
+          sources.map(t => DependencyEvent(ResourceDependency(from = mkResourceId(t), to = mkResourceId(viewName), label = "view source")))
 
       case alt: Alter =>
         val oldName    = alt.getTable.getName
@@ -123,6 +125,9 @@ class FlywayMigrationScanner(
   ): List[MigrationEvent] =
     List(DropEvent(oldName), IntegrationEvent(mkIntegration(method, DataAccessType.Write, newName, filename)))
 
+  private def mkResourceId(table: String): ResourceId =
+    ResourceId.DbTable(table = table, database = database, schema = schema, cluster = cluster)
+
   private def mkIntegration(
       method: MethodRef,
       access: DataAccessType,
@@ -132,11 +137,9 @@ class FlywayMigrationScanner(
     DiscoveredIntegration(
       method = method,
       accessType = access,
-      resourceType = ResourceType.Database,
+      resourceId = mkResourceId(target),
       scanner = "flyway",
-      target = target,
       evidence = filename,
-      group = group,
     )
 }
 
@@ -182,7 +185,7 @@ object FlywayMigrationScanner {
       case DependencyEvent(dep) => dependencies += dep
       case DropEvent(target)    =>
         integrations.filterInPlace(_.target != target)
-        dependencies.filterInPlace(_.to != target)
+        dependencies.filterInPlace(_.to.label != target)
     }
     (integrations.toList, dependencies.toList)
   }
@@ -203,22 +206,39 @@ object FlywayMigrationScanner {
     }
   }
 
-  /** Extract table names from a SELECT's FROM and JOIN clauses. */
-  private def extractSourceTables(select: Select): List[String] = select match {
-    case ps: PlainSelect       =>
-      val from  = Option(ps.getFromItem).toList.flatMap(tableName)
-      val joins = Option(ps.getJoins)
-        .map(_.asScala.toList)
-        .getOrElse(Nil)
-        .flatMap(j => Option(j.getFromItem))
-        .flatMap(tableName)
-      from ++ joins
-    case sol: SetOperationList =>
-      Option(sol.getSelects).map(_.asScala.toList).getOrElse(Nil).flatMap {
-        case s: Select => extractSourceTables(s)
-        case _         => Nil
-      }
-    case _                     => Nil
+  /** Extract real table names from a SELECT, flattening CTEs.
+    *
+    * CTE names (WITH x AS (...)) are not real tables — they're intermediate aliases. This method collects CTE names, recursively extracts real tables
+    * from CTE bodies, and filters CTE names out of the final result.
+    */
+  private def extractSourceTables(select: Select): List[String] = {
+    // Collect CTE names and recursively extract their source tables
+    val withItems  = Option(select.getWithItemsList).map(_.asScala.toList).getOrElse(Nil)
+    val cteNames   = withItems.flatMap(wi => Option(wi.getAlias).map(_.getName)).toSet
+    val cteSources = withItems.flatMap(wi => Option(wi.getSelect).toList.flatMap(extractSourceTables))
+
+    // Extract tables from the main query body
+    val mainSources = select match {
+      case ps: PlainSelect       =>
+        val from  = Option(ps.getFromItem).toList.flatMap(tableName)
+        val joins = Option(ps.getJoins)
+          .map(_.asScala.toList)
+          .getOrElse(Nil)
+          .flatMap(j => Option(j.getFromItem))
+          .flatMap(tableName)
+        from ++ joins
+      case sol: SetOperationList =>
+        Option(sol.getSelects).map(_.asScala.toList).getOrElse(Nil).flatMap {
+          case s: Select => extractSourceTables(s)
+          case _         => Nil
+        }
+      case ps: ParenthesedSelect =>
+        Option(ps.getSelect).toList.flatMap(extractSourceTables)
+      case _                     => Nil
+    }
+
+    // Return all sources minus CTE names
+    (cteSources ++ mainSources).filterNot(cteNames.contains)
   }
 
   private def tableName(fi: FromItem): Option[String] = fi match {
@@ -237,6 +257,6 @@ object FlywayMigrationScanner {
   private def stripUnsupportedClauses(sql: String): String =
     PartitionByPattern.replaceAllIn(sql, "")
 
-  def apply(dir: String, group: Option[String] = None): FlywayMigrationScanner =
-    new FlywayMigrationScanner(Path.of(dir), group)
+  def apply(dir: String, database: Option[String] = None, schema: Option[String] = None, cluster: Option[String] = None): FlywayMigrationScanner =
+    new FlywayMigrationScanner(Path.of(dir), database = database, schema = schema, cluster = cluster)
 }

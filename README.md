@@ -8,15 +8,23 @@ annotated concepts from TASTy and transforming them into structured, business-fr
 
 See the [**Website**](https://business4s.github.io/domainDocs4s/) for details and join our [**Discord**](https://bit.ly/business4s-discord) for discussions.
 
-- prometheus scanner
-- typesafe packages, SymbolModule.requiredPackage
-- stricter resource identification - db cluster, db, schema
-- limit to non-test code somehow?
+## Improvements / TODO
 
+### Scanners
+- STTP/HTTP client scanner (e.g. GoogleSheetClientImpl uses STTP, not detected)
+- Prometheus scanner
+- Akka ask/tell pattern detection ("unknown actor")
+- Doobie scanner: reconstruct full SQL (substitute fragments, replace inputs with `?`, use JSqlParser)
+- Transactor tracking: annotate transactor variables with db/schema info and propagate wherever they are used (could also extract db/schema from code automatically)
 
-rich ui:
-- focus on node, see all its connections
-- fold/unfold a group
-- fold unfold a class?
-- export view setings?
-- fold unfold all classes? 
+### Core
+- Typesafe packages, SymbolModule.requiredPackage
+- Limit scanning to non-test code
+
+### Viewer (Cytoscape)
+- Export view settings
+- Save current modifications as a view (metabase-question style)
+- Views defined dynamically by hand/JSON, stored in a JSON file
+- Show all classes, let user hide/show in UI (by package or multi-select)
+- Show hidden elements so they can be brought back
+- Treat in-code overrides as a default view

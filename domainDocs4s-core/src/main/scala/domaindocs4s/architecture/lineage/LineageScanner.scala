@@ -6,8 +6,8 @@ class LineageScanner(
     packages: List[String],
     scanners: List[IntegrationScanner],
     adjustments: LineageAdjustments = LineageAdjustments.empty,
-    enrichment: IntegrationGroupConfig = IntegrationGroupConfig(),
     resourceScanners: List[ResourceScanner] = Nil,
+    segmentLabels: Map[String, String] = Map.empty,
     logger: LineageLogger = LineageLogger.fromSystemProperty(),
 )(using ctx: Context) {
 
@@ -40,21 +40,42 @@ class LineageScanner(
     val resourceDeps = resourceScanners.flatMap(_.scanDependencies())
     logger.log(s"  resource dependencies: ${resourceDeps.size}")
 
-    val (callGraph, refined)  = logger.timed("Adjustments (code)") {
+    val (callGraph, refined, orphanedCode) = logger.timed("Adjustments (code)") {
       adjustments.apply(rawCallGraph, codeIntegrations)
     }
-    val (_, refinedResources) = adjustments.apply(Nil, resourceIntegrations)
-    val integrations          = enrichment.enrich(refined)
+    val (_, refinedResources, _) = adjustments.apply(Nil, resourceIntegrations)
+
+    // Upgrade less-specific ResourceIds in code integrations to more-specific ones from resource scanners.
+    // e.g., Doobie detects `database:table=X`, Flyway knows `database:database=InternalDB/table=X` → upgrade Doobie's.
+    val integrations = upgradeResourceIds(refined, refinedResources)
+
+    val views = adjustments.extractViews(rawCallGraph)
 
     val result = logger.timed("Phase 2: Lineage building") {
-      LineageBuilder
-        .build(callGraph, integrations)
-        .copy(
-          classDisplayNames = adjustments.classRenames,
-          classGroups = adjustments.classGroups(callGraph),
-          resourceOnlyIntegrations = refinedResources,
-          resourceDependencies = resourceDeps,
-        )
+      val base = LineageBuilder.build(callGraph, integrations)
+
+      // Add back classes that were hidden by ShowClass (for the viewer — views control visibility)
+      val existingClassKeys = base.classes.map(c => (c.packageName, c.name)).toSet
+      val hiddenClasses = rawCallGraph
+        .groupBy(m => (m.packageName, m.className))
+        .collect { case (key, methods) if !existingClassKeys.contains(key) =>
+          val scannedMethods = methods.map(m =>
+            ScannedMethod(m.ref, DataAccessType.Pure, DataAccessType.Pure, m.calls, Nil),
+          )
+          ScannedClass(name = key._2, packageName = key._1, methods = scannedMethods)
+        }
+        .toList
+        .sortBy(_.name)
+
+      base.copy(
+        classes = base.classes ++ hiddenClasses,
+        classDisplayNames = adjustments.classRenames,
+        classGroups = adjustments.classGroups(rawCallGraph),
+        resourceOnlyIntegrations = refinedResources ++ orphanedCode,
+        resourceDependencies = resourceDeps,
+        views = views,
+        segmentLabels = segmentLabels,
+      )
     }
 
     logger.log(
@@ -64,5 +85,41 @@ class LineageScanner(
     )
 
     result
+  }
+
+  /** Upgrade less-specific ResourceIds in code integrations when a more-specific match exists in resource integrations.
+    *
+    * When the same (resourceType, label) exists with different specificity — e.g., `database:table=X` from Doobie and
+    * `database:database=InternalDB/table=X` from Flyway — the code integration's ResourceId is upgraded to the more specific one. This ensures
+    * diagram edges point to the correct merged resource node.
+    */
+  private def upgradeResourceIds(
+      codeIntegrations: List[DiscoveredIntegration],
+      resourceIntegrations: List[DiscoveredIntegration],
+  ): List[DiscoveredIntegration] = {
+    // Build lookup: (resourceType, label) → best ResourceId.
+    // Prefer resource scanners (Flyway, etc.) over code scanners (Doobie, etc.) when segment count is equal,
+    // since resource scanners have authoritative schema information.
+    val resourceKeys = resourceIntegrations.map(i => (i.resourceType, i.target) -> i.resourceId).toMap
+    val allIntegrations = codeIntegrations ++ resourceIntegrations
+    val byTypeAndLabel  = allIntegrations.groupBy(i => (i.resourceType, i.target))
+    val upgrades: Map[(ResourceType, String), ResourceId] = byTypeAndLabel.collect {
+      case ((rtype, label), dis) if dis.map(_.resourceId.key).distinct.size > 1 =>
+        // Prefer resource scanner's ResourceId, fall back to most-specific by segment count
+        val best = resourceKeys.getOrElse(
+          (rtype, label),
+          dis.map(_.resourceId).maxBy(_.segments.size),
+        )
+        (rtype, label) -> best
+    }
+
+    if (upgrades.isEmpty) codeIntegrations
+    else
+      codeIntegrations.map { i =>
+        upgrades.get((i.resourceType, i.target)) match {
+          case Some(better) if better.key != i.resourceId.key => i.copy(resourceId = better)
+          case _                                              => i
+        }
+      }
   }
 }

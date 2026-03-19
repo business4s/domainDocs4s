@@ -33,12 +33,12 @@ class TastyPekkoKafkaScannerTest extends AnyFreeSpec {
       plainSinkWrites.head.evidence should include("Producer")
     }
 
-    "all pekko-kafka integrations have scanner pekko-kafka and group Kafka" in {
+    "all pekko-kafka integrations have scanner pekko-kafka and only one segment (no cluster configured)" in {
       val kafkaOnly = kafkaIntegrations.filter(_.scanner == "pekko-kafka")
       kafkaOnly should not be empty
       kafkaOnly.foreach { di =>
         di.resourceType shouldBe ResourceType.Kafka
-        di.group shouldBe Some("Kafka")
+        di.resourceId.segments should have size 1
       }
     }
 

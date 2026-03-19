@@ -17,7 +17,8 @@ import tastyquery.Contexts.Context
 // ============================================================================
 
 class TastyS3Scanner(
-    group: Option[String] = Some("S3"),
+    bucket: Option[String] = None,
+    region: Option[String] = None,
 )(using ctx: Context)
     extends IntegrationScanner {
 
@@ -40,14 +41,17 @@ class TastyS3Scanner(
         else None
       val ref        = u.path.toMethodRef
       accessType.map { at =>
+        val resourceId = ResourceId.S3Object(
+          path = s"<unresolved:${ref.className}.${ref.methodName}>",
+          bucket = bucket,
+          region = region,
+        )
         DiscoveredIntegration(
           method = ref,
           accessType = at,
-          resourceType = ResourceType.S3,
+          resourceId = resourceId,
           scanner = "s3",
-          target = "S3",
           evidence = s"calls ${u.receiverName}.${u.methodName}",
-          group = group,
         )
       }
     }

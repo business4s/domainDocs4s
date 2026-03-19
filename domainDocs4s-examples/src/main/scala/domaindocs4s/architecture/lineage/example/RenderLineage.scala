@@ -1,6 +1,7 @@
 package domaindocs4s.architecture.lineage.example
 
 import domaindocs4s.architecture.lineage.*
+import domaindocs4s.architecture.lineage.ResourceId
 import domaindocs4s.architecture.lineage.example.UserRepo
 import domaindocs4s.collector.TastyContext
 import tastyquery.Contexts.Context
@@ -24,7 +25,7 @@ object RenderLineage {
       scanners = List(
         new TastyDoobieScanner(),
         new TastyFs2GrpcScanner(),
-        new TastyPekkoJournalScanner(group = Some("user-db")),
+        new TastyPekkoJournalScanner(resource = ResourceId.DbTable("journal", database = Some("user-db"))),
         new TastySlickScanner(),
         new TastyPekkoKafkaScanner(),
         new TastyFs2KafkaScanner(),
@@ -35,9 +36,6 @@ object RenderLineage {
         .kafka("user.deposit-events")
         .cls[UserRepo]
         .remove
-        .build,
-      enrichment = IntegrationGroupConfig.builder
-        .group[UserRepo]("user-db")
         .build,
     ).scan()
 

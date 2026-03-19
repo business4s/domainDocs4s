@@ -20,25 +20,25 @@ class TastyFs2GrpcScannerTest extends AnyFreeSpec {
       val serverIntegrations = grpcIntegrations.filter(_.accessType == DataAccessType.Write)
       serverIntegrations should not be empty
 
-      val targets = serverIntegrations.map(_.target).toSet
-      targets should contain("UserService/getBalance")
-      targets should contain("UserService/deposit")
-      targets should contain("UserService/getHistory")
+      val keys = serverIntegrations.map(_.resourceId.key).toSet
+      keys should contain("grpc:service=UserService/method=getBalance")
+      keys should contain("grpc:service=UserService/method=deposit")
+      keys should contain("grpc:service=UserService/method=getHistory")
     }
 
     "detects client usages" in {
       val clientIntegrations = grpcIntegrations.filter(_.accessType == DataAccessType.Read)
       clientIntegrations should not be empty
 
-      val targets = clientIntegrations.map(_.target).toSet
-      targets should contain("RateService/getRate")
+      val keys = clientIntegrations.map(_.resourceId.key).toSet
+      keys should contain("grpc:service=RateService/method=getRate")
     }
 
     "server integrations are Write, client integrations are Read" in {
-      val server = grpcIntegrations.filter(_.target.startsWith("UserService/"))
+      val server = grpcIntegrations.filter(_.resourceId match { case g: ResourceId.GrpcEndpoint => g.service == "UserService"; case _ => false })
       server.foreach(_.accessType shouldBe DataAccessType.Write)
 
-      val client = grpcIntegrations.filter(_.target.startsWith("RateService/"))
+      val client = grpcIntegrations.filter(_.resourceId match { case g: ResourceId.GrpcEndpoint => g.service == "RateService"; case _ => false })
       client.foreach(_.accessType shouldBe DataAccessType.Read)
     }
 
@@ -54,17 +54,17 @@ class TastyFs2GrpcScannerTest extends AnyFreeSpec {
         di.accessType == DataAccessType.Read && di.method.methodName == "deposit"
       }
       depositClientCalls should have size 1
-      depositClientCalls.head.target shouldBe "RateService/getRate"
+      depositClientCalls.head.resourceId shouldBe ResourceId.GrpcEndpoint("RateService", "getRate")
     }
 
-    "gRPC integrations have group set to service name" in {
-      val userServiceIntegrations = grpcIntegrations.filter(_.target.startsWith("UserService/"))
+    "gRPC integrations have service segment matching service name" in {
+      val userServiceIntegrations = grpcIntegrations.filter(_.resourceId match { case g: ResourceId.GrpcEndpoint => g.service == "UserService"; case _ => false })
       userServiceIntegrations should not be empty
-      userServiceIntegrations.foreach(_.group shouldBe Some("UserService"))
+      userServiceIntegrations.foreach(_.resourceId.segments should contain(("service", "UserService")))
 
-      val rateServiceIntegrations = grpcIntegrations.filter(_.target.startsWith("RateService/"))
+      val rateServiceIntegrations = grpcIntegrations.filter(_.resourceId match { case g: ResourceId.GrpcEndpoint => g.service == "RateService"; case _ => false })
       rateServiceIntegrations should not be empty
-      rateServiceIntegrations.foreach(_.group shouldBe Some("RateService"))
+      rateServiceIntegrations.foreach(_.resourceId.segments should contain(("service", "RateService")))
     }
   }
 

@@ -22,7 +22,8 @@ class TastyS3ScannerTest extends AnyFreeSpec {
         di.method.className == "S3Exporter" && di.accessType == DataAccessType.Write
       }
       writes should have size 1
-      writes.head.target shouldBe "S3"
+      writes.head.resourceId shouldBe a[ResourceId.S3Object]
+      writes.head.target should startWith("<unresolved:")
       writes.head.evidence should include("putObject")
     }
 
@@ -31,7 +32,8 @@ class TastyS3ScannerTest extends AnyFreeSpec {
         di.method.className == "S3Reader" && di.accessType == DataAccessType.Read
       }
       reads should have size 1
-      reads.head.target shouldBe "S3"
+      reads.head.resourceId shouldBe a[ResourceId.S3Object]
+      reads.head.target should startWith("<unresolved:")
       reads.head.evidence should include("getObject")
     }
 
@@ -40,7 +42,8 @@ class TastyS3ScannerTest extends AnyFreeSpec {
         di.method.className == "S3ConditionalExporter" && di.accessType == DataAccessType.Write
       }
       writes should have size 1
-      writes.head.target shouldBe "S3"
+      writes.head.resourceId shouldBe a[ResourceId.S3Object]
+      writes.head.target should startWith("<unresolved:")
       writes.head.evidence should include("putObject")
     }
 
@@ -49,7 +52,8 @@ class TastyS3ScannerTest extends AnyFreeSpec {
         di.method.className == "S3LambdaExporter" && di.accessType == DataAccessType.Write
       }
       writes should have size 1
-      writes.head.target shouldBe "S3"
+      writes.head.resourceId shouldBe a[ResourceId.S3Object]
+      writes.head.target should startWith("<unresolved:")
       writes.head.evidence should include("putObject")
     }
 
@@ -61,8 +65,8 @@ class TastyS3ScannerTest extends AnyFreeSpec {
       }
     }
 
-    "all S3 integrations have group S3" in {
-      s3Integrations.foreach(_.group shouldBe Some("S3"))
+    "all S3 integrations have only one segment (no bucket configured)" in {
+      s3Integrations.foreach(_.resourceId.segments should have size 1)
     }
 
     "LineageAdjustments .s3(bucket) overrides auto-detected S3 targets" in {
@@ -74,18 +78,18 @@ class TastyS3ScannerTest extends AnyFreeSpec {
         .s3("ledger-exports/assets")
         .build
 
-      val (_, result)     = adj.apply(Nil, s3Integrations)
+      val (_, result, _)  = adj.apply(Nil, s3Integrations)
       val exporterResults = result.filter(_.method.className == "S3Exporter")
       exporterResults should have size 1
       exporterResults.head.target shouldBe "ledger-exports/assets"
       exporterResults.head.scanner shouldBe "manual"
       exporterResults.head.resourceType shouldBe ResourceType.S3
-      exporterResults.head.group shouldBe Some("S3")
+      exporterResults.head.resourceId.segments should have size 1
 
       // S3Reader integrations should be untouched
       val readerResults = result.filter(_.method.className == "S3Reader")
       readerResults should have size 1
-      readerResults.head.target shouldBe "S3"
+      readerResults.head.target should startWith("<unresolved:")
       readerResults.head.scanner shouldBe "s3"
     }
   }

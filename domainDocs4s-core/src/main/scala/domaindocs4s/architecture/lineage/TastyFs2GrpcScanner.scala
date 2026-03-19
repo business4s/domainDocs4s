@@ -22,7 +22,10 @@ import tastyquery.Trees.*
 // for the services you use, or use LineageAdjustments to filter out noise.
 // ============================================================================
 
-class TastyFs2GrpcScanner(using ctx: Context) extends IntegrationScanner {
+class TastyFs2GrpcScanner(
+    host: Option[String] = None,
+)(using ctx: Context)
+    extends IntegrationScanner {
 
   private val typeMatcher       = TypeMatcher.fqnEndsWith("Fs2Grpc")
   private val inheritanceSearch = SymbolSearch.ClassInheritance(typeMatcher)
@@ -54,15 +57,14 @@ class TastyFs2GrpcScanner(using ctx: Context) extends IntegrationScanner {
         }
       }
       if (classDeclaresMethod) {
+        val resourceId = ResourceId.GrpcEndpoint(service = serviceName, method = method, host = host)
         List(
           DiscoveredIntegration(
             method = MethodRef(ref.packageName, ref.className, method),
             accessType = DataAccessType.Write,
-            resourceType = ResourceType.Grpc,
+            resourceId = resourceId,
             scanner = "grpc",
-            target = s"$serviceName/$method",
             evidence = s"implements ${u.parentSimpleName}",
-            group = Some(serviceName),
           ),
         )
       } else Nil
@@ -73,14 +75,13 @@ class TastyFs2GrpcScanner(using ctx: Context) extends IntegrationScanner {
   private def interpretClient(u: FoundUsage.MethodCallResult): DiscoveredIntegration = {
     val ref         = u.path.toMethodRef
     val serviceName = u.ownerSimpleName.stripSuffix("Fs2Grpc")
+    val resourceId  = ResourceId.GrpcEndpoint(service = serviceName, method = u.methodName, host = host)
     DiscoveredIntegration(
       method = ref,
       accessType = DataAccessType.Read,
-      resourceType = ResourceType.Grpc,
+      resourceId = resourceId,
       scanner = "grpc",
-      target = s"$serviceName/${u.methodName}",
       evidence = s"calls ${u.receiverName}.${u.methodName}",
-      group = Some(serviceName),
     )
   }
 }

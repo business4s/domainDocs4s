@@ -1,7 +1,6 @@
 package domaindocs4s.lineage
 
 import domaindocs4s.architecture.lineage.*
-import domaindocs4s.architecture.lineage.example.UserRepo
 import domaindocs4s.collector.TastyContext
 import org.scalatest.freespec.AnyFreeSpec
 import org.scalatest.matchers.should.Matchers.*
@@ -16,10 +15,13 @@ class TastyDoobieScannerTest extends AnyFreeSpec {
   private val doobieIntegrations = new TastyDoobieScanner().scan(List(pkg))
   private val grpcIntegrations   = new TastyFs2GrpcScanner().scan(List(pkg))
 
-  private val enrichment   = IntegrationGroupConfig.builder
-    .group[UserRepo]("user-db")
+  private val enrichment   = LineageAdjustments.builder
+    .resource(ResourceType.Database, "users")
+    .renameTo(ResourceId.DbTable("users", database = Some("user-db")))
+    .resource(ResourceType.Database, "transactions")
+    .renameTo(ResourceId.DbTable("transactions", database = Some("user-db")))
     .build
-  private val integrations = enrichment.enrich(doobieIntegrations ++ grpcIntegrations)
+  private val (_, integrations, _) = enrichment.apply(Nil, doobieIntegrations ++ grpcIntegrations)
 
   "TastyDoobieScanner" - {
 
@@ -135,10 +137,10 @@ class TastyDoobieScannerTest extends AnyFreeSpec {
       reads.head.target shouldBe "fr_test_table"
     }
 
-    "enriched doobie integrations have group user-db" in {
+    "enriched doobie integrations have database segment user-db" in {
       val enrichedDoobie = integrations.filter(i => i.scanner == "doobie" && i.method.className == "UserRepo")
       enrichedDoobie should not be empty
-      enrichedDoobie.foreach(_.group shouldBe Some("user-db"))
+      enrichedDoobie.foreach(_.resourceId.segments should contain(("database", "user-db")))
     }
 
     "detects doobie queries in classes nested inside companion objects" in {

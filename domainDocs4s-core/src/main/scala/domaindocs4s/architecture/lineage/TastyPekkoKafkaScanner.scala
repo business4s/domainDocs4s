@@ -15,7 +15,10 @@ import tastyquery.Contexts.Context
 //   Producer.<any>            → Write to kafka
 // ============================================================================
 
-class TastyPekkoKafkaScanner(using ctx: Context) extends IntegrationScanner {
+class TastyPekkoKafkaScanner(
+    cluster: Option[String] = None,
+)(using ctx: Context)
+    extends IntegrationScanner {
 
   private val search = SymbolSearch.MethodCall(
     TypeMatcher("org.apache.pekko.kafka.scaladsl.Producer"),
@@ -30,15 +33,17 @@ class TastyPekkoKafkaScanner(using ctx: Context) extends IntegrationScanner {
     usages.flatMap { u =>
       val ref = u.path.toMethodRef
       if (seen.add(ref)) {
+        val resourceId = ResourceId.KafkaTopic(
+          topic = s"<unresolved:${ref.className}.${ref.methodName}>",
+          cluster = cluster,
+        )
         Some(
           DiscoveredIntegration(
             method = ref,
             accessType = DataAccessType.Write,
-            resourceType = ResourceType.Kafka,
+            resourceId = resourceId,
             scanner = "pekko-kafka",
-            target = s"unknown topic from ${ref.className}.${ref.methodName}",
             evidence = s"references ${u.ownerSimpleName}",
-            group = Some("Kafka"),
           ),
         )
       } else None

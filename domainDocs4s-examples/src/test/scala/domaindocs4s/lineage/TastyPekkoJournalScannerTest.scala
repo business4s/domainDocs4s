@@ -67,8 +67,8 @@ class TastyPekkoJournalScannerTest extends AnyFreeSpec {
       }
     }
 
-    "pekko integrations have no group by default" in {
-      pekkoIntegrations.foreach(_.group shouldBe None)
+    "pekko integrations have only one segment by default" in {
+      pekkoIntegrations.foreach(_.resourceId.segments should have size 1)
     }
 
     "composes with LineageBuilder" in {

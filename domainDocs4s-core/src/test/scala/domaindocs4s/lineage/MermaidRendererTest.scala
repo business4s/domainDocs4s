@@ -20,9 +20,8 @@ class MermaidRendererTest extends AnyFreeSpec {
           DiscoveredIntegration(
             method = MethodRef(pkg, "MyClass", "doStuff"),
             accessType = DataAccessType.Read,
-            resourceType = ResourceType.Database,
+            resourceId = ResourceId.DbTable("<unresolved:SomeTable>"),
             scanner = "test",
-            target = "<unresolved:SomeTable>",
             evidence = "test",
           ),
         ),
@@ -57,9 +56,8 @@ class MermaidRendererTest extends AnyFreeSpec {
           DiscoveredIntegration(
             method = MethodRef(pkg, "Service", "methodB"),
             accessType = DataAccessType.Read,
-            resourceType = ResourceType.Database,
+            resourceId = ResourceId.DbTable("my_table"),
             scanner = "test",
-            target = "my_table",
             evidence = "test",
           ),
         ),

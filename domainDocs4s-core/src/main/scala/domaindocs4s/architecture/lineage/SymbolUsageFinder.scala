@@ -226,12 +226,24 @@ class SymbolUsageFinder(searches: Seq[SymbolSearch])(using ctx: Context) {
 
   // ── Field context building ───────────────────────────────────────────────
 
-  /** Map field names to their declared types for receiver resolution. */
-  private def buildFieldContext(cls: ClassSymbol): Map[String, TypeOrMethodic] =
-    cls.declarations.collect {
+  /** Map field names to their declared types for receiver resolution. Includes both class-level fields/vals and constructor parameters (which may not
+    * appear as separate declarations in TASTy when declared without `val`/`var`).
+    */
+  private def buildFieldContext(cls: ClassSymbol): Map[String, TypeOrMethodic] = {
+    val fields = cls.declarations.collect {
       case ts: TermSymbol if !ts.name.toString.startsWith("<") && !ts.tree.exists(_.isInstanceOf[DefDef]) =>
         ts.name.toString -> ts.declaredType
     }.toMap
+
+    // Also extract constructor parameters — non-val constructor params may not appear
+    // as class-level TermSymbol declarations but are still accessible as fields in method bodies.
+    val ctorParams = cls.declarations.collectFirst {
+      case ts: TermSymbol if ts.name.toString == "<init>" =>
+        ts.tree.collect { case defDef: DefDef => extractParamTypes(defDef) }.getOrElse(Map.empty)
+    }.getOrElse(Map.empty)
+
+    ctorParams ++ fields // fields override ctor params if both present
+  }
 
   // ── Method body walking ──────────────────────────────────────────────────
 

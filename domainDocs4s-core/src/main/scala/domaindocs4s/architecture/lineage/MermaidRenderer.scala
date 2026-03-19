@@ -34,27 +34,9 @@ object MermaidRenderer {
 
     sb.append("\n")
 
-    // Integration target nodes — grouped by subgraph when group is set
-    val resourcesByGroup = result.resources
-      .map(r => (r.target, r.resourceType, r.group))
-      .groupBy(_._3)
-
-    // Grouped targets in subgraphs
-    for (case (Some(groupName), entries) <- resourcesByGroup) {
-      // Disambiguate from class subgraphs that share the same name
-      val safeId = extGroupNodeId(groupName)
-      val label  = if (classNames.contains(groupName)) s"$groupName (ext)" else groupName
-      sb.append(s"""  subgraph $safeId ["$label"]\n""")
-      for ((target, rtype, _) <- entries) {
-        renderTargetNode(sb, targetNodeId(target), target.split("/").last, rtype, indent = "    ")
-      }
-      sb.append("  end\n")
-    }
-
-    // Ungrouped targets as standalone nodes
-    for ((target, rtype, _) <- resourcesByGroup.getOrElse(None, Nil)) {
-      renderTargetNode(sb, targetNodeId(target), target, rtype, indent = "  ")
-    }
+    // Resource nodes — use full segment hierarchy (no folding at method level)
+    val config = ResourceDisplay.defaults
+    renderResourceHierarchy(sb, result.resources, config, classNames, result.segmentLabels, indent = "  ")
 
     sb.append("\n")
 
@@ -67,12 +49,12 @@ object MermaidRenderer {
 
     sb.append("\n")
 
-    // Integration edges
+    // Integration edges — method level uses full resource key (no folding)
     for (i <- result.integrations) {
-      renderEdge(sb, nodeId(i.method), targetNodeId(i.target), i.accessType, dataFlow)
+      renderEdge(sb, nodeId(i.method), targetNodeId(i.resourceId.key), i.accessType, dataFlow)
     }
 
-    // Resource dependency edges (e.g., VIEW sources)
+    // Resource dependency edges
     renderResourceDependencies(sb, result, dataFlow)
 
     // Styling
@@ -89,8 +71,8 @@ object MermaidRenderer {
       if (cls.nonEmpty) sb.append(s"  class ${nodeId(m.ref)} $cls\n")
     }
 
-    for ((_, entries) <- resourcesByGroup; (target, rtype, _) <- entries) {
-      sb.append(s"  class ${targetNodeId(target)} ${integrationStyle(rtype)}\n")
+    for (res <- result.resources) {
+      sb.append(s"  class ${targetNodeId(res.resourceId.key)} ${integrationStyle(res.resourceType)}\n")
     }
 
     sb.toString()
@@ -105,15 +87,14 @@ object MermaidRenderer {
     renderClassLevelInternal(result, dataFlow = true, config)
 
   private def renderClassLevelInternal(result: ScanResult, dataFlow: Boolean, config: ClassLevelConfig): String = {
-    val sb          = new StringBuilder
-    val foldByGroup = config.foldByGroup
+    val sb         = new StringBuilder
+    val dispConfig = config.resourceDisplay
     sb.append("%%{init: {'flowchart': {'defaultRenderer': 'elk'}}}%%\n")
     sb.append("flowchart LR\n")
 
     val classNames = result.classes.map(_.name).toSet
 
     // Class nodes — one node per visible class, optionally grouped into subgraphs
-    // classGroups (from adjustments) override config-based grouping per class
     val configGroupFn: ScannedClass => Option[String] = config.classGrouping match {
       case ClassGrouping.NoGrouping      => _ => None
       case ClassGrouping.ByPackage(base) =>
@@ -125,13 +106,12 @@ object MermaidRenderer {
         }
       case ClassGrouping.Custom(fn)      => fn
     }
-    val groupFn: ScannedClass => Option[String]       = cls => result.classGroups.get((cls.packageName, cls.name)).orElse(configGroupFn(cls))
+    val groupFn: ScannedClass => Option[String] = cls => result.classGroups.get((cls.packageName, cls.name)).orElse(configGroupFn(cls))
 
     val visibleFromCallGraph = result.classes.filter { cls =>
       cls.methods.exists(m => m.calls.nonEmpty || m.integrations.nonEmpty || isCalledByOthers(m.ref, result))
     }
 
-    // Classes from integrations not in result.classes (e.g., Scala objects detected by scanners)
     val knownClassKeys: Set[ClassKey]              = result.classes.map(cls => (cls.packageName, cls.name)).toSet
     val integrationOnlyClasses: List[ScannedClass] = result.integrations
       .map(i => (i.method.packageName, i.method.className))
@@ -160,41 +140,22 @@ object MermaidRenderer {
 
     sb.append("\n")
 
-    // Split resources into folded vs non-folded
-    val allTargets = result.resources
-      .map(r => (r.target, r.resourceType, r.group))
+    // Resource rendering — generic algorithm driven by ResourceDisplay config
+    // For each resource, compute: container segments (become subgraphs), visible node (at fold level or leaf)
+    // Resources that share the same foldedNodeKey are collapsed into one node.
 
-    val (foldedRaw, nonFoldedRaw) = allTargets.partition { case (_, rtype, group) =>
-      foldByGroup.contains(rtype) && group.isDefined
-    }
+    val segLabels = result.segmentLabels
+    val foldedResources: Seq[FoldedResource] = result.resources.map { res =>
+      FoldedResource(
+        nodeKey = ResourceDisplay.foldedNodeKey(res.resourceId, dispConfig),
+        nodeLabel = ResourceDisplay.displayLabel(ResourceDisplay.foldedNodeLabel(res.resourceId, dispConfig), segLabels),
+        rtype = res.resourceType,
+        containers = ResourceDisplay.containerSegments(res.resourceId, dispConfig).map((l, v) => (l, ResourceDisplay.displayLabel(v, segLabels))),
+      )
+    }.distinctBy(_.nodeKey)
 
-    // Folded integration nodes — one standalone node per group
-    val foldedGroups = foldedRaw
-      .groupBy(_._3.get)
-      .map { case (groupName, entries) => (groupName, entries.head._2) }
-
-    for ((groupName, itype) <- foldedGroups) {
-      val id    = foldedGroupNodeId(groupName)
-      val label = if (classNames.contains(groupName)) s"$groupName (ext)" else groupName
-      renderTargetNode(sb, id, label, itype, indent = "  ")
-    }
-
-    // Non-folded integration nodes — grouped into subgraphs or standalone
-    val nonFoldedByGroup = nonFoldedRaw.groupBy(_._3)
-
-    for (case (Some(groupName), entries) <- nonFoldedByGroup) {
-      val safeId = extGroupNodeId(groupName)
-      val label  = if (classNames.contains(groupName)) s"$groupName (ext)" else groupName
-      sb.append(s"""  subgraph $safeId ["$label"]\n""")
-      for ((target, itype, _) <- entries) {
-        renderTargetNode(sb, targetNodeId(target), target.split("/").last, itype, indent = "    ")
-      }
-      sb.append("  end\n")
-    }
-
-    for ((target, itype, _) <- nonFoldedByGroup.getOrElse(None, Nil)) {
-      renderTargetNode(sb, targetNodeId(target), target, itype, indent = "  ")
-    }
+    // Build nested subgraph structure from container segments
+    renderFoldedResourceHierarchy(sb, foldedResources, classNames, indent = "  ")
 
     sb.append("\n")
 
@@ -210,33 +171,19 @@ object MermaidRenderer {
 
     sb.append("\n")
 
-    // Integration edges — folded types: one edge per (classKey, group)
-    val foldedEdges = result.integrations
-      .filter(i => foldByGroup.contains(i.resourceType) && i.group.isDefined)
-      .groupBy(i => ((i.method.packageName, i.method.className), i.group.get))
-      .map { case ((classKey, groupName), integrations) =>
+    // Integration edges — resolve to folded node key
+    val integrationEdges = result.integrations
+      .groupBy(i => ((i.method.packageName, i.method.className), ResourceDisplay.foldedNodeKey(i.resourceId, dispConfig)))
+      .map { case ((classKey, foldedKey), integrations) =>
         val combined = DataAccessType.combineAll(integrations.map(_.accessType).toList)
-        (classKey, groupName, combined)
+        (classKey, foldedKey, combined)
       }
 
-    for ((classKey, groupName, accessType) <- foldedEdges) {
-      renderEdge(sb, classNodeId(classKey._1, classKey._2), foldedGroupNodeId(groupName), accessType, dataFlow)
+    for ((classKey, foldedKey, accessType) <- integrationEdges) {
+      renderEdge(sb, classNodeId(classKey._1, classKey._2), targetNodeId(foldedKey), accessType, dataFlow)
     }
 
-    // Integration edges — non-folded types: one edge per (classKey, target)
-    val nonFoldedEdges = result.integrations
-      .filterNot(i => foldByGroup.contains(i.resourceType) && i.group.isDefined)
-      .groupBy(i => ((i.method.packageName, i.method.className), i.target))
-      .map { case ((classKey, target), integrations) =>
-        val combined = DataAccessType.combineAll(integrations.map(_.accessType).toList)
-        (classKey, target, combined)
-      }
-
-    for ((classKey, target, accessType) <- nonFoldedEdges) {
-      renderEdge(sb, classNodeId(classKey._1, classKey._2), targetNodeId(target), accessType, dataFlow)
-    }
-
-    // Resource dependency edges (e.g., VIEW sources)
+    // Resource dependency edges
     renderResourceDependencies(sb, result, dataFlow)
 
     // Styling
@@ -253,17 +200,87 @@ object MermaidRenderer {
       if (style.nonEmpty) sb.append(s"  class ${classNodeId(cls.packageName, cls.name)} $style\n")
     }
 
-    for ((groupName, rtype) <- foldedGroups) {
-      val style = integrationStyle(rtype)
-      sb.append(s"  class ${foldedGroupNodeId(groupName)} $style\n")
-    }
-
-    for ((_, entries) <- nonFoldedByGroup; (target, rtype, _) <- entries) {
-      val style = integrationStyle(rtype)
-      sb.append(s"  class ${targetNodeId(target)} $style\n")
+    for (fr <- foldedResources) {
+      sb.append(s"  class ${targetNodeId(fr.nodeKey)} ${integrationStyle(fr.rtype)}\n")
     }
 
     sb.toString()
+  }
+
+  /** Render resource hierarchy using full segments (no folding) — used at method level. */
+  private def renderResourceHierarchy(
+      sb: StringBuilder,
+      resources: List[DiscoveredResource],
+      config: Map[ResourceType, ResourceTypeDisplay],
+      classNames: Set[String],
+      segmentLabels: Map[String, String],
+      indent: String,
+  ): Unit = {
+    case class ResEntry(key: String, label: String, rtype: ResourceType, containers: List[(String, String)])
+
+    val entries = resources.map { res =>
+      ResEntry(
+        key = res.resourceId.key,
+        label = ResourceDisplay.displayLabel(res.target, segmentLabels),
+        rtype = res.resourceType,
+        containers = ResourceDisplay.containerSegments(res.resourceId, config).map((l, v) => (l, ResourceDisplay.displayLabel(v, segmentLabels))),
+      )
+    }
+
+    renderNestedSubgraphs(sb, entries.map(e => (e.containers, e)), classNames, indent) { (sb, entry, ind) =>
+      renderTargetNode(sb, targetNodeId(entry.key), entry.label, entry.rtype, indent = ind)
+    }
+  }
+
+  /** Render folded resource hierarchy — used at class level. */
+  private case class FoldedResource(
+      nodeKey: String,
+      nodeLabel: String,
+      rtype: ResourceType,
+      containers: List[(String, String)],
+  )
+
+  private def renderFoldedResourceHierarchy(
+      sb: StringBuilder,
+      resources: Seq[FoldedResource],
+      classNames: Set[String],
+      indent: String,
+  ): Unit = {
+    renderNestedSubgraphs(sb, resources.map(r => (r.containers, r)), classNames, indent) { (sb, fr, ind) =>
+      val label = if (classNames.contains(fr.nodeLabel)) s"${fr.nodeLabel} (ext)" else fr.nodeLabel
+      renderTargetNode(sb, targetNodeId(fr.nodeKey), label, fr.rtype, indent = ind)
+    }
+  }
+
+  /** Generic nested subgraph renderer. Groups entries by their container prefix and creates Mermaid subgraphs.
+    *
+    * Each entry has a `containers` list of (level, value) pairs. Entries sharing the same first container segment are grouped under one subgraph, then
+    * recursively grouped by subsequent segments.
+    */
+  private def renderNestedSubgraphs[A](
+      sb: StringBuilder,
+      entries: Seq[(List[(String, String)], A)],
+      classNames: Set[String],
+      indent: String,
+  )(renderLeaf: (StringBuilder, A, String) => Unit): Unit = {
+    // Separate entries with no more containers (render as leaf nodes) from those with containers
+    val (leaves, nested) = entries.partition(_._1.isEmpty)
+
+    // Render leaf nodes
+    for ((_, entry) <- leaves) {
+      renderLeaf(sb, entry, indent)
+    }
+
+    // Group by first container segment and recurse
+    val byFirstContainer = nested.groupBy(_._1.head)
+    for (((level, value), group) <- byFirstContainer) {
+      val sgId  = extGroupNodeId(s"${level}_$value")
+      val label = if (classNames.contains(value)) s"$value (ext)" else value
+      sb.append(s"""${indent}subgraph $sgId ["$label"]\n""")
+      val remaining = group.map { case (containers, entry) => (containers.tail, entry) }
+      renderNestedSubgraphs(sb, remaining, classNames, indent + "  ")(renderLeaf)
+      sb.append(s"${indent}end\n")
+    }
   }
 
   private def appendStyleDefs(sb: StringBuilder): Unit = {
@@ -276,7 +293,6 @@ object MermaidRenderer {
     sb.append("  classDef s3Node fill:#ffe0b2,stroke:#fb8c00\n")
   }
 
-  /** Render a single integration target node into the StringBuilder. */
   private def renderTargetNode(sb: StringBuilder, id: String, label: String, rtype: ResourceType, indent: String): Unit = {
     val safe = escapeHtmlChars(label)
     rtype match {
@@ -288,10 +304,10 @@ object MermaidRenderer {
   }
 
   private def renderResourceDependencies(sb: StringBuilder, result: ScanResult, dataFlow: Boolean): Unit = {
-    val knownTargets = result.resources.map(_.target).toSet
-    for (dep <- result.resourceDependencies if knownTargets(dep.from) && knownTargets(dep.to)) {
-      val fromNode = targetNodeId(dep.from)
-      val toNode   = targetNodeId(dep.to)
+    val knownKeys = result.resources.map(_.resourceId.key).toSet
+    for (dep <- result.resourceDependencies if knownKeys(dep.from.key) && knownKeys(dep.to.key)) {
+      val fromNode = targetNodeId(dep.from.key)
+      val toNode   = targetNodeId(dep.to.key)
       if (dataFlow) sb.append(s"""  $fromNode -.-> $toNode\n""")
       else sb.append(s"""  $toNode -.-> $fromNode\n""")
     }
@@ -339,9 +355,6 @@ object MermaidRenderer {
 
   private def classNodeId(packageName: String, className: String): String =
     s"cls_${hashPkg(packageName)}_${sanitizeId(className)}"
-
-  private def foldedGroupNodeId(groupName: String): String =
-    s"fold_${sanitizeId(groupName)}"
 
   private def packageGroupId(groupName: String): String =
     s"pkg_${sanitizeId(groupName)}"

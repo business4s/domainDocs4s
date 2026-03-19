@@ -17,7 +17,7 @@ import tastyquery.Contexts.Context
 // ============================================================================
 
 class TastyFs2KafkaScanner(
-    group: Option[String] = Some("Kafka"),
+    cluster: Option[String] = None,
 )(using ctx: Context)
     extends IntegrationScanner {
 
@@ -45,15 +45,17 @@ class TastyFs2KafkaScanner(
           case s if s == consumerSearch => DataAccessType.Read
           case _                        => return Nil
         }
+        val resourceId = ResourceId.KafkaTopic(
+          topic = s"<unresolved:${ref.className}.${ref.methodName}>",
+          cluster = cluster,
+        )
         Some(
           DiscoveredIntegration(
             method = ref,
             accessType = accessType,
-            resourceType = ResourceType.Kafka,
+            resourceId = resourceId,
             scanner = "fs2-kafka",
-            target = s"kafka from ${ref.className}.${ref.methodName}",
             evidence = s"calls ${u.receiverName}.${u.methodName}",
-            group = group,
           ),
         )
       } else None

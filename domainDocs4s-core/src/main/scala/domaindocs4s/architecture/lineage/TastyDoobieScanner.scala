@@ -24,7 +24,18 @@ import tastyquery.Trees.*
 // SQL template. Table names are extracted via regex from the joined SQL.
 // ============================================================================
 
-class TastyDoobieScanner()(using ctx: Context) extends IntegrationScanner {
+class TastyDoobieScanner(
+    database: Option[String] = None,
+    schema: Option[String] = None,
+    cluster: Option[String] = None,
+    /** Maps SQL schema names to database groups. When a query uses `schema.table` syntax,
+      * the schema is looked up here to determine the database segment.
+      * E.g., `Map("data_controlling" -> "redshift")` maps `FROM data_controlling.my_table`
+      * to `database=redshift/schema=data_controlling/table=my_table`.
+      */
+    schemaToDatabase: Map[String, String] = Map.empty,
+)(using ctx: Context)
+    extends IntegrationScanner {
 
   // Type-based searches for doobie patterns
   private val fragmentSearch = SymbolSearch.MethodCall(TypeMatcher.fqnEndsWith("fragment$.Fragment"))
@@ -53,12 +64,20 @@ class TastyDoobieScanner()(using ctx: Context) extends IntegrationScanner {
           }
           val sql         = SqlUtils.sqlFrom(u.tree, valBindings).orElse(SqlUtils.sqlFrom(u.receiverTree, valBindings))
           sql.filter(SqlUtils.looksLikeSql).map { s =>
+            val tableRef = SqlUtils.extractTableRef(s)
+            val effectiveSchema = tableRef.schema.orElse(schema)
+            val effectiveDb = tableRef.schema.flatMap(schemaToDatabase.get).orElse(database)
+            val resourceId = ResourceId.DbTable(
+              table = tableRef.table,
+              database = effectiveDb,
+              schema = effectiveSchema,
+              cluster = cluster,
+            )
             DiscoveredIntegration(
               method = u.path.toMethodRef,
               accessType = accessType,
-              resourceType = ResourceType.Database,
+              resourceId = resourceId,
               scanner = "doobie",
-              target = SqlUtils.extractTableName(s),
               evidence = s,
             )
           }
@@ -114,11 +133,11 @@ private[lineage] object SqlUtils {
   }
 
   private val tablePatterns = List(
-    "(?i)\\bFROM\\s+(\\w+)".r,
-    "(?i)\\bINTO\\s+(\\w+)".r,
-    "(?i)\\bUPDATE\\s+(\\w+)".r,
-    "(?i)\\bDELETE\\s+FROM\\s+(\\w+)".r,
-    "(?i)\\bTRUNCATE\\s+(?:TABLE\\s+)?(\\w+)".r,
+    "(?i)\\bFROM\\s+(\\w+(?:\\.\\w+)?)".r,
+    "(?i)\\bINTO\\s+(\\w+(?:\\.\\w+)?)".r,
+    "(?i)\\bUPDATE\\s+(\\w+(?:\\.\\w+)?)".r,
+    "(?i)\\bDELETE\\s+FROM\\s+(\\w+(?:\\.\\w+)?)".r,
+    "(?i)\\bTRUNCATE\\s+(?:TABLE\\s+)?(\\w+(?:\\.\\w+)?)".r,
   )
 
   /** SQL keywords and PostgreSQL functions that should never be treated as table names. */
@@ -176,11 +195,24 @@ private[lineage] object SqlUtils {
   )
 
   def extractTableName(sql: String): String =
-    tablePatterns.iterator
+    extractTableRef(sql).fullName
+
+  /** Extract a qualified table reference (possibly schema.table) from SQL. */
+  case class TableRef(schema: Option[String], table: String) {
+    def fullName: String = schema.fold(table)(s => s"$s.$table")
+  }
+
+  def extractTableRef(sql: String): TableRef = {
+    val raw = tablePatterns.iterator
       .flatMap(_.findAllMatchIn(sql))
       .map(_.group(1))
-      .find(name => !sqlKeywords.contains(name.toLowerCase))
+      .find(name => !sqlKeywords.contains(name.split('.').head.toLowerCase))
       .getOrElse("unknown")
+    raw.split('.') match {
+      case Array(s, t) => TableRef(Some(s), t)
+      case _           => TableRef(None, raw)
+    }
+  }
 
   /** Check if a string looks like SQL (contains at least one SQL keyword the table patterns recognize). */
   def looksLikeSql(sql: String): Boolean =
