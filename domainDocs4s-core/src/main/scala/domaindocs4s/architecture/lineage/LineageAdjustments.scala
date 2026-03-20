@@ -262,6 +262,7 @@ case class LineageAdjustments(adjustments: List[LineageAdjustment] = Nil) {
     var methods              = callGraph
     var integ                = integrations
     val syntheticMethods     = ListBuffer.empty[MethodRef]
+    val unpromotableBuffer        = ListBuffer.empty[DiscoveredIntegration]
 
     // Shared logic for HideClass and HidePackage: remove hidden methods,
     // reconnect callers → callees through the hidden set, and promote integrations.
@@ -326,11 +327,16 @@ case class LineageAdjustments(adjustments: List[LineageAdjustment] = Nil) {
         )
       }
 
-      // Promote integrations from hidden methods to their non-hidden callers
+      // Promote integrations from hidden methods to their non-hidden callers.
+      // Integrations that can't be promoted (no non-hidden callers) are collected as unpromotable.
       val hiddenIntegrations = integ.filter(di => hiddenRefs.contains(di.method))
-      val promoted           = hiddenIntegrations.flatMap { di =>
-        findNonHiddenCallers(di.method).map(caller => di.copy(method = caller))
+      val (promoted, unpromotable) = hiddenIntegrations.partitionMap { di =>
+        val callers = findNonHiddenCallers(di.method)
+        if (callers.nonEmpty) Left(callers.toList.map(caller => di.copy(method = caller)))
+        else Right(di)
       }
+
+      unpromotableBuffer ++= unpromotable
 
       // Reconnect callers to bypass hidden nodes
       methods = methods.map { m =>
@@ -344,7 +350,7 @@ case class LineageAdjustments(adjustments: List[LineageAdjustment] = Nil) {
 
       // Remove hidden methods and their integrations, add promoted
       methods = methods.filterNot(m => hiddenRefs.contains(m.ref))
-      integ = integ.filterNot(di => hiddenRefs.contains(di.method)) ++ promoted
+      integ = integ.filterNot(di => hiddenRefs.contains(di.method)) ++ promoted.flatten
     }
 
     for (adj <- adjustments) adj match {
@@ -584,7 +590,7 @@ case class LineageAdjustments(adjustments: List[LineageAdjustment] = Nil) {
       if (!methods.exists(_.ref == ref))
         methods = methods :+ ExtractedMethod(ref.className, ref.packageName, ref.methodName, Nil)
 
-    (methods, integ, orphaned)
+    (methods, integ, orphaned ++ unpromotableBuffer)
   }
 }
 

@@ -83,15 +83,18 @@ class FlywayMigrationScanner(
   ): List[MigrationEvent] = {
     val method = MethodRef("", "flyway", version)
 
+    def evidence(sql: String) = s"$filename: $sql"
+
     stmt match {
       case ct: CreateTable =>
-        List(IntegrationEvent(mkIntegration(method, DataAccessType.Write, ct.getTable.getName, filename)))
+        List(IntegrationEvent(mkIntegration(method, DataAccessType.Write, ct.getTable.getName, evidence(s"CREATE TABLE ${ct.getTable.getName}"))))
 
       case cv: CreateView =>
         val viewName = cv.getView.getName
         val sources  = Option(cv.getSelect).toList.flatMap(extractSourceTables).distinct
-        IntegrationEvent(mkIntegration(method, DataAccessType.Write, viewName, filename)) ::
-          sources.map(t => IntegrationEvent(mkIntegration(method, DataAccessType.Read, t, filename))) :::
+        val ev       = evidence(s"CREATE VIEW $viewName AS SELECT FROM ${sources.mkString(", ")}")
+        IntegrationEvent(mkIntegration(method, DataAccessType.Write, viewName, ev)) ::
+          sources.map(t => IntegrationEvent(mkIntegration(method, DataAccessType.Read, t, ev))) :::
           sources.map(t => DependencyEvent(ResourceDependency(from = mkResourceId(t), to = mkResourceId(viewName), label = "view source")))
 
       case alt: Alter =>
@@ -102,7 +105,7 @@ class FlywayMigrationScanner(
           .find(_.getOperation == AlterOperation.RENAME_TABLE)
         renameExpr match {
           case Some(expr) => renameEvents(oldName, expr.getNewTableName, method, filename)
-          case None       => List(IntegrationEvent(mkIntegration(method, DataAccessType.Write, oldName, filename)))
+          case None       => List(IntegrationEvent(mkIntegration(method, DataAccessType.Write, oldName, evidence(s"ALTER TABLE $oldName"))))
         }
 
       case rename: RenameTableStatement =>
@@ -111,7 +114,8 @@ class FlywayMigrationScanner(
         }
 
       case drop: Drop if drop.getType.equalsIgnoreCase("TABLE") || drop.getType.equalsIgnoreCase("VIEW") =>
-        List(DropEvent(drop.getName.getName))
+        val cascade = Option(drop.getParameters).exists(_.asScala.exists(_.toString.equalsIgnoreCase("CASCADE")))
+        List(DropEvent(drop.getName.getName, cascade))
 
       case _ => Nil
     }
@@ -132,21 +136,21 @@ class FlywayMigrationScanner(
       method: MethodRef,
       access: DataAccessType,
       target: String,
-      filename: String,
+      evidence: String,
   ): DiscoveredIntegration =
     DiscoveredIntegration(
       method = method,
       accessType = access,
       resourceId = mkResourceId(target),
       scanner = "flyway",
-      evidence = filename,
+      evidence = evidence,
     )
 }
 
 object FlywayMigrationScanner {
   sealed private trait MigrationEvent
   private case class IntegrationEvent(di: DiscoveredIntegration) extends MigrationEvent
-  private case class DropEvent(target: String)                   extends MigrationEvent
+  private case class DropEvent(target: String, cascade: Boolean = false) extends MigrationEvent
   private case class DependencyEvent(dep: ResourceDependency)    extends MigrationEvent
 
   private val MigrationFilePattern = """[VR][\d._]*__.*\.sql""".r
@@ -180,12 +184,20 @@ object FlywayMigrationScanner {
   private def resolveDrops(events: List[MigrationEvent]): (List[DiscoveredIntegration], List[ResourceDependency]) = {
     val integrations = scala.collection.mutable.ListBuffer.empty[DiscoveredIntegration]
     val dependencies = scala.collection.mutable.ListBuffer.empty[ResourceDependency]
+
+    def dropTarget(name: String, cascade: Boolean): Unit = {
+      // Collect dependents before removing edges (so we know what to cascade to)
+      val dependents = if (cascade) dependencies.collect { case d if d.from.label == name => d.to.label }.distinct.toList else Nil
+      // Remove edges first to break any potential cycles before recursing
+      integrations.filterInPlace(_.target != name)
+      dependencies.filterInPlace(d => d.to.label != name && d.from.label != name)
+      dependents.foreach(dep => dropTarget(dep, cascade))
+    }
+
     for (event <- events) event match {
-      case IntegrationEvent(di) => integrations += di
-      case DependencyEvent(dep) => dependencies += dep
-      case DropEvent(target)    =>
-        integrations.filterInPlace(_.target != target)
-        dependencies.filterInPlace(_.to.label != target)
+      case IntegrationEvent(di)          => integrations += di
+      case DependencyEvent(dep)          => dependencies += dep
+      case DropEvent(target, cascade)    => dropTarget(target, cascade)
     }
     (integrations.toList, dependencies.toList)
   }
@@ -220,12 +232,12 @@ object FlywayMigrationScanner {
     // Extract tables from the main query body
     val mainSources = select match {
       case ps: PlainSelect       =>
-        val from  = Option(ps.getFromItem).toList.flatMap(tableName)
+        val from  = Option(ps.getFromItem).toList.flatMap(extractFromItem)
         val joins = Option(ps.getJoins)
           .map(_.asScala.toList)
           .getOrElse(Nil)
           .flatMap(j => Option(j.getFromItem))
-          .flatMap(tableName)
+          .flatMap(extractFromItem)
         from ++ joins
       case sol: SetOperationList =>
         Option(sol.getSelects).map(_.asScala.toList).getOrElse(Nil).flatMap {
@@ -241,9 +253,10 @@ object FlywayMigrationScanner {
     (cteSources ++ mainSources).filterNot(cteNames.contains)
   }
 
-  private def tableName(fi: FromItem): Option[String] = fi match {
-    case t: Table => Some(t.getName)
-    case _        => None
+  private def extractFromItem(fi: FromItem): List[String] = fi match {
+    case t: Table  => List(t.getName)
+    case s: Select => extractSourceTables(s)
+    case _         => Nil
   }
 
   /** Strip DDL clauses that JSqlParser cannot parse.

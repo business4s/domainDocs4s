@@ -13,9 +13,9 @@ See the [**Website**](https://business4s.github.io/domainDocs4s/) for details an
 ### Scanners
 - STTP/HTTP client scanner (e.g. GoogleSheetClientImpl uses STTP, not detected)
 - Prometheus scanner
-- Akka ask/tell pattern detection ("unknown actor")
-- Doobie scanner: reconstruct full SQL (substitute fragments, replace inputs with `?`, use JSqlParser)
-- Transactor tracking: annotate transactor variables with db/schema info and propagate wherever they are used (could also extract db/schema from code automatically)
+- Akka ask/tell pattern detection ("unknown actor
+- Doobie scanner: reconstruct full SQL (substitute fragments,inl replace inputs with `?`, use JSqlParser)
+- Transactor tracking: annotate transactor
 
 ### Core
 - Typesafe packages, SymbolModule.requiredPackage

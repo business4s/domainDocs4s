@@ -765,11 +765,8 @@ object ViewerControls {
       readEdges.forEach { (edge: CyElement) =>
         swapEdge(cy, edge)
       }
-      // Flip resource dependency edges
-      val resDepEdges = cy.edges(".resourceDepEdge")
-      resDepEdges.forEach { (edge: CyElement) =>
-        swapEdge(cy, edge)
-      }
+      // Resource dependency edges already represent data flow direction (source → dependent),
+      // so they are not flipped.
     }
     cy.batch(fn)
   }
@@ -1762,22 +1759,24 @@ object ViewerControls {
       }
     }
 
-    // Integration evidence from data — match by folded key
-    val evidence = data.integrations.filter { i =>
+    // Discovery evidence — combine integration evidence with resource discoveries
+    val integrationEvidence = data.integrations.filter { i =>
       GraphBuilder.foldedNodeKey(i.segments, i.resourceType, config) == resourceKey
-    }
-    if (evidence.nonEmpty) {
+    }.map(e => (e.scanner, e.evidence))
+    val resourceEvidence = matchingResources.flatMap(_.discoveries).map(d => (d.scanner, d.evidence))
+    val allEvidence = (integrationEvidence ++ resourceEvidence).distinct
+    if (allEvidence.nonEmpty) {
       val evSection = detailsSection(panel, "Discovery evidence")
-      for (e <- evidence) {
+      for ((scannerName, evidenceText) <- allEvidence) {
         val item = dom.document.createElement("div")
         item.setAttribute("style", "padding:3px 0;font-size:11px;")
         val scanner = dom.document.createElement("span")
         scanner.setAttribute("style", "color:#888;")
-        scanner.textContent = s"[${e.scanner}] "
+        scanner.textContent = s"[$scannerName] "
         item.appendChild(scanner)
         val ev = dom.document.createElement("span")
         ev.setAttribute("style", "font-family:monospace;word-break:break-all;")
-        ev.textContent = e.evidence
+        ev.textContent = evidenceText
         item.appendChild(ev)
         evSection.appendChild(item)
       }

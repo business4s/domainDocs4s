@@ -47,3 +47,7 @@ build/
 node_modules/
 dist/
 .vite/
+
+### Generated data ###
+data-pipeline.json
+multi-data.json

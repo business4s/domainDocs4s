@@ -42,11 +42,19 @@ case class Integration(
     segments: List[Segment],
 )
 
+case class ResourceDiscovery(
+    method: MethodRef,
+    accessType: String,
+    scanner: String,
+    evidence: String,
+)
+
 case class Resource(
     key: String,
     target: String,
     resourceType: String,
     segments: List[Segment],
+    discoveries: List[ResourceDiscovery] = Nil,
 )
 
 case class ResourceDependency(
@@ -163,6 +171,14 @@ object LineageData {
         target = str(r.target),
         resourceType = str(r.resourceType),
         segments = parseSegments(r.segments),
+        discoveries = arr(r.discoveries).map { d =>
+          ResourceDiscovery(
+            method = parseRef(d.method),
+            accessType = str(d.accessType),
+            scanner = str(d.scanner),
+            evidence = str(d.evidence),
+          )
+        }.toList,
       )
     }.toList
 

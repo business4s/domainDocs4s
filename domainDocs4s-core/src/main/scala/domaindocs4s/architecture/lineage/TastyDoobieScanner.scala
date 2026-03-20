@@ -43,7 +43,7 @@ class TastyDoobieScanner(
   private val updateSearch   = SymbolSearch.MethodCall(TypeMatcher.fqnEndsWith("update$.Update"))
 
   private val readMethods  = Set("unique", "option", "stream", "to")
-  private val writeMethods = Set("updateMany", "withGeneratedKeys")
+  private val writeMethods = Set("run", "updateMany", "withGeneratedKeys")
 
   def scan(packages: List[String]): List[DiscoveredIntegration] = {
     val finder = new SymbolUsageFinder(Seq(fragmentSearch, query0Search, updateSearch))
