@@ -1790,6 +1790,28 @@ object ViewerControls {
     val infoSection = detailsSection(panel, "Info")
     detailsRow(infoSection, "Type", kind)
 
+    // Show resource type if available
+    val rtype = node.data("resourceType")
+    if (!js.isUndefined(rtype) && rtype != null) detailsRow(infoSection, "Resource type", rtype.asInstanceOf[String])
+
+    // Show segments for resource groups
+    val segmentsData = node.data("segments")
+    if (!js.isUndefined(segmentsData) && segmentsData != null) {
+      val segLabels = data.segmentLabels
+      val segs = segmentsData.asInstanceOf[js.Array[js.Dynamic]]
+      if (segs.length > 0) {
+        val segSection = detailsSection(panel, "Segments")
+        for (i <- 0 until segs.length) {
+          val seg = segs(i)
+          val level = seg.level.asInstanceOf[String]
+          val value = seg.value.asInstanceOf[String]
+          val display = segLabels.getOrElse(value, value)
+          val segLabel = if (display != value) s"$display ($value)" else value
+          detailsRow(segSection, level, segLabel)
+        }
+      }
+    }
+
     val children = node.children()
     val childNames = scala.collection.mutable.ListBuffer[String]()
     children.forEach { (child: CyElement) =>

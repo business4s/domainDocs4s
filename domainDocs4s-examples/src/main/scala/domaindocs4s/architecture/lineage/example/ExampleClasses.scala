@@ -177,6 +177,46 @@ class UnnestQueryRepo {
       .unique
 }
 
+/** Demonstrates SQL keyword filtering for TRUNCATE TABLE ... CASCADE. Without `table` and `cascade` in the sqlKeywords set, the regex would extract
+  * "TABLE" and "CASCADE" as spurious table names instead of `truncate_test_table`.
+  */
+class TruncateCascadeRepo {
+
+  def truncateTable(): ConnectionIO[Int] =
+    sql"TRUNCATE TABLE truncate_test_table CASCADE".update.run
+}
+
+/** Typed transactor example — opaque types that wrap Transactor[IO]. Mimics the pattern used in real services (e.g., ServiceXa, ProjectionsXa) for
+  * automatic database attribution via TransactorMapping.
+  */
+object ExampleTransactors {
+  opaque type PrimaryXa <: Transactor[IO]    = Transactor[IO]
+  opaque type SecondaryXa <: Transactor[IO]  = Transactor[IO]
+
+  def primaryXa(xa: Transactor[IO]): PrimaryXa     = xa
+  def secondaryXa(xa: Transactor[IO]): SecondaryXa = xa
+}
+
+/** Repository that takes a typed transactor (PrimaryXa). The TransactorTracker should detect PrimaryXa in the constructor and attribute the correct
+  * database/schema segments to this class's doobie integrations.
+  */
+class TypedTransactorRepo(xa: ExampleTransactors.PrimaryXa) {
+
+  def getItem(id: Long): IO[BigDecimal] =
+    sql"SELECT value FROM typed_xa_table WHERE id = $id".query[BigDecimal].unique.transact(xa)
+
+  def insertItem(id: Long, value: BigDecimal): IO[Int] =
+    sql"INSERT INTO typed_xa_table (id, value) VALUES ($id, $value)".update.run.transact(xa)
+}
+
+/** Repository that takes a SecondaryXa typed transactor. Used to verify that different typed transactors map to different database segments.
+  */
+class SecondaryRepo(xa: ExampleTransactors.SecondaryXa) {
+
+  def getReport(id: Long): IO[String] =
+    sql"SELECT report FROM secondary_table WHERE id = $id".query[String].unique.transact(xa)
+}
+
 /** Demonstrates doobie detection with fr"..." Fragment interpolator. The fr"..." interpolator produces a Fragment (not Fragment0 like sql"..."). The
   * scanner should detect fr"...".update.run as Write and fr"...".query[T] as Read. Also tests .stripMargin chaining:
   * fr"""...""".stripMargin.update.run.

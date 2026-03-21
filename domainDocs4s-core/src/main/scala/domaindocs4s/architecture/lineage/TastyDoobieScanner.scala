@@ -34,6 +34,10 @@ class TastyDoobieScanner(
       * to `database=redshift/schema=data_controlling/table=my_table`.
       */
     schemaToDatabase: Map[String, String] = Map.empty,
+    /** Maps transactor types/names to database segments. Automatically attributes databases to doobie queries
+      * based on which typed transactor is injected into the repository class.
+      */
+    transactorMapping: TransactorMapping = TransactorMapping.empty,
 )(using ctx: Context)
     extends IntegrationScanner {
 
@@ -55,7 +59,7 @@ class TastyDoobieScanner(
     // when a single method body contains multiple doobie usages).
     val valBindingsCache = scala.collection.mutable.Map.empty[Tree, Map[String, Tree]]
 
-    classified
+    val integrations = classified
       .flatMap { u =>
         classifyUsage(u).flatMap { accessType =>
           val valBindings = enclosingMethodRhs(u.path) match {
@@ -85,6 +89,25 @@ class TastyDoobieScanner(
       }
       .filter(_.target != "unknown")
       .distinct
+
+    // Enrich integrations with transactor tracking (class→database attribution)
+    if (transactorMapping.isEmpty) integrations
+    else {
+      val tracker = new TransactorTracker(transactorMapping)
+      val classDb = tracker.scan(packages, Nil, integrations)
+      if (classDb.isEmpty) integrations
+      else
+        integrations.map { i =>
+          i.resourceId match {
+            case db: ResourceId.DbTable =>
+              classDb.get((i.method.packageName, i.method.className)) match {
+                case Some(segs) => i.copy(resourceId = segs.applyTo(db))
+                case None       => i
+              }
+            case _ => i
+          }
+        }
+    }
   }
 
   /** Find the RHS tree of the enclosing method from a NestingPath. */
@@ -185,6 +208,10 @@ private[lineage] object SqlUtils {
     "all",
     "any",
     "lateral",
+    "table",
+    "cascade",
+    "restrict",
+    "truncate",
     "unnest",
     "generate_series",
     "jsonb_each_text",

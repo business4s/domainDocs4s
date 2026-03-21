@@ -113,6 +113,14 @@ class TastyDoobieScannerTest extends AnyFreeSpec {
       unnestMethods.head.target shouldBe "keyword_test_table"
     }
 
+    "skips TABLE and CASCADE keywords in TRUNCATE TABLE ... CASCADE" in {
+      val truncateMethods = doobieIntegrations.filter(_.method.className == "TruncateCascadeRepo")
+      truncateMethods should have size 1
+      truncateMethods.head.method.methodName shouldBe "truncateTable"
+      truncateMethods.head.accessType shouldBe DataAccessType.Write
+      truncateMethods.head.target shouldBe "truncate_test_table"
+    }
+
     "detects fr\"...\" Fragment interpolator with .update.run as Write" in {
       val frMethods = doobieIntegrations.filter(_.method.className == "FragmentRepo")
       val writes    = frMethods.filter(_.accessType == DataAccessType.Write)

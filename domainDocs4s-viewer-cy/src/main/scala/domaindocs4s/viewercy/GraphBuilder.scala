@@ -60,19 +60,15 @@ object GraphBuilder {
     }
   }
 
-  /** Compute the display label for a folded/leaf resource node (segments AFTER the group segment). */
+  /** Compute the display label for a leaf resource node (only the leaf segment, since parents are nested compounds). */
   private def childNodeLabel(segments: List[Segment], resourceType: String, config: Map[String, ResourceTypeDisplayConfig], segLabels: Map[String, String]): String = {
     val effSegs = effectiveSegments(segments, resourceType, config)
-    // Drop the first segment (it's the group label), show the rest
-    val childSegs = if (effSegs.size > 1) effSegs.tail else effSegs
-    val displaySegs = foldIndex(segments, resourceType, config) match {
-      case Some(idx) =>
-        // idx is in effective segments; we want segments after group (index 0) up to fold
-        val folded = effSegs.take(idx + 1)
-        if (folded.size > 1) folded.tail else folded
-      case None => childSegs
+    val fi = foldIndex(segments, resourceType, config)
+    val leafSeg = fi match {
+      case Some(idx) => if (idx < effSegs.size) Some(effSegs(idx)) else effSegs.lastOption
+      case None      => effSegs.lastOption
     }
-    displaySegs.map(s => displayLabel(s.value, segLabels)).mkString(" / ")
+    leafSeg.map(s => displayLabel(s.value, segLabels)).getOrElse("")
   }
 
   /** Resolve a segment value to its display label. */
@@ -133,30 +129,54 @@ object GraphBuilder {
     val createdNodes  = scala.collection.mutable.Set[String]()
     val foldedContents = scala.collection.mutable.Map[String, List[Resource]]()
 
-    /** Ensure the resource group (first effective segment) exists. Returns its ID. */
-    def ensureResourceGroup(resourceType: String, segments: List[Segment]): Option[String] = {
+    /** Ensure nested resource group compound nodes exist for all container segments.
+      * Creates a hierarchy of compound nodes (e.g. database > schema).
+      * Returns the innermost compound's ID to use as parent for the leaf node. */
+    def ensureResourceGroups(resourceType: String, segments: List[Segment]): Option[String] = {
       val effSegs = effectiveSegments(segments, resourceType, config)
       if (effSegs.isEmpty) return None
-      val firstSeg = effSegs.head
-      val gid = s"rgroup_${resourceType}_${firstSeg.level}_${firstSeg.value}"
-      if (!createdGroups.contains(gid)) {
-        createdGroups += gid
-        groupIds += gid
-        val (bg, border) = resourceColors.getOrElse(resourceType, ("#f0f0f0", "#999999"))
-        elements.push(js.Dynamic.literal(
-          group = "nodes",
-          data = js.Dynamic.literal(
-            id = gid,
-            label = displayLabel(firstSeg.value, segLabels),
-            nodeType = "resourceGroup",
-            resourceType = resourceType,
-            bg = bg,
-            borderColor = border,
-          ),
-          classes = "compound resourceGroup",
-        ).asInstanceOf[js.Object])
+
+      // Container segments: everything except the leaf.
+      // For folded resources, leaf is at the fold index; for others, it's the last segment.
+      val fi = foldIndex(segments, resourceType, config)
+      val containerSegs = fi match {
+        case Some(idx) => effSegs.take(idx)
+        case None      => effSegs.dropRight(1)
       }
-      Some(gid)
+      if (containerSegs.isEmpty) return None
+
+      var parentId: Option[String] = None
+      val pathParts = scala.collection.mutable.ListBuffer[String]()
+      val accumSegs = scala.collection.mutable.ListBuffer[Segment]()
+      for (seg <- containerSegs) {
+        pathParts += s"${seg.level}=${seg.value}"
+        accumSegs += seg
+        val gid = s"rgroup_${resourceType}_${pathParts.mkString("/")}".replaceAll("[^a-zA-Z0-9_]", "_")
+        if (!createdGroups.contains(gid)) {
+          createdGroups += gid
+          groupIds += gid
+          val (bg, border) = resourceColors.getOrElse(resourceType, ("#f0f0f0", "#999999"))
+          val segArr = js.Array(accumSegs.map(s => js.Dynamic.literal(level = s.level, value = s.value).asInstanceOf[js.Object]).toSeq*)
+          elements.push(js.Dynamic.literal(
+            group = "nodes",
+            data = js.Dynamic.literal(
+              id = gid,
+              label = displayLabel(seg.value, segLabels),
+              parent = parentId.orNull,
+              nodeType = "resourceGroup",
+              resourceType = resourceType,
+              segmentLevel = seg.level,
+              segmentValue = seg.value,
+              segments = segArr,
+              bg = bg,
+              borderColor = border,
+            ),
+            classes = "compound resourceGroup",
+          ).asInstanceOf[js.Object])
+        }
+        parentId = Some(gid)
+      }
+      parentId
     }
 
     // Group resources by folded key, create one node per group
@@ -168,7 +188,7 @@ object GraphBuilder {
       if (!createdNodes.contains(nid)) {
         createdNodes += nid
         val rep = resources.head
-        val parentId = ensureResourceGroup(rep.resourceType, rep.segments)
+        val parentId = ensureResourceGroups(rep.resourceType, rep.segments)
         val label = childNodeLabel(rep.segments, rep.resourceType, config, segLabels)
         val (bg, border) = resourceColors.getOrElse(rep.resourceType, ("#f0f0f0", "#999999"))
         val isFolded = resources.size > 1 || foldIndex(rep.segments, rep.resourceType, config).isDefined

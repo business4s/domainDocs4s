@@ -22,13 +22,13 @@ class FlywayMigrationScannerTest extends AnyFreeSpec {
 
     "discovers CREATE TABLE statements as Write" in {
       val creates = flywayIntegrations.filter { di =>
-        di.accessType == DataAccessType.Write && di.evidence == "V001__create_tables.sql"
+        di.accessType == DataAccessType.Write && di.evidence.startsWith("V001__create_tables.sql")
       }
       creates.map(_.target).toSet should contain allOf ("users", "transactions")
     }
 
     "discovers ALTER TABLE as Write" in {
-      val alters = flywayIntegrations.filter(_.evidence == "V003__alter_tables.sql")
+      val alters = flywayIntegrations.filter(_.evidence.startsWith("V003__alter_tables.sql"))
       alters should have size 1
       alters.head.target shouldBe "users"
       alters.head.accessType shouldBe DataAccessType.Write
@@ -38,9 +38,9 @@ class FlywayMigrationScannerTest extends AnyFreeSpec {
       // V002 creates the view, V004 drops it, V005 recreates it
       val viewWrites = flywayIntegrations.filter(di => di.accessType == DataAccessType.Write && di.target == "user_transaction_summary")
       viewWrites should have size 1
-      viewWrites.head.evidence shouldBe "V005__recreate_view.sql"
+      viewWrites.head.evidence should startWith("V005__recreate_view.sql")
 
-      val sourceReads = flywayIntegrations.filter(di => di.accessType == DataAccessType.Read && di.evidence == "V005__recreate_view.sql")
+      val sourceReads = flywayIntegrations.filter(di => di.accessType == DataAccessType.Read && di.evidence.startsWith("V005__recreate_view.sql"))
       sourceReads.map(_.target).toSet should contain allOf ("users", "transactions")
     }
 
@@ -48,7 +48,7 @@ class FlywayMigrationScannerTest extends AnyFreeSpec {
       // V002 created view reading users+transactions. V004 drops the view.
       // Write to user_transaction_summary from V002 is gone,
       // but Read from users/transactions in V002 survives (different target).
-      val v002Integrations = flywayIntegrations.filter(_.evidence == "V002__create_views.sql")
+      val v002Integrations = flywayIntegrations.filter(_.evidence.startsWith("V002__create_views.sql"))
       v002Integrations.foreach(_.accessType shouldBe DataAccessType.Read)
       v002Integrations.map(_.target).toSet should contain allOf ("users", "transactions")
     }
@@ -69,7 +69,7 @@ class FlywayMigrationScannerTest extends AnyFreeSpec {
       val renamed = flywayIntegrations.filter(_.target == "activity_log")
       renamed should have size 1
       renamed.head.accessType shouldBe DataAccessType.Write
-      renamed.head.evidence shouldBe "V007__rename_table.sql"
+      renamed.head.evidence should startWith("V007__rename_table.sql")
     }
 
     "RENAME preserves unrelated tables" in {
@@ -99,7 +99,7 @@ class FlywayMigrationScannerTest extends AnyFreeSpec {
     }
 
     "discovers CREATE TABLE with PARTITION BY RANGE/LIST/HASH" in {
-      val partitioned = flywayIntegrations.filter(_.evidence == "V008__partitioned_table.sql")
+      val partitioned = flywayIntegrations.filter(_.evidence.startsWith("V008__partitioned_table.sql"))
       partitioned.map(_.target).toSet shouldBe Set("daily_snapshots", "events", "metrics")
       partitioned.foreach(_.accessType shouldBe DataAccessType.Write)
     }
@@ -118,7 +118,7 @@ class FlywayMigrationScannerTest extends AnyFreeSpec {
 
     "evidence includes filename" in {
       flywayIntegrations.foreach { di =>
-        di.evidence should endWith(".sql")
+        di.evidence should startWith regex "V\\d+__.*\\.sql"
       }
     }
 
