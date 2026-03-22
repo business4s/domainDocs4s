@@ -197,6 +197,7 @@ case class LineageAdjustments(adjustments: List[LineageAdjustment] = Nil) {
     case r: ResourceId.S3Object     => r.copy(path = newLabel)
     case r: ResourceId.KafkaTopic   => r.copy(topic = newLabel)
     case r: ResourceId.GrpcEndpoint => r.copy(method = newLabel)
+    case r: ResourceId.ActorTarget  => r.copy(actor = newLabel)
     case r: ResourceId.Generic      => r.copy(segments = r.segments.init :+ (r.segments.last._1 -> newLabel))
   }
 
@@ -922,6 +923,7 @@ object LineageAdjustments {
       def grpc(service: String, method: String, host: Option[String] = None): IntegrationBuilder       = emit(ResourceId.GrpcEndpoint(service, method, host))
       def journal(table: String = "journal", database: Option[String] = None): IntegrationBuilder      =
         emit(ResourceId.DbTable(table, database = database))
+      def actor(name: String): IntegrationBuilder                                                      = emit(ResourceId.ActorTarget(name))
       def resource(resourceId: ResourceId): IntegrationBuilder                                         = emit(resourceId)
       def custom(resourceType: ResourceType, segments: List[(String, String)]): IntegrationBuilder     = emit(ResourceId.Generic(resourceType, segments))
 
@@ -953,6 +955,7 @@ object LineageAdjustments {
       def grpc(service: String, method: String, host: Option[String] = None): ClassIntegrationBuilder       = emit(ResourceId.GrpcEndpoint(service, method, host))
       def journal(table: String = "journal", database: Option[String] = None): ClassIntegrationBuilder      =
         emit(ResourceId.DbTable(table, database = database))
+      def actor(name: String): ClassIntegrationBuilder                                                      = emit(ResourceId.ActorTarget(name))
       def resource(resourceId: ResourceId): ClassIntegrationBuilder                                         = emit(resourceId)
       def custom(resourceType: ResourceType, segments: List[(String, String)]): ClassIntegrationBuilder     = emit(ResourceId.Generic(resourceType, segments))
 

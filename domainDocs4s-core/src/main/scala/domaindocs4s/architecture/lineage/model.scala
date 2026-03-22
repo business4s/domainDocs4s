@@ -194,6 +194,7 @@ object ResourceType {
   val Kafka: ResourceType    = "kafka"
   val Grpc: ResourceType     = "grpc"
   val S3: ResourceType       = "s3"
+  val Actor: ResourceType    = "actor"
 
   def apply(value: String): ResourceType = value
 
@@ -297,6 +298,15 @@ object ResourceId {
       Some("method" -> method),
     ).flatten
 
+  }
+
+  // ── Actor ────────────────────────────────────────────────────────────
+
+  case class ActorTarget(
+      actor: String,
+  ) extends ResourceId {
+    def resourceType: ResourceType       = ResourceType.Actor
+    def segments: List[(String, String)] = List("actor" -> actor)
   }
 
   // ── Generic (for custom / extensible resource types) ──────────────────
@@ -512,6 +522,7 @@ object ResourceDisplay {
     ResourceType.S3   -> ResourceTypeDisplay(containerLabel = Some("S3"), foldAtLevel = Some("bucket")),
     ResourceType.Grpc -> ResourceTypeDisplay(containerLabel = Some("gRPC"), foldAtLevel = Some("service")),
     ResourceType.Kafka -> ResourceTypeDisplay(containerLabel = Some("Kafka")),
+    ResourceType.Actor -> ResourceTypeDisplay(containerLabel = Some("Actor")),
   )
 
   /** Effective segments with virtual container prepended if configured. */

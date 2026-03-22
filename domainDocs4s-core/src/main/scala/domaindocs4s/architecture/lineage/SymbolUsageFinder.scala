@@ -575,11 +575,13 @@ class SymbolUsageFinder(searches: Seq[SymbolSearch])(using ctx: Context) {
     }
   }
 
-  /** Extract the return type FQN from a receiver expression by unwrapping Apply/TypeApply layers until a Select with a SignedName is found. The
-    * SignedName's resSig encodes the method's return type as an erased FQN, which is the type of the receiver expression.
+  /** Extract the return type FQN from a receiver expression by unwrapping Apply/TypeApply layers until a Select or Ident with a SignedName is found.
+    * The SignedName's resSig encodes the method's return type as an erased FQN, which is the type of the receiver expression.
     *
     * For example, in `sql"...".query[T](read).unique`: receiver of `.unique` = Apply(TypeApply(Select(frag, "query[sig:Query0]"), _), _) → unwrap
     * Apply → unwrap TypeApply → Select with SignedName "query" → resSig = "doobie.util.query$.Query0"
+    *
+    * Also handles Ident nodes (e.g., implicit conversions like `ActorRefOps(ref)`) by checking the Ident's TermRef for a SignedName.
     */
   private def extractReturnTypeFqn(tree: Tree): Option[String] = tree match {
     case Apply(fun, _)      => extractReturnTypeFqn(fun)
@@ -595,6 +597,21 @@ class SymbolUsageFinder(searches: Seq[SymbolSearch])(using ctx: Context) {
           // is a SimpleName but the qualifier resolves to Fragment via a SignedName deeper in the chain.
           extractReturnTypeFqn(qual)
       }
+    case ident: Ident       =>
+      // Ident nodes (e.g., imported functions, implicit conversions) may have a TermRef
+      // whose name is a SignedName encoding the return type.
+      try {
+        ident.referenceType match {
+          case tr: TermRef =>
+            tr.name match {
+              case sn: SignedName =>
+                val resSig = sn.sig.resSig.toString
+                if (resSig.nonEmpty) Some(resSig) else None
+              case _              => None
+            }
+          case _           => None
+        }
+      } catch { case _: Exception => None }
     case _                  => None
   }
 
