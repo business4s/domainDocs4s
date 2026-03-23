@@ -8,3 +8,21 @@ annotated concepts from TASTy and transforming them into structured, business-fr
 
 See the [**Website**](https://business4s.github.io/domainDocs4s/) for details and join our [**Discord**](https://bit.ly/business4s-discord) for discussions.
 
+## Improvements / TODO
+
+### Scanners
+- STTP/HTTP client scanner (e.g. GoogleSheetClientImpl uses STTP, not detected)
+- Prometheus scanner
+- Doobie scanner: reconstruct full SQL (substitute fragments,inl replace inputs with `?`, use JSqlParser)
+
+### Core
+- Typesafe packages, SymbolModule.requiredPackage
+- Limit scanning to non-test code
+
+### Viewer (Cytoscape)
+- Export view settings
+- Save current modifications as a view (metabase-question style)
+- Views defined dynamically by hand/JSON, stored in a JSON file
+- Show all classes, let user hide/show in UI (by package or multi-select)
+- Show hidden elements so they can be brought back
+- Treat in-code overrides as a default view

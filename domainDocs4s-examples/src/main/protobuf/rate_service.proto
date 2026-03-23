@@ -1,0 +1,9 @@
+syntax = "proto3";
+package domaindocs4s.architecture.lineage.example.grpc;
+
+service RateService {
+  rpc GetRate (GetRateRequest) returns (GetRateResponse);
+}
+
+message GetRateRequest { string currency = 1; }
+message GetRateResponse { string rate = 1; }
