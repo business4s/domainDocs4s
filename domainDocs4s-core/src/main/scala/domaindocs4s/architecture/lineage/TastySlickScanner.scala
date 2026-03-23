@@ -148,7 +148,7 @@ class TastySlickScanner(
                     // For s"..." interpolations, require the string to actually start with a SQL keyword.
                     // This avoids false positives from strings like s"Getting data from $source".
                     val refinedAccess = if (u.methodName == "s") inferAccessTypeFromSql(s) else Some(accessType)
-                    refinedAccess.map(at => mkIntegration(u.path.toMethodRef, at, SqlUtils.extractTableName(s), s))
+                    refinedAccess.flatMap(at => SqlUtils.extractTableRef(s).map(tr => mkIntegration(u.path.toMethodRef, at, tr.fullName, s)))
                   }
                   .toList
               case _                                                                                               => Nil

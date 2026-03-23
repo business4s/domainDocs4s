@@ -1247,7 +1247,7 @@ object ViewerControls {
           }
         for ((from, to, access) <- intEdges) {
           val label = access match {
-            case "Read" => "R"; case "Write" => "W"; case "ReadWrite" => "RW"; case _ => ""
+            case a => GraphBuilder.accessLabel(a)
           }
           val _e = cy.add(js.Dynamic.literal(
             group = "edges",
@@ -1544,7 +1544,14 @@ object ViewerControls {
 
   // ── Details pane ──
 
-  private def showDetails(cy: CyInstance, node: CyElement, data: LineageData, activeLayout: Var[String]): Unit = {
+  private def showDetails(
+      cy: CyInstance,
+      node: CyElement,
+      data: LineageData,
+      activeLayout: Var[String],
+      multi: Option[MultiServiceData] = None,
+      graphData: Option[GraphBuilder.GraphData] = None,
+  ): Unit = {
     val panel = dom.document.getElementById("details")
     if (panel == null) return
     panel.innerHTML = ""
@@ -1557,10 +1564,136 @@ object ViewerControls {
 
     nodeType match {
       case "class"         => renderClassDetails(panel, cy, node, data, activeLayout)
-      case "resource"      => renderResourceDetails(panel, cy, node, data)
+      case "resource"      =>
+        renderResourceDetails(panel, cy, node, data)
+        multi.foreach(m => renderCrossServiceAccess(panel, node, m, data))
       case "classGroup"    => renderGroupDetails(panel, cy, node, data, "Class Group")
-      case "resourceGroup"      => renderGroupDetails(panel, cy, node, data, "Resource Group")
+      case "resourceGroup" =>
+        renderGroupDetails(panel, cy, node, data, "Resource Group")
+        multi.foreach(m => renderCrossServiceAccess(panel, node, m, data))
+        graphData.foreach(gd => renderGroupExpandCollapse(panel, cy, node, data, activeLayout, multi, gd))
+      case "service"       => multi.foreach(m => renderServiceDetails(panel, node, m))
       case _               => panel.classList.remove("open")
+    }
+  }
+
+  /** Render cross-service access section for resource/resourceGroup nodes in system view. */
+  private def renderCrossServiceAccess(panel: dom.Element, node: CyElement, multi: MultiServiceData, mergedData: LineageData): Unit = {
+    val config = mergedData.resourceDisplayConfig
+    val nodeType = node.data("nodeType").asInstanceOf[String]
+
+    // Collect resource keys that belong to this node (single resource or all children of a group)
+    val resourceKeys = if (nodeType == "resourceGroup") {
+      val keys = scala.collection.mutable.Set[String]()
+      def collectKeys(n: CyElement): Unit = {
+        n.children().forEach { (child: CyElement) =>
+          val rk = child.data("resourceKey")
+          if (!js.isUndefined(rk) && rk != null) keys += rk.asInstanceOf[String]
+          collectKeys(child)
+        }
+      }
+      collectKeys(node)
+      keys.toSet
+    } else {
+      val rk = node.data("resourceKey")
+      if (!js.isUndefined(rk) && rk != null) Set(rk.asInstanceOf[String]) else Set.empty[String]
+    }
+
+    if (resourceKeys.isEmpty) return
+
+    val serviceAccess = multi.services.flatMap { svc =>
+      val accesses = svc.data.integrations
+        .filter { i =>
+          val fk = GraphBuilder.foldedNodeKey(i.segments, i.resourceType, config)
+          resourceKeys.contains(fk)
+        }
+        .map(_.accessType)
+      if (accesses.nonEmpty) Some((svc.name, GraphBuilder.combineAccess(accesses))) else None
+    }
+
+    if (serviceAccess.nonEmpty) {
+      val section = detailsSection(panel, s"Services (${serviceAccess.size})")
+      for ((name, access) <- serviceAccess.sortBy(_._1)) {
+        val item = dom.document.createElement("div")
+        item.classList.add("connection-item")
+        val nameEl = dom.document.createElement("span")
+        nameEl.classList.add("connection-name")
+        nameEl.textContent = name
+        item.appendChild(nameEl)
+        item.appendChild(accessTag(access))
+        section.appendChild(item)
+      }
+    }
+  }
+
+  /** Render expand/collapse buttons for resource group nodes in system view. */
+  private def renderGroupExpandCollapse(
+      panel: dom.Element,
+      cy: CyInstance,
+      node: CyElement,
+      data: LineageData,
+      activeLayout: Var[String],
+      multi: Option[MultiServiceData],
+      graphData: GraphBuilder.GraphData,
+  ): Unit = {
+    val nodeId = node.id()
+    if (!graphData.expandableElements.contains(nodeId)) return
+    val hasShared = graphData.sharedResourceIds.getOrElse(nodeId, Set.empty).nonEmpty
+    val isCollapsed = node.hasClass("collapsedGroup")
+    val isSharedOnly = node.hasClass("sharedOnly")
+    val actionsSection = detailsSection(panel, "Actions")
+    val btnStyle = "padding:4px 12px;cursor:pointer;font-size:11px;margin-right:4px;"
+
+    def reopen(): Unit = showDetails(cy, node, data, activeLayout, multi, Some(graphData))
+
+    def actionButton(text: String)(action: => Unit): Unit = {
+      val btn = dom.document.createElement("button")
+      btn.textContent = text
+      btn.setAttribute("style", btnStyle)
+      btn.addEventListener("click", { (_: dom.Event) => action; runLayout(cy, activeLayout.now()); reopen() })
+      actionsSection.appendChild(btn)
+    }
+
+    if (isCollapsed) {
+      if (hasShared) actionButton("Expand shared") { expandResourceGroup(cy, nodeId, graphData, sharedOnly = true) }
+      actionButton("Expand all") { expandResourceGroup(cy, nodeId, graphData, sharedOnly = false) }
+    } else {
+      if (isSharedOnly && hasShared) actionButton("Show all resources") {
+        collapseResourceGroup(cy, nodeId, graphData)
+        expandResourceGroup(cy, nodeId, graphData, sharedOnly = false)
+      }
+      actionButton("Collapse") { collapseResourceGroup(cy, nodeId, graphData) }
+    }
+  }
+
+  /** Render details for a service node. */
+  private def renderServiceDetails(panel: dom.Element, node: CyElement, multi: MultiServiceData): Unit = {
+    val serviceName = node.data("label").asInstanceOf[String]
+    detailsHeader(panel, serviceName)
+
+    multi.services.find(_.name == serviceName).foreach { svc =>
+      val infoSection = detailsSection(panel, "Info")
+      detailsRow(infoSection, "Type", "Service")
+      detailsRow(infoSection, "Classes", svc.data.classes.size.toString)
+      detailsRow(infoSection, "Integrations", svc.data.integrations.size.toString)
+      detailsRow(infoSection, "Resources", svc.data.resources.size.toString)
+
+      val config = multi.services.flatMap(_.data.resourceDisplayConfig.toList).toMap
+      val segLabels = multi.services.flatMap(_.data.segmentLabels.toList).toMap
+      val groups = svc.data.resources.flatMap { r =>
+        val effSegs = GraphBuilder.effectiveSegments(r.segments, r.resourceType, config)
+        effSegs.headOption.map(s => (r.resourceType, segLabels.getOrElse(s.value, s.value)))
+      }.distinct.sortBy(_._2)
+
+      if (groups.nonEmpty) {
+        val section = detailsSection(panel, s"Resource Groups (${groups.size})")
+        for ((rtype, label) <- groups) {
+          val item = dom.document.createElement("div")
+          item.setAttribute("style", "padding:3px 0;font-size:11px;")
+          item.textContent = s"[$rtype] $label"
+          section.appendChild(item)
+        }
+      }
     }
   }
 
@@ -1952,7 +2085,7 @@ object ViewerControls {
           keyToChildId.get(resKey).foreach { childId =>
             val combined = GraphBuilder.combineAccess(ints.map(_.accessType).toList)
             val label = combined match {
-              case "Read" => "R"; case "Write" => "W"; case "ReadWrite" => "RW"; case _ => ""
+              case a => GraphBuilder.accessLabel(a)
             }
             val (edgeSrc, edgeTgt) = if (src == nodeId) (childId, tgt) else (src, childId)
             newEdges.push(js.Dynamic.literal(
@@ -2146,7 +2279,7 @@ object ViewerControls {
             val key = s"$mid->$resolvedTarget"
             if (seen.add(key)) {
               val label = integ.accessType match {
-                case "Read" => "R"; case "Write" => "W"; case "ReadWrite" => "RW"; case _ => ""
+                case a => GraphBuilder.accessLabel(a)
               }
               methodEdges.push(js.Dynamic.literal(
                 group = "edges",
@@ -2556,9 +2689,9 @@ object ViewerControls {
     }
   }
 
-  /** Render the connected cross-service view. */
+  /** Render the connected cross-service view using the same GraphBuilder infrastructure as service views. */
   private def renderConnectedView(cyRef: Var[Option[CyInstance]], multi: MultiServiceData): Unit = {
-    val graphData = ConnectedViewBuilder.build(multi.services)
+    val graphData = GraphBuilder.buildSystemLevel(multi.services)
     val container = dom.document.getElementById("cy")
 
     val cy = cytoscape(js.Dynamic.literal(
@@ -2576,17 +2709,95 @@ object ViewerControls {
     // Run ELK layout
     runLayout(cy, "elk-layered")
 
-    // Click on service node → switch to that service
-    cy.on("tap", "node.serviceNode", { (evt: js.Dynamic) =>
+    // Merged data for side panel lookups
+    val mergedData = mergeServiceData(multi)
+    val activeLayout = Var("elk-layered")
+
+    // Single-click → unified showDetails with cross-service context
+    cy.on("tap", "node", { (evt: js.Dynamic) =>
       val node = evt.target.asInstanceOf[CyElement]
-      showConnectedNodeDetails(cy, node, multi)
+      showDetails(cy, node, mergedData, activeLayout, Some(multi), Some(graphData))
     }: js.Function1[js.Dynamic, Unit])
 
-    // Click on resource group → show which services use it
-    cy.on("tap", "node.resourceGroupNode", { (evt: js.Dynamic) =>
-      val node = evt.target.asInstanceOf[CyElement]
-      showConnectedResourceDetails(cy, node, multi)
-    }: js.Function1[js.Dynamic, Unit])
+  }
+
+  /** Expand a resource group: add child resource nodes + per-resource edges from expandableElements, remove aggregate edges.
+    * When `sharedOnly` is true, only resources accessed by 2+ services are shown.
+    */
+  private def expandResourceGroup(cy: CyInstance, groupId: String, graphData: GraphBuilder.GraphData, sharedOnly: Boolean = false): Unit = {
+    val groupNode = cy.getElementById(groupId)
+    val allElements = graphData.expandableElements.getOrElse(groupId, js.Array[js.Object]())
+    if (allElements.length == 0) return
+
+    val sharedIds = graphData.sharedResourceIds.getOrElse(groupId, Set.empty)
+
+    // Filter elements: keep nodes that pass the filter + edges whose target passes
+    val filtered = if (!sharedOnly || sharedIds.isEmpty) allElements
+    else {
+      val result = js.Array[js.Object]()
+      for (i <- 0 until allElements.length) {
+        val el = allElements(i).asInstanceOf[js.Dynamic]
+        val isEdge = el.group.asInstanceOf[String] == "edges"
+        if (isEdge) {
+          val tgt = el.data.target.asInstanceOf[String]
+          if (sharedIds.contains(tgt)) result.push(allElements(i))
+        } else {
+          val nid = el.data.id.asInstanceOf[String]
+          if (sharedIds.contains(nid)) result.push(allElements(i))
+        }
+      }
+      result
+    }
+
+    if (filtered.length == 0) return
+
+    cy.batch({ () =>
+      // Remove aggregate edges from/to this group
+      groupNode.connectedEdges().filter(".aggregatedEdge").remove()
+      // Add children and per-resource edges
+      cy.add(filtered)
+      // Mark as expanded
+      groupNode.removeClass("collapsedGroup")
+      groupNode.addClass("compound")
+      // Track mode
+      if (sharedOnly) groupNode.addClass("sharedOnly") else groupNode.removeClass("sharedOnly")
+    }: js.Function0[Unit])
+  }
+
+  /** Collapse a resource group: remove child nodes + per-resource edges, restore aggregate edges. */
+  private def collapseResourceGroup(cy: CyInstance, groupId: String, graphData: GraphBuilder.GraphData): Unit = {
+    val groupNode = cy.getElementById(groupId)
+
+    cy.batch({ () =>
+      // Remove all children and their edges
+      groupNode.children().forEach { (child: CyElement) =>
+        child.connectedEdges().remove()
+      }
+      groupNode.children().remove()
+      // Restore aggregate edges from precomputed map
+      for (edge <- graphData.aggregateEdges.getOrElse(groupId, js.Array())) cy.add(edge)
+      // Mark as collapsed
+      groupNode.addClass("collapsedGroup")
+      groupNode.removeClass("compound")
+    }: js.Function0[Unit])
+  }
+
+  /** Merge all services' LineageData into one for resource lookups in the system view side panel. */
+  private def mergeServiceData(multi: MultiServiceData): LineageData = {
+    val allResources = multi.services.flatMap(_.data.resources).groupBy(_.key).map(_._2.head).toList
+    val allIntegrations = multi.services.flatMap(_.data.integrations)
+    val config = multi.services.flatMap(_.data.resourceDisplayConfig.toList).toMap
+    val segLabels = multi.services.flatMap(_.data.segmentLabels.toList).toMap
+    LineageData(
+      classes = Nil,
+      callGraph = Nil,
+      integrations = allIntegrations,
+      resources = allResources,
+      resourceDependencies = Nil,
+      lineageChains = Nil,
+      resourceDisplayConfig = config,
+      segmentLabels = segLabels,
+    )
   }
 
   /** Render a single service's detail view (reusing the single-service logic). */
@@ -2786,91 +2997,10 @@ object ViewerControls {
     )
   }
 
-  /** Show details for a service node in the connected view. */
-  private def showConnectedNodeDetails(@annotation.unused cy: CyInstance, node: CyElement, multi: MultiServiceData): Unit = {
-    val panel = dom.document.getElementById("details")
-    if (panel == null) return
-    panel.innerHTML = ""
-    panel.classList.add("open")
-
-    val serviceName = node.data("label").asInstanceOf[String]
-    detailsHeader(panel, serviceName)
-
-    multi.services.find(_.name == serviceName).foreach { svc =>
-      val infoSection = detailsSection(panel, "Info")
-      detailsRow(infoSection, "Classes", svc.data.classes.size.toString)
-      detailsRow(infoSection, "Integrations", svc.data.integrations.size.toString)
-      detailsRow(infoSection, "Resources", svc.data.resources.size.toString)
-
-      // List resource groups this service connects to
-      val config = svc.data.resourceDisplayConfig
-      val segLabels = svc.data.segmentLabels
-      val groups = svc.data.resources.flatMap { r =>
-        val effSegs = ConnectedViewBuilder.effectiveSegmentsPublic(r.segments, r.resourceType, config)
-        effSegs.headOption.map(s => (r.resourceType, segLabels.getOrElse(s.value, s.value)))
-      }.distinct.sortBy(_._2)
-
-      if (groups.nonEmpty) {
-        val section = detailsSection(panel, s"Resource Groups (${groups.size})")
-        for ((rtype, label) <- groups) {
-          val item = dom.document.createElement("div")
-          item.setAttribute("style", "padding:3px 0;font-size:11px;")
-          item.textContent = s"[$rtype] $label"
-          section.appendChild(item)
-        }
-      }
-    }
-  }
-
-  /** Show details for a resource group node in the connected view. */
-  private def showConnectedResourceDetails(@annotation.unused cy: CyInstance, node: CyElement, @annotation.unused multi: MultiServiceData): Unit = {
-    val panel = dom.document.getElementById("details")
-    if (panel == null) return
-    panel.innerHTML = ""
-    panel.classList.add("open")
-
-    val label = node.data("label").asInstanceOf[String]
-    val rtype = {
-      val rt = node.data("resourceType")
-      if (js.isUndefined(rt) || rt == null) "" else rt.asInstanceOf[String]
-    }
-    detailsHeader(panel, label)
-
-    val infoSection = detailsSection(panel, "Info")
-    if (rtype.nonEmpty) detailsRow(infoSection, "Type", rtype)
-
-    // Find which services connect to this resource group
-    val connectedServices = scala.collection.mutable.ListBuffer[(String, String)]()
-    node.connectedEdges().forEach { (edge: CyElement) =>
-      val src = edge.data("source").asInstanceOf[String]
-      val tgt = edge.data("target").asInstanceOf[String]
-      val otherId = if (src == node.id()) tgt else src
-      val other = cy.getElementById(otherId)
-      val otherLabel = other.data("label")
-      val at = edge.data("accessType")
-      if (!js.isUndefined(otherLabel) && otherLabel != null) {
-        connectedServices += ((
-          otherLabel.asInstanceOf[String],
-          if (js.isUndefined(at) || at == null) "" else at.asInstanceOf[String],
-        ))
-      }
-    }
-    if (connectedServices.nonEmpty) {
-      val section = detailsSection(panel, s"Services (${connectedServices.size})")
-      for ((name, access) <- connectedServices.sortBy(_._1)) {
-        val item = dom.document.createElement("div")
-        item.classList.add("connection-item")
-        val nameEl = dom.document.createElement("span")
-        nameEl.classList.add("connection-name")
-        nameEl.textContent = name
-        item.appendChild(nameEl)
-        item.appendChild(accessTag(access))
-        section.appendChild(item)
-      }
-    }
-  }
-
-  /** Cytoscape style for the connected cross-service view. */
+  /** Cytoscape style for the connected cross-service view.
+    * Includes styles for service nodes, resource hierarchy (groups + leaf nodes), and edges.
+    * Resource styles mirror the service-view styles so both views look consistent.
+    */
   private val connectedViewStyle: js.Array[js.Object] = js.Array(
     // Service nodes
     js.Dynamic.literal(
@@ -2892,21 +3022,59 @@ object ViewerControls {
       ),
     ).asInstanceOf[js.Object],
 
-    // Resource group nodes
+    // Resource group compound nodes (same style as service view)
     js.Dynamic.literal(
-      selector = "node.resourceGroupNode",
+      selector = "node.resourceGroup",
+      style = js.Dynamic.literal(
+        label = "data(label)",
+        `text-valign` = "top",
+        `text-halign` = "center",
+        `font-size` = "11px",
+        `font-weight` = "600",
+        `background-color` = "data(bg)",
+        `background-opacity` = 0.3,
+        `border-width` = 2,
+        `border-color` = "data(borderColor)",
+        shape = "roundrectangle",
+        padding = "12px",
+      ),
+    ).asInstanceOf[js.Object],
+
+    // Collapsed resource group nodes (render as regular nodes, not compound containers)
+    js.Dynamic.literal(
+      selector = "node.collapsedGroup",
       style = js.Dynamic.literal(
         label = "data(label)",
         `text-valign` = "center",
         `text-halign` = "center",
         `font-size` = "12px",
+        `font-weight` = "600",
+        `background-color` = "data(bg)",
+        `background-opacity` = 0.8,
+        `border-width` = 2,
+        `border-color` = "data(borderColor)",
+        shape = "roundrectangle",
+        width = "label",
+        height = 30,
+        padding = "12px",
+      ),
+    ).asInstanceOf[js.Object],
+
+    // Resource leaf nodes
+    js.Dynamic.literal(
+      selector = "node.resourceNode",
+      style = js.Dynamic.literal(
+        label = "data(label)",
+        `text-valign` = "center",
+        `text-halign` = "center",
+        `font-size` = "10px",
         `background-color` = "data(bg)",
         `border-width` = 2,
         `border-color` = "data(borderColor)",
         shape = "ellipse",
         width = "label",
-        height = 30,
-        padding = "12px",
+        height = 25,
+        padding = "8px",
       ),
     ).asInstanceOf[js.Object],
 
@@ -2924,7 +3092,7 @@ object ViewerControls {
       style = js.Dynamic.literal(shape = "barrel"),
     ).asInstanceOf[js.Object],
 
-    // Integration edges
+    // Integration edges (service → resource)
     js.Dynamic.literal(
       selector = "edge.integrationEdge",
       style = js.Dynamic.literal(
@@ -2937,6 +3105,21 @@ object ViewerControls {
         width = 2,
       ),
     ).asInstanceOf[js.Object],
+
+    // Resource dependency edges
+    js.Dynamic.literal(
+      selector = "edge.resourceDepEdge",
+      style = js.Dynamic.literal(
+        `line-color` = "#999",
+        `target-arrow-color` = "#999",
+        `target-arrow-shape` = "triangle",
+        `line-style` = "dashed",
+        `curve-style` = "bezier",
+        width = 1,
+      ),
+    ).asInstanceOf[js.Object],
+
+    // Access type edge colors
     js.Dynamic.literal(
       selector = "edge.Read",
       style = js.Dynamic.literal(

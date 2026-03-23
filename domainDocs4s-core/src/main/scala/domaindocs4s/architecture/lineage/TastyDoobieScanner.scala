@@ -67,27 +67,27 @@ class TastyDoobieScanner(
             case None      => Map.empty[String, Tree]
           }
           val sql         = SqlUtils.sqlFrom(u.tree, valBindings).orElse(SqlUtils.sqlFrom(u.receiverTree, valBindings))
-          sql.filter(SqlUtils.looksLikeSql).map { s =>
-            val tableRef = SqlUtils.extractTableRef(s)
-            val effectiveSchema = tableRef.schema.orElse(schema)
-            val effectiveDb = tableRef.schema.flatMap(schemaToDatabase.get).orElse(database)
-            val resourceId = ResourceId.DbTable(
-              table = tableRef.table,
-              database = effectiveDb,
-              schema = effectiveSchema,
-              cluster = cluster,
-            )
-            DiscoveredIntegration(
-              method = u.path.toMethodRef,
-              accessType = accessType,
-              resourceId = resourceId,
-              scanner = "doobie",
-              evidence = s,
-            )
+          sql.filter(SqlUtils.looksLikeSql).flatMap { s =>
+            SqlUtils.extractTableRef(s).map { tableRef =>
+              val effectiveSchema = tableRef.schema.orElse(schema)
+              val effectiveDb = tableRef.schema.flatMap(schemaToDatabase.get).orElse(database)
+              val resourceId = ResourceId.DbTable(
+                table = tableRef.table,
+                database = effectiveDb,
+                schema = effectiveSchema,
+                cluster = cluster,
+              )
+              DiscoveredIntegration(
+                method = u.path.toMethodRef,
+                accessType = accessType,
+                resourceId = resourceId,
+                scanner = "doobie",
+                evidence = s,
+              )
+            }
           }
         }
       }
-      .filter(_.target != "unknown")
       .distinct
 
     // Enrich integrations with transactor tracking (class→database attribution)
@@ -222,23 +222,24 @@ private[lineage] object SqlUtils {
   )
 
   def extractTableName(sql: String): String =
-    extractTableRef(sql).fullName
+    extractTableRef(sql).map(_.fullName).getOrElse("unknown")
 
   /** Extract a qualified table reference (possibly schema.table) from SQL. */
   case class TableRef(schema: Option[String], table: String) {
     def fullName: String = schema.fold(table)(s => s"$s.$table")
   }
 
-  def extractTableRef(sql: String): TableRef = {
-    val raw = tablePatterns.iterator
+  def extractTableRef(sql: String): Option[TableRef] = {
+    tablePatterns.iterator
       .flatMap(_.findAllMatchIn(sql))
       .map(_.group(1))
       .find(name => !sqlKeywords.contains(name.split('.').head.toLowerCase))
-      .getOrElse("unknown")
-    raw.split('.') match {
-      case Array(s, t) => TableRef(Some(s), t)
-      case _           => TableRef(None, raw)
-    }
+      .map { raw =>
+        raw.split('.') match {
+          case Array(s, t) => TableRef(Some(s), t)
+          case _           => TableRef(None, raw)
+        }
+      }
   }
 
   /** Check if a string looks like SQL (contains at least one SQL keyword the table patterns recognize). */
